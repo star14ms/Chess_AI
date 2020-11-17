@@ -47,10 +47,10 @@ def do_init(): # 판에 말 세팅해놓는 함수
     
     rook_w1 = Rook(board, 0, 0, False)
     knight_w1 = Knight(board, 0, 1, False) # (1,0) 좌표에 백색 나이트 생성
-    bishop_w1 = Bishop(board, 0, 2, False)
+    bishop_ww = Bishop(board, 0, 2, False)
     king_w = King(board, 0, 3, False)
     queen_w = Queen(board, 0, 4, False)
-    bishop_w2 = Bishop(board, 0, 5, False)
+    bishop_wb = Bishop(board, 0, 5, False)
     knight_w2 = Knight(board, 0, 6, False)
     rook_w2 = Rook(board, 0, 7, False)
 
@@ -74,10 +74,10 @@ def do_init(): # 판에 말 세팅해놓는 함수
 
     rook_b1 = Rook(board, 7, 0, True)
     knight_b1 = Knight(board, 7, 1, True)
-    bishop_b1 = Bishop(board, 7, 2, True)
+    bishop_bb = Bishop(board, 7, 2, True)
     king_b = King(board, 7, 3, True)
     queen_b = Queen(board, 7, 4, True)
-    bishop_b2 = Bishop(board, 7, 5, True)
+    bishop_bw = Bishop(board, 7, 5, True)
     knight_b2 = Knight(board, 7, 6, True)
     rook_b2 = Rook(board, 7, 7, True)
 
