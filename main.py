@@ -91,13 +91,17 @@ while not quit:
     
     screen_blit_initialized_board()
     pygame.display.update()
-    
-    for event in pygame.event.get():
-        
-        if event.type == pygame.QUIT:
-            quit = True
-        
-        if event.type == pygame.MOUSEBUTTONUP:
-            pygame.display.update()
+    game_end = False
+
+    while not game_end:
+
+        for event in pygame.event.get():
+            
+            if event.type == pygame.QUIT:
+                game_end = True
+                quit = True
+            
+            if event.type == pygame.MOUSEBUTTONUP:
+                pygame.display.update()
 
 pygame.quit()
