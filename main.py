@@ -42,7 +42,8 @@ screen = pygame.display.set_mode((800,800))
 pygame.display.set_caption("와! 체스!") # 창 제목
 quit = False
 
-def do_init(): #판에 말 세팅해놓는 함수
+# 보드 초기화 함수
+def do_init(): # 판에 말 세팅해놓는 함수
     
     rook_w1 = Rook(board, 0, 0, False)
     knight_w1 = Knight(board, 0, 1, False) # (1,0) 좌표에 백색 나이트 생성
@@ -116,12 +117,11 @@ while not quit:
     # 게임 초기화
     board = Board(False) # 보드 초기화
     do_init()
-    # print(board.board)
 
     screen_blit_initialized_board() # 보드 그래픽 초기화
     pygame.display.update()
-    # print(board.board)
 
+    # print(board.board) # 보드 상태 출력
     game_end = False
 
     # 게임 시작
@@ -129,11 +129,11 @@ while not quit:
 
         for event in pygame.event.get():
             
-            if event.type == pygame.QUIT:
+            if event.type == pygame.QUIT: # X 버튼
                 game_end = True
                 quit = True
             
-            if event.type == pygame.MOUSEBUTTONUP:
+            if event.type == pygame.MOUSEBUTTONUP: # 마우스를 눌렀다 떼는 순간
 
                 # pawn1.move(board, 1)
                 # pawn2.move(board, 1)
