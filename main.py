@@ -15,7 +15,7 @@ pawn2.move(board, 1)
 
 pygame.init()
 
-def init_board_img(): # 보드를 초기화한 상태의 이미지를 띄우는 함수
+def screen_blit_initialized_board(): # 보드를 초기화한 상태의 이미지를 띄우는 함수
     
     # 보드
     screen.blit(img_board,(0,0)) 
@@ -87,7 +87,7 @@ quit = False
 
 while not quit:
     
-    init_board_img()
+    screen_blit_initialized_board()
     pygame.display.update()
     
     for event in pygame.event.get():
