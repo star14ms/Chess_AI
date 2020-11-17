@@ -1,50 +1,7 @@
 from main_module import *
 import pygame
 
-board = Board(False)
-
-def do_init(): #판에 말 세팅해놓는 함수
-    pass
-
-pawn1 = Pawn(board, 0, 0, False) #(0,0)좌표에 백색 폰 생성
-pawn2 = Pawn(board, 1, 1, True) #(0,0)좌표에 흑색 폰 생성
-pawn1.move(board, 1)
-pawn2.move(board, 1)
-
-
-
 pygame.init()
-
-def screen_blit_initialized_board(): # 보드를 초기화한 상태의 이미지를 띄우는 함수
-    
-    # 보드
-    screen.blit(img_board,(0,0)) 
-
-    # 흑의 말들
-    screen.blit(img_rook_w,(0,0)) 
-    screen.blit(img_knight_w,(100,0))
-    screen.blit(img_bishop_w,(200,0))
-    screen.blit(img_king_w,(300,0))
-    screen.blit(img_queen_w,(400,0))
-    screen.blit(img_bishop_w,(500,0))
-    screen.blit(img_knight_w,(600,0))
-    screen.blit(img_rook_w,(700,0))
-
-    for x in range(0, 1000, 100):
-        screen.blit(img_pawn_w,(x,100))
-
-    # 백의 말들
-    screen.blit(img_rook_b,(0,700)) 
-    screen.blit(img_knight_b,(100,700))
-    screen.blit(img_bishop_b,(200,700))
-    screen.blit(img_king_b,(300,700))
-    screen.blit(img_queen_b,(400,700))
-    screen.blit(img_bishop_b,(500,700))
-    screen.blit(img_knight_b,(600,700))
-    screen.blit(img_rook_b,(700,700))
-
-    for x in range(0, 1000, 100):
-        screen.blit(img_pawn_b,(x,600))
 
 # 보드, 체스말 이미지 가져오기
 img_board = pygame.image.load("img\chess_board.png")
@@ -80,10 +37,55 @@ img_pawn_b = pygame.transform.scale(img_pawn_b,(100,100))
 img_pawn_w = pygame.image.load("img\pawn_w.png")
 img_pawn_w = pygame.transform.scale(img_pawn_w,(100,100))
 
-# 게임 창
+
+
+board = Board(False)
+
+def do_init(): #판에 말 세팅해놓는 함수
+    pass
+
+pawn1 = Pawn(board, 0, 0, False) #(0,0)좌표에 백색 폰 생성
+pawn2 = Pawn(board, 1, 1, True) #(0,0)좌표에 흑색 폰 생성
+pawn1.move(board, 1)
+pawn2.move(board, 1)
+
+
+
+# 게임 창 띄우기
 screen = pygame.display.set_mode((800,800))
-pygame.display.set_caption("와! 체스!")
+pygame.display.set_caption("와! 체스!") # 창 제목
 quit = False
+
+def screen_blit_initialized_board(): # 보드를 초기화한 상태의 이미지를 띄우는 함수
+    
+    # 보드
+    screen.blit(img_board,(0,0)) 
+
+    # 흑의 말들
+    screen.blit(img_rook_w,(0,0)) 
+    screen.blit(img_knight_w,(100,0))
+    screen.blit(img_bishop_w,(200,0))
+    screen.blit(img_king_w,(300,0))
+    screen.blit(img_queen_w,(400,0))
+    screen.blit(img_bishop_w,(500,0))
+    screen.blit(img_knight_w,(600,0))
+    screen.blit(img_rook_w,(700,0))
+
+    for x in range(0, 1000, 100):
+        screen.blit(img_pawn_w,(x,100))
+
+    # 백의 말들
+    screen.blit(img_rook_b,(0,700)) 
+    screen.blit(img_knight_b,(100,700))
+    screen.blit(img_bishop_b,(200,700))
+    screen.blit(img_king_b,(300,700))
+    screen.blit(img_queen_b,(400,700))
+    screen.blit(img_bishop_b,(500,700))
+    screen.blit(img_knight_b,(600,700))
+    screen.blit(img_rook_b,(700,700))
+
+    for x in range(0, 1000, 100):
+        screen.blit(img_pawn_b,(x,600))
 
 while not quit:
     
