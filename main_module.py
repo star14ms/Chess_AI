@@ -90,7 +90,7 @@ class Bishop(Horse):#비숍
 
 
 
-   class Rook(Horse):#룩
+class Rook(Horse):#룩
     def __init__(self, board, x, y, c):
         self.p_x = x
         self.p_y = y
