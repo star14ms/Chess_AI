@@ -184,7 +184,7 @@ class Knight(Horse):#나이트
           board.move(self.p_x, self.p_y, x2, y2)
         
     
-class King(Horse):#킹
+class Queen(Horse):#퀸
     def __init__(self, board, x, y, c):
         self.p_x = x
         self.p_y = y
@@ -207,7 +207,7 @@ class King(Horse):#킹
             board.move(self.p_x, self.p_y, x2, y2)
 
     
-class Queen(Horse):#퀸
+class King(Horse):#킹
     def __init__(self, board, x, y, c):
         self.p_x = x
         self.p_y = y
