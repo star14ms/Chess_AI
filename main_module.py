@@ -69,7 +69,6 @@ class Bishop(Horse):#비숍
         self.p_x = x
         self.p_y = y
         self.color = c
-        self.first_turn = True
         board.insert(x, y, self)
 
     def move(self, board, amount, lr, ud): #amount : 움직이는 양, lr : 좌우, ud : 위아래(오른쪽, 위쪽을 향하면 1, 아니면 -1)
@@ -79,7 +78,7 @@ class Bishop(Horse):#비숍
         for i in range(1, amount+1):#비숍이 이동하는 좌표 사이에 말이 있으면 그 좌표로 갈 수 없다.
             x3 = self.p_x + i*lr
             y3 = self.p_y + i*ud
-            if (0 >= x3 >= 7) and (0 >= y3 >= 7):
+            if (0 <= x3 <= 7) and (0 <= y3 <= 7):
                 if (pos(x3, y3) != 0): return False
             else: break
             
@@ -91,18 +90,135 @@ class Bishop(Horse):#비숍
 
 
 
-class Rook(Horse):#룩
-    def __init__(self):
-        pass
+   class Rook(Horse):#룩
+    def __init__(self, board, x, y, c):
+        self.p_x = x
+        self.p_y = y
+        self.color = c
+        board.insert(x, y, self)
+
+    def move(self, board, amount, direction): #amount : 움직이는 양, direction : 방향(오른쪽 0, 왼쪽 1, 위 2, 아래 3)
+      x2 = p_x
+      y2 = p_y
+      if direction == 0 : #오른쪽으로 이동할 경우
+        for i in range(1, amount):  # 한칸씩 다른 물체가 있는 지 확인
+          x2 = x2+i
+          if pos(x2,y2) != 0 or x2>=8 or x2<0: # 룩이 이동 범위가 좌표를 벗어나거나 이동하는 좌표 사이에 말이 있으면 갈 수 없다.
+            x2 = x2-i
+            return False
+          else: break
+          
+      elif direction == 1 : #왼쪽으로 이동할 경우
+        for i in range(1, amount):
+          x2 = x2-i
+          if pos(x2,y2) != 0 or x2>=8 or x2<0:
+            x2 = x2+i
+            return False
+          else: break
+
+      elif direction == 2 : #위쪽으로 이동할 경우
+        for i in range(1, amount):
+          y2 = y2+i
+          if pos(x2,y2) != 0 or y2>=8 or y2<0:
+            y2 = y2-i
+            return False
+          else: break
+      
+      elif direction == 3 : #아래쪽으로 이동할 경우
+        for i in range(1, amount):
+          y2 = y2-i
+          if pos(x2,y2) != 0 or y2>=8 or y2<0:
+            y2 = y2+i
+            return False
+          else: break
+
+      if board.kiilable(self.p_x, self.p_y, x2, y2) :
+          board.move(self.p_x, self.p_y, x2, y2)
+      else:
+        board.move(self.p_x, self.p_y, x2, y2)
+
+      
     
 class Knight(Horse):#나이트
-    def __init__(self):
-        pass
+    def __init__(self, board, x, y, c):
+        self.p_x = x
+        self.p_y = y
+        self.color = c
+        board.insert(x, y, self)
+    
+    def move(self, board, fir_dir, sec_dir): #fir_dir : 먼저 2칸을 이동할 방향, sec_dir : 2칸 이동후 대각선으로 이동할 방향
+        if fir_dir == 0:
+          if sec_dir == 2:
+            x2 = self.p_x + 2
+            y2 = self.p_y + 1
+          else :
+            x2 = self.p_x + 2
+            y2 = self.p_y - 1
+        elif fir_dir == 1:
+            if sec_dir == 2:
+              x2 = self.p_x - 2
+              y2 = self.p_y + 1
+            else :
+              x2 = self.p_x - 2
+              y2 = self.p_y - 1
+        
+        elif fir_dir == 2:
+            if sec_dir == 0:
+              x2 = self.p_x + 1
+              y2 = self.p_y + 2
+            else :
+              x2 = self.p_x - 1
+              y2 = self.p_y + 2
+        
+        elif fir_dir == 3:
+            if sec_dir == 0:
+              x2 = self.p_x - 1
+              y2 = self.p_y + 2
+            else :
+              x2 = self.p_x + 1
+              y2 = self.p_y + 2
+
+        if board.killable(self.p_x, self.p_y, x2, y2):
+          board.move(self.p_x, self.p_y, x2, y2)
+        else :
+          board.move(self.p_x, self.p_y, x2, y2)
+        
     
 class King(Horse):#킹
-    def __init__(self):
-        pass
+    def __init__(self, board, x, y, c):
+        self.p_x = x
+        self.p_y = y
+        self.color = c
+        board.insert(x, y, self)
+
+    def move(self, board, amount, lr, ud): #amount : 움직이는 양, lr : 좌우(좌 : -1, 우 : +1), ud : 위아래(아래 : -1, 위 : +1)
+        x2 = self.p_x + amount * lr
+        y2 = self.p_y + amount * ud
+        for i in range(1, amount+1):#킹이 이동하는 좌표 사이에 말이 있으면 그 좌표로 갈 수 없다.
+            x3 = self.p_x + i*lr
+            y3 = self.p_y + i*ud
+            if (0 <= x3 <= 7) and (0 <= y3 <= 7):
+                if (pos(x3, y3) != 0): return False
+            else: break
+
+        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+            board.move(self.p_x, self.p_y, x2, y2)
+        else:
+            board.move(self.p_x, self.p_y, x2, y2)
+
     
 class Queen(Horse):#퀸
-    def __init__(self):
-        pass
+    def __init__(self, board, x, y, c):
+        self.p_x = x
+        self.p_y = y
+        self.color = c
+        board.insert(x, y, self)
+
+    def move(self, board, lr, ud): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2
+      x2 = self.p_x + lr
+      y2 = self.p_x + ud
+      if lr == ud == 0 : return False
+      if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+            board.move(self.p_x, self.p_y, x2, y2)
+      else:
+            board.move(self.p_x, self.p_y, x2, y2)
