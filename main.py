@@ -83,8 +83,9 @@ num_tile = [a8_tile, a7_tile, a6_tile, a5_tile, a4_tile, a3_tile, a2_tile, a1_ti
 img_selected = pygame.image.load("img\selected.png")
 img_selected = pygame.transform.scale(img_selected,(100,102))
 
-# 대전 BGM
+# BGM, sound
 pygame.mixer.music.load("bgm\Gyakuten_Kenji_2_Showdown_Suite.wav")
+sound1 = pygame.mixer.Sound("sound\바둑알 놓기.wav")
 
 ################################################################
 
@@ -443,14 +444,15 @@ while not quit:
                     screen_blit_selected_tile()
                     
                     # move 함수 발동!
-                    # pawn1.move(board, 1)
-                    # pawn2.move(board, 1)
+                    # selected_piece.move(board, x, y)
 
                     # 갈 수 있는 곳을 선택할 경우
                     if selected_piece_xy != selected_board_xy: # and move() != False
 
+                        pygame.mixer.Sound.play(sound1)
                         print_selected_board_xy()
                         screen_blit_selected_piece(selected_board_win_xy)
+                        whose_turn *= -1
 
                     # 갈 수 없는 곳이나, 선택 했던 곳을 또 선택할 경우 선택 취소
                     else:
