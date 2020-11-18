@@ -41,26 +41,47 @@ class Pawn(Horse):#폰
         self.color = c
         self.first_turn = True
         board.insert(x, y, self)
+        self.promotionable = False
         
-    def move(self, board, amount):#amount : 움직이는 양(최대 : 2) - 첫 턴에만 사용됨
+    def move(self, board, amount, *args):#amount : 움직이는 양(최대 : 2) - 첫 턴에만 사용됨 / *args 상대를 잡을 때 대각선 방향
         if (board.front == self.color):
 
-            if self.first_turn == True:#첫턴시 두 칸 이동
+            if args != (): # 말을 잡는 여부
+                if args[0] == "lu" and board.killable(self.p_x, self.p_y, self.p_x-1, self.p_y+1): 
+                    x2, y2 = self.p_x-1, self.p_y+1
+                elif args[0] == "ru" and board.killable(self.p_x, self.p_y, self.p_x+1, self.p_y+1):
+                    x2, y2 = self.p_x-1, self.p_y+1
+                else:
+                    return False
+
+            elif self.first_turn == True:#첫턴시 두 칸 이동
                 y2 = self.p_y + amount
                 self.first_turn == False
-                
+                    
             else:
                 y2 = self.p_y + 1
+
         else:
-            if self.first_turn == True:#첫턴시 두 칸 이동
+            if args != ():
+                if args[0] == "ld" and board.killable(self.p_x, self.p_y, self.p_x-1, self.p_y-1): 
+                    x2, y2 = self.p_x-1, self.p_y-1
+                elif args[0] == "rd" and board.killable(self.p_x, self.p_y, self.p_x+1, self.p_y-1):
+                    x2, y2 = self.p_x-1, self.p_y-1
+                else:
+                    return False
+
+            elif self.first_turn == True:
                 y2 = self.p_y - amount
                 self.first_turn == False
                 
             else:
                 y2 = self.p_y - 1
+
+        if (self.p_y == 7): # 승진(promotion) 가능 여부 체크
+            promotionable = True
             
-        if board.killable(self.p_x, self.p_y, self.p_x, y2) :#인공지능 활용을 위해 남겨둠
-            board.move(self.p_x, self.p_y, self.p_x, y2)
+        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+            board.move(self.p_x, self.p_y, x2, y2)
         else:
             board.move(self.p_x, self.p_y, self.p_x, y2)
 
@@ -87,8 +108,6 @@ class Bishop(Horse):#비숍
             board.move(self.p_x, self.p_y, x2, y2)
         else:
             board.move(self.p_x, self.p_y, x2, y2)
-
-
 
 class Rook(Horse):#룩
     def __init__(self, board, x, y, c):
@@ -137,8 +156,6 @@ class Rook(Horse):#룩
       else:
         board.move(self.p_x, self.p_y, x2, y2)
 
-      
-    
 class Knight(Horse):#나이트
     def __init__(self, board, x, y, c):
         self.p_x = x
@@ -183,7 +200,6 @@ class Knight(Horse):#나이트
         else :
           board.move(self.p_x, self.p_y, x2, y2)
         
-    
 class Queen(Horse):#퀸
     def __init__(self, board, x, y, c):
         self.p_x = x
@@ -206,7 +222,6 @@ class Queen(Horse):#퀸
         else:
             board.move(self.p_x, self.p_y, x2, y2)
 
-    
 class King(Horse):#킹
     def __init__(self, board, x, y, c):
         self.p_x = x
@@ -214,11 +229,16 @@ class King(Horse):#킹
         self.color = c
         board.insert(x, y, self)
 
-    def move(self, board, lr, ud): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2
-      x2 = self.p_x + lr
-      y2 = self.p_x + ud
-      if lr == ud == 0 : return False
-      if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+    def move(self, board, lr, ud, *args): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2 / *args: 캐슬링 여부
+        x2 = self.p_x + lr
+        y2 = self.p_x + ud
+        if lr == ud == 0 : return False
+
+        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
             board.move(self.p_x, self.p_y, x2, y2)
-      else:
+        else:
             board.move(self.p_x, self.p_y, x2, y2)
+
+# board = Board(True)
+# king = King(board, 1, 1, True)
+# king.move(board, 0, 0, "O-O") # O-O: 킹 사이드 캐슬링, O-O-O: 퀸 사이드 캐슬링 기보 표기
