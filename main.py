@@ -17,14 +17,14 @@ img_queen_b = pygame.transform.scale(img_queen_b,(100,100))
 img_queen_w = pygame.image.load("img\queen_w.png")
 img_queen_w = pygame.transform.scale(img_queen_w,(100,100))
 
-img_rook_b = pygame.image.load("img\Rook_b.png")
+img_rook_b = pygame.image.load("img\\rook_b.png")
 img_rook_b = pygame.transform.scale(img_rook_b,(100,100))
-img_rook_w = pygame.image.load("img\Rook_w.png")
+img_rook_w = pygame.image.load("img\\rook_w.png")
 img_rook_w = pygame.transform.scale(img_rook_w,(100,100))
 
-img_bishop_b = pygame.image.load("img\Bishop_b.png")
+img_bishop_b = pygame.image.load("img\\bishop_b.png")
 img_bishop_b = pygame.transform.scale(img_bishop_b,(100,100))
-img_bishop_w = pygame.image.load("img\Bishop_w.png")
+img_bishop_w = pygame.image.load("img\\bishop_w.png")
 img_bishop_w = pygame.transform.scale(img_bishop_w,(100,100))
 
 img_knight_b = pygame.image.load("img\knight_b.png")
