@@ -93,7 +93,8 @@ img_selected = pygame.transform.scale(img_selected,(102,102))
 
 # BGM, sound
 pygame.mixer.music.load("bgm\Gyakuten_Kenji_2_Showdown_Suite.wav")
-sound1 = pygame.mixer.Sound("sound\바둑알 놓기.wav")
+sound_place = pygame.mixer.Sound("sound\체스말_놓기.wav")
+sound_promotion = pygame.mixer.Sound("sound\승진.wav")
 
 ################################################################
 
@@ -487,7 +488,7 @@ while not quit:
 
     # 게임 시작
     while not game_end:
-
+    
         for event in pygame.event.get():
             
             if event.type == pygame.QUIT: # X 버튼
@@ -501,15 +502,18 @@ while not quit:
 
                     # 승진할 기물을 클릭하면 승진시키고 턴 전환
                     if promote(whose_turn, to_move_xy, to_move_win_xy) == "Completed":
+
                         selected_xy = []
                         selected_chessboard_xy = []
                         selected_win_xy = []
                         to_move_xy = []
                         to_move_chessboard_xy = []
                         to_move_win_xy = []
+
+                        pygame.mixer.Sound.play(sound_promotion)
                         promotionable = False
                         whose_turn *= -1
-
+                        
                 # 기물 선택 단계
                 elif selected_xy == []:
                     
@@ -545,7 +549,7 @@ while not quit:
                     # 갈 수 있는 곳을 선택할 경우
                     if selected_xy != to_move_xy: # and move() != False
 
-                        pygame.mixer.Sound.play(sound1)
+                        pygame.mixer.Sound.play(sound_place)
                         print_xy_to_move(to_move_xy, to_move_chessboard_xy)
                         
                         # 폰이 승진할 수 있다면 
