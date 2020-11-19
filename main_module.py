@@ -4,6 +4,7 @@ class Board:
     def __init__(self, f):
         self.front = f #플레이어가 플레이 할 색깔. False면 흰색 폰을 움직였을 때 +방향으로 나아가고 흑색 폰을 움직이면 -방향으로 나아간다.
         self.board = zeros((8,8), dtype=Empty)#int로 하면 나중에 클래스 insert할 때 오류남
+        self.history = []#기보 기록
         
     def delete(self, x, y):#x,y 좌표의 말 삭제
         self.board[x][y] = 0
@@ -17,6 +18,7 @@ class Board:
     def move(self, x1, y1, x2, y2):#(x1, y1) -> (x2, y2)로 말의 이동. 색깔 상관없이 기존 (x2, y2)의 말을 지워버리니 주의할 것
         self.insert(x2, y2, self.pos(x1, y1))
         self.delete(x1, y1)
+        self.history.append(self.pos(x1,y1))#(x1,y1)좌표의 말을 기보에 기록한다.
 
     def killable(self, x1, y1, x2, y2):#(x2,y2)에 말이 있고 색깔이 다르면 True, 아니면 False 출력
         if self.pos(x2,y2) != 0 and self.pos(x1,y1).color != self.pos(x2, y2).color : return True
@@ -25,9 +27,6 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
     p_x = 0
     p_y = 0
     color = 0 #False -> 백, True -> 흑
-
-class History:#기보 기록
-    pass
 
 class Empty:
     def __repr__(self): #해당 클래스 호출 시 출력하는 것
