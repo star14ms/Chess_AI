@@ -7,13 +7,13 @@ class Board:
         self.history = []#기보 기록
         
     def delete(self, x, y):#x,y 좌표의 말 삭제
-        self.board[x][y] = 0
+        self.board[y][x] = 0
 
     def pos(self, x, y):#x, y좌표의 말 클래스 출력
-        return self.board[x][y]
+        return self.board[y][x]
 
     def insert(self, x, y, horse):#x, y좌표의 말 입력
-        self.board[x][y] = horse
+        self.board[y][x] = horse
         
     def move(self, x1, y1, x2, y2):#(x1, y1) -> (x2, y2)로 말의 이동. 색깔 상관없이 기존 (x2, y2)의 말을 지워버리니 주의할 것
         self.insert(x2, y2, self.pos(x1, y1))
@@ -26,7 +26,7 @@ class Board:
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
     p_x = 0
     p_y = 0
-    color = 0 #False -> 백, True -> 흑
+    color = None # -1 -> 백, 1 -> 흑
 
 class Empty:
     def __repr__(self): #해당 클래스 호출 시 출력하는 것
@@ -91,8 +91,6 @@ class Bishop(Horse):#비숍
         board.insert(x, y, self)
 
     def move(self, board, x2, y2):
-
-
 
         if board.killable(self.p_x, self.p_y, x2, y2):#인공지능 활용을 위해 남겨둠
             board.move(self.p_x, self.p_y, x2, y2)
@@ -222,17 +220,33 @@ class King(Horse):#킹
         self.p_y = y
         self.color = c
         board.insert(x, y, self)
+        self.moved = False # 캐슬링 조건 : 킹이 움직인 적이 없어야함
 
-    def move(self, board, lr, ud, *args): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2 / *args: 캐슬링 여부
-        x2 = self.p_x + lr
-        y2 = self.p_x + ud
-        if lr == ud == 0 : return False
-
+    def move(self, board, whose_turn, x2, y2): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2
+        
+        # 기본 행마
+        if (((x2 - self.p_x == -1) or (x2 - self.p_x == +1)) and (-1 <= y2-self.p_y <= 1)) or (
+            ((y2 - self.p_y == -1) or (y2 - self.p_y == +1)) and (-1 <= x2-self.p_x <= 1)):
+            if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == whose_turn): # 같은 색 기물이 있는 곳이면, 이동 실패
+                return False
+        # 캐슬링
+        elif (not self.moved):
+            if (x2 - self.p_x == -2) and (board.pos(self.p_x-1, self.p_y) == 0) and (board.pos(self.p_x-2, self.p_y) == 0) and (board.pos(self.p_x-3, self.p_y) == 0):
+                board.move(0, 7, 3, 7) # 룩도 이동
+            elif (x2 - self.p_x == +2) and (board.pos(self.p_x+1, self.p_y) == 0) and (board.pos(self.p_x+2, self.p_y) == 0):
+                board.move(7, 7, 5, 7)
+            else:
+                return False
+        else:
+            return False
+        
         if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
             board.move(self.p_x, self.p_y, x2, y2)
         else:
             board.move(self.p_x, self.p_y, x2, y2)
 
-# board = Board(True)
-# king = King(board, 1, 1, True)
-# king.move(board, 0, 0, "O-O") # O-O: 킹 사이드 캐슬링, O-O-O: 퀸 사이드 캐슬링 기보 표기
+# board = Board(-1)
+# rook = Rook(board, 7, 7, -1)
+# king = King(board, 4, 7, -1)
+# king.move(board, 6, 7) # O-O: 킹 사이드 캐슬링, O-O-O: 퀸 사이드 캐슬링 (기보 표기)
+# print(board.board)

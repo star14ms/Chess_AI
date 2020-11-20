@@ -102,39 +102,39 @@ sound_promotion = pygame.mixer.Sound("sound\승진.wav")
 def do_init(): # 판에 말을 세팅해놓는다
     
     rook_b1 = Rook(board, 0, 0, 1)
-    knight_b1 = Knight(board, 0, 1, 1) #(1,0)좌표에 흑색 나이트 생성
-    bishop_bb = Bishop(board, 0, 2, 1)
-    queen_b = Queen(board, 0, 3, 1)
-    king_b = King(board, 0, 4, 1)
-    bishop_bw = Bishop(board, 0, 5, 1)
-    knight_b2 = Knight(board, 0, 6, 1)
-    rook_b2 = Rook(board, 0, 7, 1)
+    knight_b1 = Knight(board, 1, 0, 1) #(1,0)좌표에 흑색 나이트 생성
+    bishop_bb = Bishop(board, 2, 0, 1)
+    queen_b = Queen(board, 3, 0, 1)
+    king_b = King(board, 4, 0, 1)
+    bishop_bw = Bishop(board, 5, 0, 1)
+    knight_b2 = Knight(board, 6, 0, 1)
+    rook_b2 = Rook(board, 7, 0, 1)
 
-    pawn_b1 = Pawn(board, 1, 0, 1) #(0,1)좌표에 흑색 폰 생성
+    pawn_b1 = Pawn(board, 0, 1, 1) #(0,1)좌표에 흑색 폰 생성
     pawn_b2 = Pawn(board, 1, 1, 1)
-    pawn_b3 = Pawn(board, 1, 2, 1)
-    pawn_b4 = Pawn(board, 1, 3, 1)
-    pawn_b5 = Pawn(board, 1, 4, 1)
-    pawn_b6 = Pawn(board, 1, 5, 1)
-    pawn_b7 = Pawn(board, 1, 6, 1)
-    pawn_b8 = Pawn(board, 1, 7, 1)
+    pawn_b3 = Pawn(board, 2, 1, 1)
+    pawn_b4 = Pawn(board, 3, 1, 1)
+    pawn_b5 = Pawn(board, 4, 1, 1)
+    pawn_b6 = Pawn(board, 5, 1, 1)
+    pawn_b7 = Pawn(board, 6, 1, 1)
+    pawn_b8 = Pawn(board, 7, 1, 1)
 
-    pawn_w1 = Pawn(board, 6, 0, -1) 
-    pawn_w2 = Pawn(board, 6, 1, -1)
-    pawn_w3 = Pawn(board, 6, 2, -1)
-    pawn_w4 = Pawn(board, 6, 3, -1)
-    pawn_w5 = Pawn(board, 6, 4, -1)
-    pawn_w6 = Pawn(board, 6, 5, -1)
+    pawn_w1 = Pawn(board, 0, 6, -1) 
+    pawn_w2 = Pawn(board, 1, 6, -1)
+    pawn_w3 = Pawn(board, 2, 6, -1)
+    pawn_w4 = Pawn(board, 3, 6, -1)
+    pawn_w5 = Pawn(board, 4, 6, -1)
+    pawn_w6 = Pawn(board, 5, 6, -1)
     pawn_w7 = Pawn(board, 6, 6, -1)
-    pawn_w8 = Pawn(board, 6, 7, -1)
+    pawn_w8 = Pawn(board, 7, 6, -1)
     
-    rook_w1 = Rook(board, 7, 0, -1)
-    knight_w1 = Knight(board, 7, 1, -1) # (1,7) 좌표에 백색 나이트 생성
-    bishop_ww = Bishop(board, 7, 2, -1)
-    queen_w = Queen(board, 7, 3, -1)
-    king_w = King(board, 7, 4, -1)
-    bishop_wb = Bishop(board, 7, 5, -1)
-    knight_w2 = Knight(board, 7, 6, -1)
+    rook_w1 = Rook(board, 0, 7, -1)
+    # knight_w1 = Knight(board, 1, 7, -1) # (1,7) 좌표에 백색 나이트 생성
+    # bishop_ww = Bishop(board, 2, 7, -1)
+    # queen_w = Queen(board, 3, 7, -1)
+    king_w = King(board, 4, 7, -1)
+    bishop_wb = Bishop(board, 5, 7, -1)
+    knight_w2 = Knight(board, 6, 7, -1)
     rook_w2 = Rook(board, 7, 7, -1)
 
 def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운다
@@ -157,9 +157,9 @@ def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운�
 
     # 백의 말들
     screen.blit(img_rook_w,(0,700)) 
-    screen.blit(img_knight_w,(100,700))
-    screen.blit(img_bishop_w,(200,700))
-    screen.blit(img_queen_w,(300,700))
+    # screen.blit(img_knight_w,(100,700))
+    # screen.blit(img_bishop_w,(200,700))
+    # screen.blit(img_queen_w,(300,700))
     screen.blit(img_king_w,(400,700))
     screen.blit(img_bishop_w,(500,700))
     screen.blit(img_knight_w,(600,700))
@@ -464,14 +464,14 @@ quit = False
 while not quit:
 
     # 보드 초기화
-    board = Board(-1) 
+    board = Board(-1) # -1 : 보드 앞쪽이 흰색 진영
     do_init()
     
     # 보드 그래픽 초기화
     screen_blit_initialized_board()
     pygame.display.update()
 
-    # print(board.board) # 보드 상태 출력
+    print(board.board) # 보드 상태 출력
     pygame.mixer.music.play(-1) # -1 : BGM 반복 재생
     whose_turn = -1 # -1: 백, 1: 흑 (백 선)
 
@@ -495,7 +495,12 @@ while not quit:
                 game_end = True
                 quit = True
             
-            if event.type == pygame.MOUSEBUTTONUP: # 마우스를 눌렀다 떼는 순간
+            elif event.type == pygame.KEYDOWN:
+                
+                if event.key == pygame.K_F5: # F5 버튼
+                    game_end = True
+                
+            elif event.type == pygame.MOUSEBUTTONUP: # 마우스를 눌렀다 떼는 순간
                 
                 # 폰 승진 단계
                 if promotionable:
@@ -525,7 +530,7 @@ while not quit:
                     selected_piece = board.board[selected_xy[1], selected_xy[0]] # board.board는 x, y를 뒤집어 인식함
                     
                     # 자신의 말을 선택했을 때 기물 움직이기 단계로 이동
-                    if selected_piece != 0 and selected_piece.color == whose_turn:
+                    if (selected_piece != 0) and (selected_piece.color == whose_turn):
                         print(type(selected_piece))
                         screen.blit(img_selected,(selected_win_xy[0], selected_win_xy[1]))
                         screen_blit_selected_piece(selected_win_xy)
@@ -541,13 +546,15 @@ while not quit:
                     
                     # 클릭한 위치의 좌표 저장
                     save_xy_to_move()
+                    
+                    # 현재 타일 비우기
                     screen_blit_empty_tile(selected_xy, selected_win_xy)
                     
                     # move 함수 발동!
-                    # selected_piece.move(board, x, y)
+                    moved = selected_piece.move(board, whose_turn, to_move_xy[0], to_move_xy[1])
 
                     # 갈 수 있는 곳을 선택할 경우
-                    if selected_xy != to_move_xy: # and move() != False
+                    if (selected_xy != to_move_xy) and (moved != False):
 
                         pygame.mixer.Sound.play(sound_place)
                         print_xy_to_move(to_move_xy, to_move_chessboard_xy)
@@ -571,7 +578,11 @@ while not quit:
                     # 갈 수 없는 곳이나, 선택 했던 곳을 또 선택할 경우 선택 취소
                     else:
                         screen_blit_selected_piece(selected_win_xy)
-                        print("\nUnselect")
+
+                        if (selected_xy == to_move_xy):
+                            print("\nUnselect")
+                        else:
+                            print("\nTry again")
                     
                     # 턴 전환 혹은 선택 취소
                     if not promotionable:
@@ -582,6 +593,7 @@ while not quit:
                         to_move_chessboard_xy = []
                         to_move_win_xy = []
                 
+                print(board.board)
                 pygame.display.update()
 
 pygame.quit()
