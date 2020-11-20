@@ -21,12 +21,26 @@ class Board:
         self.history.append(self.pos(x1,y1))#(x1,y1)좌표의 말을 기보에 기록한다.
 
     def killable(self, x1, y1, x2, y2):#(x2,y2)에 말이 있고 색깔이 다르면 True, 아니면 False 출력
-        if self.pos(x2,y2) != 0 and self.pos(x1,y1).color != self.pos(x2, y2).color : return True
+        if (self.pos(x2,y2) != 0) and (self.pos(x1,y1).color != self.pos(x2, y2).color) : return True
         
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
     p_x = 0
     p_y = 0
     color = None # -1 -> 백, 1 -> 흑
+
+    def move(self, board, x2, y2):
+        if not self.moveable(board, x2, y2) : return False
+
+        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+            board.move(self.p_x, self.p_y, x2, y2)
+            self.p_x = x2
+            self.p_y = y2
+        else:
+            board.move(self.p_x, self.p_y, self.p_x, y2)
+            self.p_x = x2
+            self.p_y = y2
+        return True
+
 
 class Empty:
     def __repr__(self): #해당 클래스 호출 시 출력하는 것
@@ -41,7 +55,7 @@ class Pawn(Horse):#폰
         board.insert(x, y, self)
         self.promotionable = False
         
-    def move(self, board, x2, y2):
+    def moveable(self, board, x2, y2):
         enp = False
         if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False#좌표값 체크
          #(x2,y2-1)좌표의 말의 색이 다르고, 폰이면 앙파상 가능
@@ -64,10 +78,10 @@ class Pawn(Horse):#폰
                 if ((self.p_x == x2) and self.p_y == y2+1): pass
                 elif enp == True : pass
                 else : return False
-
-        if (y2 == 7): # 승진(promotion) 가능 여부 체크
-            self.promotionable = True
         
+    def move(self, board, x2, y2):
+        if not self.moveable(board, x2, y2) : return False
+
         if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
@@ -90,16 +104,8 @@ class Bishop(Horse):#비숍
         self.color = c
         board.insert(x, y, self)
 
-    def move(self, board, x2, y2):
-
-        if board.killable(self.p_x, self.p_y, x2, y2):#인공지능 활용을 위해 남겨둠
-            board.move(self.p_x, self.p_y, x2, y2)
-            self.p_x = x2
-            self.p_y = y2
-        else:
-            board.move(self.p_x, self.p_y, x2, y2)
-            self.p_x = x2
-            self.p_y = y2
+    def moveable(self, board, x2, y2):
+        pass
 
 class Rook(Horse):#룩
     def __init__(self, board, x, y, c):
