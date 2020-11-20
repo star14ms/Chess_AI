@@ -247,19 +247,26 @@ class King(Horse):#킹
         board.insert(x, y, self)
         self.moved = False # 캐슬링 조건 : 킹이 움직인 적이 없어야함
 
-    def move(self, board, whose_turn, x2, y2): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2
+    def move(self, board, x2, y2): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2
         
         # 기본 행마
         if (((x2 - self.p_x == -1) or (x2 - self.p_x == +1)) and (-1 <= y2-self.p_y <= 1)) or (
             ((y2 - self.p_y == -1) or (y2 - self.p_y == +1)) and (-1 <= x2-self.p_x <= 1)):
-            if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == whose_turn): # 같은 색 기물이 있는 곳이면, 이동 실패
+            if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color): # 같은 색 기물이 있는 곳이면, 이동 실패
                 return False
+                
         # 캐슬링
         elif (not self.moved):
             if (x2 - self.p_x == -2) and (board.pos(self.p_x-1, self.p_y) == 0) and (board.pos(self.p_x-2, self.p_y) == 0) and (board.pos(self.p_x-3, self.p_y) == 0):
-                board.move(0, 7, 3, 7) # 룩도 이동
+                if self.color == -1:
+                    board.move(0, 7, 3, 7) # 룩도 이동
+                else:
+                    board.move(0, 0, 3, 0)
             elif (x2 - self.p_x == +2) and (board.pos(self.p_x+1, self.p_y) == 0) and (board.pos(self.p_x+2, self.p_y) == 0):
-                board.move(7, 7, 5, 7)
+                if self.color == -1: 
+                    board.move(7, 7, 5, 7)
+                else:
+                    board.move(7, 0, 5, 0)
             else:
                 return False
         else:

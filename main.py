@@ -102,12 +102,12 @@ sound_promotion = pygame.mixer.Sound("sound\승진.wav")
 def do_init(): # 판에 말을 세팅해놓는다
     
     rook_b1 = Rook(board, 0, 0, 1)
-    knight_b1 = Knight(board, 1, 0, 1) #(1,0)좌표에 흑색 나이트 생성
-    bishop_bb = Bishop(board, 2, 0, 1)
-    queen_b = Queen(board, 3, 0, 1)
+    # knight_b1 = Knight(board, 1, 0, 1) #(1,0)좌표에 흑색 나이트 생성
+    # bishop_bb = Bishop(board, 2, 0, 1)
+    # queen_b = Queen(board, 3, 0, 1)
     king_b = King(board, 4, 0, 1)
-    bishop_bw = Bishop(board, 5, 0, 1)
-    knight_b2 = Knight(board, 6, 0, 1)
+    # bishop_bw = Bishop(board, 5, 0, 1)
+    # knight_b2 = Knight(board, 6, 0, 1)
     rook_b2 = Rook(board, 7, 0, 1)
 
     pawn_b1 = Pawn(board, 0, 1, 1) #(0,1)좌표에 흑색 폰 생성
@@ -133,23 +133,23 @@ def do_init(): # 판에 말을 세팅해놓는다
     # bishop_ww = Bishop(board, 2, 7, -1)
     # queen_w = Queen(board, 3, 7, -1)
     king_w = King(board, 4, 7, -1)
-    bishop_wb = Bishop(board, 5, 7, -1)
-    knight_w2 = Knight(board, 6, 7, -1)
+    # bishop_wb = Bishop(board, 5, 7, -1)
+    # knight_w2 = Knight(board, 6, 7, -1)
     rook_w2 = Rook(board, 7, 7, -1)
 
 def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운다
     
     # 보드
-    screen.blit(img_board,(0,0)) 
+    screen.blit(img_board,(0,0))
 
     # 흑의 말들
     screen.blit(img_rook_b,(0,0))
-    screen.blit(img_knight_b,(100,0))
-    screen.blit(img_bishop_b,(200,0))
-    screen.blit(img_queen_b,(300,0))
+    # screen.blit(img_knight_b,(100,0))
+    # screen.blit(img_bishop_b,(200,0))
+    # screen.blit(img_queen_b,(300,0))
     screen.blit(img_king_b,(400,0))
-    screen.blit(img_bishop_b,(500,0))
-    screen.blit(img_knight_b,(600,0))
+    # screen.blit(img_bishop_b,(500,0))
+    # screen.blit(img_knight_b,(600,0))
     screen.blit(img_rook_b,(700,0))
 
     for x in range(0, 1000, 100):
@@ -161,8 +161,8 @@ def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운�
     # screen.blit(img_bishop_w,(200,700))
     # screen.blit(img_queen_w,(300,700))
     screen.blit(img_king_w,(400,700))
-    screen.blit(img_bishop_w,(500,700))
-    screen.blit(img_knight_w,(600,700))
+    # screen.blit(img_bishop_w,(500,700))
+    # screen.blit(img_knight_w,(600,700))
     screen.blit(img_rook_w,(700,700))
 
     for x in range(0, 1000, 100):
@@ -320,8 +320,8 @@ def print_xy_to_move(to_move_xy, to_move_chessboard_xy):
     print("chess xy :", to_move_chessboard_xy[0], to_move_chessboard_xy[1])
     print("np xy :", to_move_xy[0], to_move_xy[1])
 
-# 선택된 기물 이미지를 띄운다
-def screen_blit_selected_piece(win_xy):
+# 선택됬던 기물 이미지를 띄운다
+def screen_blit_selected_piece(selected_piece, win_xy):
 
     if str(type(selected_piece)) == "<class 'main_module.King'>":
         if whose_turn == -1:
@@ -359,6 +359,48 @@ def screen_blit_selected_piece(win_xy):
         else:
             screen.blit(img_pawn_b,(win_xy[0], win_xy[1]))
 
+# 기물 이미지를 업데이트한다
+def screen_blit_all_pieces(board):
+
+    for y in range(8):
+        for x in range(8):
+
+            if str(type(board.board[y][x])) == "<class 'main_module.King'>":
+                if board.board[y][x].color == -1:
+                    screen.blit(img_king_w,(x*100, y*100))
+                else:
+                    screen.blit(img_king_b,(x*100, y*100))
+            
+            elif str(type(board.board[y][x])) == "<class 'main_module.Queen'>":
+                if board.board[y][x].color == -1:
+                    screen.blit(img_queen_w,(x*100, y*100))
+                else:
+                    screen.blit(img_queen_b,(x*100, y*100))
+            
+            elif str(type(board.board[y][x])) == "<class 'main_module.Rook'>":
+                if board.board[y][x].color == -1:
+                    screen.blit(img_rook_w,(x*100, y*100))
+                else:
+                    screen.blit(img_rook_b,(x*100, y*100))
+            
+            elif str(type(board.board[y][x])) == "<class 'main_module.Knight'>":
+                if board.board[y][x].color == -1:
+                    screen.blit(img_knight_w,(x*100, y*100))
+                else:
+                    screen.blit(img_knight_b,(x*100, y*100))
+            
+            elif str(type(board.board[y][x])) == "<class 'main_module.Bishop'>":
+                if board.board[y][x].color == -1:
+                    screen.blit(img_bishop_w,(x*100, y*100))
+                else:
+                    screen.blit(img_bishop_b,(x*100, y*100))
+            
+            elif str(type(board.board[y][x])) == "<class 'main_module.Pawn'>":
+                if board.board[y][x].color == -1:
+                    screen.blit(img_pawn_w,(x*100, y*100))
+                else:
+                    screen.blit(img_pawn_b,(x*100, y*100))
+
 # 빈 타일 이미지를 띄운다
 def screen_blit_empty_tile(xy, win_xy):
     
@@ -381,7 +423,7 @@ def screen_blit_empty_tile(xy, win_xy):
         else:
             screen.blit(bright_tile,(win_xy[0], win_xy[1]))
 
-# 승진할 기물을 선택하는 이미지 띄우기
+# 승진할 기물을 선택하라는 이미지를 띄운다
 def screen_blit_about_promotion(to_move_xy, to_move_win_xy):
 
     screen_blit_empty_tile(to_move_xy, to_move_win_xy)
@@ -508,6 +550,10 @@ while not quit:
                     # 승진할 기물을 클릭하면 승진시키고 턴 전환
                     if promote(whose_turn, to_move_xy, to_move_win_xy) == "Completed":
 
+                        pygame.mixer.Sound.play(sound_promotion)
+                        promotionable = False
+                        whose_turn *= -1
+
                         selected_xy = []
                         selected_chessboard_xy = []
                         selected_win_xy = []
@@ -515,9 +561,6 @@ while not quit:
                         to_move_chessboard_xy = []
                         to_move_win_xy = []
 
-                        pygame.mixer.Sound.play(sound_promotion)
-                        promotionable = False
-                        whose_turn *= -1
                         
                 # 기물 선택 단계
                 elif selected_xy == []:
@@ -527,13 +570,13 @@ while not quit:
                     print_xy_selected(selected_xy, selected_chessboard_xy)
                     
                     # 클릭한 좌표의 말 가져오기
-                    selected_piece = board.board[selected_xy[1], selected_xy[0]] # board.board는 x, y를 뒤집어 인식함
+                    selected_piece = board.board[selected_xy[1]][selected_xy[0]] # board.board는 x, y를 뒤집어 인식함
                     
                     # 자신의 말을 선택했을 때 기물 움직이기 단계로 이동
                     if (selected_piece != 0) and (selected_piece.color == whose_turn):
                         print(type(selected_piece))
                         screen.blit(img_selected,(selected_win_xy[0], selected_win_xy[1]))
-                        screen_blit_selected_piece(selected_win_xy)
+                        screen_blit_selected_piece(selected_piece, selected_win_xy)
 
                     else: # 빈공간이나 상대의 말을 선택했을 때 다시 선택
                         print("Try again")
@@ -547,15 +590,13 @@ while not quit:
                     # 클릭한 위치의 좌표 저장
                     save_xy_to_move()
                     
-                    # 현재 타일 비우기
-                    screen_blit_empty_tile(selected_xy, selected_win_xy)
-                    
                     # move 함수 발동!
-                    moved = selected_piece.move(board, whose_turn, to_move_xy[0], to_move_xy[1])
+                    moved = selected_piece.move(board, to_move_xy[0], to_move_xy[1])
 
                     # 갈 수 있는 곳을 선택할 경우
-                    if (selected_xy != to_move_xy) and (moved != False):
-
+                    # if (selected_xy != to_move_xy) and (moved != False): # 원래 코드(+ move 함수 return False 감지)
+                    if (selected_xy != to_move_xy):
+                         
                         pygame.mixer.Sound.play(sound_place)
                         print_xy_to_move(to_move_xy, to_move_chessboard_xy)
                         
@@ -565,6 +606,7 @@ while not quit:
                             whose_turn == 1) and (to_move_xy[1] == 7))):
 
                             # 승진할 기물을 선택하라는 이미지 띄우기
+                            screen_blit_empty_tile(selected_xy, selected_win_xy)
                             screen_blit_about_promotion(to_move_xy, to_move_win_xy)
 
                             # 폰 승진 단계로 이동
@@ -572,12 +614,14 @@ while not quit:
 
                         # 승진 할 수 없다면 턴 종료
                         else:
-                            screen_blit_selected_piece(to_move_win_xy)
+                            screen.blit(img_board,(0,0))
+                            screen_blit_all_pieces(board)
                             whose_turn *= -1
     
                     # 갈 수 없는 곳이나, 선택 했던 곳을 또 선택할 경우 선택 취소
                     else:
-                        screen_blit_selected_piece(selected_win_xy)
+                        screen_blit_empty_tile(selected_xy, selected_win_xy)
+                        screen_blit_selected_piece(selected_piece, selected_win_xy)
 
                         if (selected_xy == to_move_xy):
                             print("\nUnselect")
