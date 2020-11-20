@@ -36,7 +36,7 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
             self.p_x = x2
             self.p_y = y2
         else:
-            board.move(self.p_x, self.p_y, self.p_x, y2)
+            board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
             self.p_y = y2
         return True
