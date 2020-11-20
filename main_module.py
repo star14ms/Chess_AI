@@ -1,13 +1,14 @@
-from numpy import zeros
-
 class Board:
     def __init__(self, f):
         self.front = f #플레이어가 플레이 할 색깔. False면 흰색 폰을 움직였을 때 +방향으로 나아가고 흑색 폰을 움직이면 -방향으로 나아간다.
-        self.board = zeros((8,8), dtype=Empty)#int로 하면 나중에 클래스 insert할 때 오류남
+        self.board = [[0 for col in range(8)] for row in range(8)]
+        for i in range(0, 8):
+            for j in range(0, 8):
+                self.board[i][j] = Empty()
         self.history = []#기보 기록
         
     def delete(self, x, y):#x,y 좌표의 말 삭제
-        self.board[y][x] = 0
+        self.board[y][x] = Empty()
 
     def pos(self, x, y):#x, y좌표의 말 클래스 출력
         return self.board[y][x]
@@ -21,7 +22,7 @@ class Board:
         self.history.append(self.pos(x1,y1))#(x1,y1)좌표의 말을 기보에 기록한다.
 
     def killable(self, x1, y1, x2, y2):#(x2,y2)에 말이 있고 색깔이 다르면 True, 아니면 False 출력
-        if (self.pos(x2,y2) != 0) and (self.pos(x1,y1).color != self.pos(x2, y2).color) : return True
+        if (self.pos(x2,y2) != Empty) and (self.pos(x1,y1).color != self.pos(x2, y2).color) : return True
         
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
     p_x = 0
@@ -43,8 +44,11 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
 
 
 class Empty:
-    def __repr__(self): #해당 클래스 호출 시 출력하는 것
-        return 0
+    color = 0
+    # def __init__(self):
+    #     self.color = 0
+    # def __repr__(self): #해당 클래스 호출 시 출력하는 것
+    #     return 0
 
 class Pawn(Horse):#폰
     def __init__(self, board, x, y, c):
@@ -110,20 +114,23 @@ class Bishop(Horse):#비숍
         #대각선 조건
         #(x2,y2)에 같은 색의 말이 아닌 조건
         #가는 길을 다른 말이 막지 않는 조건
-        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7 or not abs(p_x - x2) == abs(p_y - y2) or board.pos(x2,y2).color == self.color): return False#(x2,y2)범위, 대각선 조건, (x2,y2)에 같은 색의 말이 아닌 조건 체크
+        print(board.pos(x2,y2))
+        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7 or not abs(self.p_x - x2) == abs(self.p_y - y2) or board.pos(x2,y2).color == self.color): return False#(x2,y2)범위, 대각선 조건, (x2,y2)에 같은 색의 말이 아닌 조건 체크
 
-        amount = abs(x2 - p_x) #거리
-        if x2-p_x < 0 : lr = 1
-        else : lr = -1
-        if y2-p_x < 0 : ud = 1
-        else : ud = -1
+        amount = abs(x2 - self.p_x) #거리
+
+        if x2-self.p_x < 0 : lr = -1
+        else : lr = 1
+        if y2-self.p_y < 0 : ud = -1
+        else : ud = 1
 
         for i in range(1, amount+1):#가는 길을 다른 말이 막지 않을 조건
             x3 = i * lr
             y3 = -(i * ud)
-            if (self.pos(x3, y3) != 0): return False
+            if (type(board.pos(x3, y3)) != Empty): return False
             else: break
         
+
         return True # 모든 조건을 검사했으니, True 출력
 
 class Rook(Horse):#룩
