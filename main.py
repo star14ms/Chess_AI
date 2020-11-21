@@ -594,7 +594,7 @@ while not quit:
 
                     # 갈 수 있는 곳을 선택할 경우
                     # if (selected_xy != to_move_xy) and (moved != False): # 원래 코드(+ move 함수 return False 감지)
-                    if (selected_xy != to_move_xy):
+                    if (selected_xy != to_move_xy): # 승진 기능 확인 위함
                          
                         pygame.mixer.Sound.play(sound_place)
                         print_xy_to_move(to_move_xy, to_move_chessboard_xy)
@@ -636,7 +636,6 @@ while not quit:
                         to_move_chessboard_xy = []
                         to_move_win_xy = []
                 
-                print(board.board)
                 pygame.display.update()
 
 pygame.quit()
