@@ -560,8 +560,7 @@ while not quit:
                         to_move_xy = []
                         to_move_chessboard_xy = []
                         to_move_win_xy = []
-
-                        
+                
                 # 기물 선택 단계
                 elif selected_xy == []:
                     
