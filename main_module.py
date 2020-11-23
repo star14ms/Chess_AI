@@ -40,21 +40,22 @@ class Board:
         
         
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
-    p_x = 0
-    p_y = 0
-    color = None # -1 -> 백, 1 -> 흑
+    # x = 0
+    # y = 0
+    # color = None # -1 -> 백, 1 -> 흑
 
     def move(self, board, x2, y2):
-        if not self.moveable(board, x2, y2) : return False
-
-        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
-            board.move(self.p_x, self.p_y, x2, y2)
-            self.p_x = x2
-            self.p_y = y2
+        if not self.moveable(board, x2, y2):
+            return False
+        
+        if board.killable(self.x, self.y, x2, y2) :#인공지능 활용을 위해 남겨둠
+            board.move(self.x, self.y, x2, y2)
+            self.x = x2
+            self.y = y2
         else:
-            board.move(self.p_x, self.p_y, x2, y2)
-            self.p_x = x2
-            self.p_y = y2
+            board.move(self.x, self.y, x2, y2)
+            self.x = x2
+            self.y = y2
         return True
 
 
@@ -243,7 +244,9 @@ class King(Horse):#킹
             ((y2-self.y == -1) or (y2-self.y == +1)) and (-1 <= x2-self.x <= 1)):
             if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color): # 같은 색 기물이 있는 곳이면, 이동 실패
                 return False  
-            else : return True
+            else: 
+                return True
+
         # 캐슬링
         elif (not self.moved):
             
@@ -252,16 +255,21 @@ class King(Horse):#킹
                 board.pos(self.x-1, self.y) == 0) and (board.pos(self.x-2, self.y) == 0) and (board.pos(self.x-3, self.y) == 0):
                 if self.color == -1:
                     board.move(0, 7, 3, 7) # 룩도 이동
+                    return True
                 else:
                     board.move(0, 0, 3, 0)
+                    return True
             
             # 퀸 사이드 캐슬링
             elif (x2-self.x == +2) and (y2 == self.y) and (
                 board.pos(self.x+1, self.y) == 0) and (board.pos(self.x+2, self.y) == 0):
                 if self.color == -1:
                     board.move(7, 7, 5, 7)
+                    return True
                 else:
                     board.move(7, 0, 5, 0)
+                    return True
+
             else:
                 return False
         else:
