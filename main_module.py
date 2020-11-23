@@ -137,45 +137,44 @@ class Rook(Horse):#룩
         self.color = c
         board.insert(x, y, self)
 
-    def move(self, board, amount, direction): #amount : 움직이는 양, direction : 방향(오른쪽 0, 왼쪽 1, 위 2, 아래 3)
-      x2 = p_x
-      y2 = p_y
-      if direction == 0 : #오른쪽으로 이동할 경우
-        for i in range(1, amount):  # 한칸씩 다른 물체가 있는 지 확인
-          x2 = x2+i
-          if pos(x2,y2) != 0 or x2>=8 or x2<0: # 룩이 이동 범위가 좌표를 벗어나거나 이동하는 좌표 사이에 말이 있으면 갈 수 없다.
-            x2 = x2-i
-            return False
-          else: break
+    def moveable(self, board, amount, direction): #amount : 움직이는 양, direction : 방향(오른쪽 0, 왼쪽 1, 위 2, 아래 3)
+        x2 = p_x
+        y2 = p_y
+        if(x2 == p_x and y2 == p_y) : return False
+        elif (x2 - p_x != 0  and y2 - p_x != 0): return False
+        else :
+            if direction == 0 : #오른쪽으로 이동할 경우
+                for i in range(1, amount):  # 한칸씩 다른 물체가 있는 지 확인
+                  x2 = x2+i
+                  if pos(x2,y2) != 0 or x2>=8 or x2<0: # 룩이 이동 범위가 좌표를 벗어나거나 이동하는 좌표 사이에 말이 있으면 갈 수 없다.
+                    x2 = x2-i
+                    return False
+                  else: break
           
-      elif direction == 1 : #왼쪽으로 이동할 경우
-        for i in range(1, amount):
-          x2 = x2-i
-          if pos(x2,y2) != 0 or x2>=8 or x2<0:
-            x2 = x2+i
-            return False
-          else: break
-
-      elif direction == 2 : #위쪽으로 이동할 경우
-        for i in range(1, amount):
-          y2 = y2+i
-          if pos(x2,y2) != 0 or y2>=8 or y2<0:
-            y2 = y2-i
-            return False
-          else: break
+            elif direction == 1 : #왼쪽으로 이동할 경우
+                for i in range(1, amount):
+                  x2 = x2-i
+                  if pos(x2,y2) != 0 or x2>=8 or x2<0:
+                    x2 = x2+i
+                    return False
+                  else: break
+            elif direction == 2 : #위쪽으로 이동할 경우
+                for i in range(1, amount):
+                  y2 = y2+i
+                  if pos(x2,y2) != 0 or y2>=8 or y2<0:
+                    y2 = y2-i
+                    return False
+                  else: break
       
-      elif direction == 3 : #아래쪽으로 이동할 경우
-        for i in range(1, amount):
-          y2 = y2-i
-          if pos(x2,y2) != 0 or y2>=8 or y2<0:
-            y2 = y2+i
-            return False
-          else: break
+            elif direction == 3 : #아래쪽으로 이동할 경우
+                for i in range(1, amount):
+                  y2 = y2-i
+                  if pos(x2,y2) != 0 or y2>=8 or y2<0:
+                    y2 = y2+i
+                    return False
+                  else: break
 
-      if board.kiilable(self.p_x, self.p_y, x2, y2) :
-          board.move(self.p_x, self.p_y, x2, y2)
-      else:
-        board.move(self.p_x, self.p_y, x2, y2)
+            return True
 
 
 class Knight(Horse):#나이트
@@ -185,23 +184,21 @@ class Knight(Horse):#나이트
         self.color = c
         board.insert(x, y, self)
     
-    def move(self, board, x2, y2):
+    def moveable(self, board, x2, y2):
         
         # 나이트 기본 행마
-        if (x2-self.x == 2) or (x2-self.x == -2): # 동쪽 or 서쪽으로 2칸일 때
-            if (y2-self.y != 1) and (y2-self.y != -1): return False # 남쪽 or 북쪽으로 1칸이 아니면, 이동 실패
-        elif (y2-self.y == 2) or (y2-self.y == -2): # 남쪽 or 북쪽으로 2칸일 때
-            if (x2-self.x != 1) and (x2-self.x != -1): return False # 동쪽 or 서쪽으로 1칸이 아니면, 이동 실패
-        else:
+        if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color):
             return False
+        else :
+            if (x2-self.x == 2) or (x2-self.x == -2): # 동쪽 or 서쪽으로 2칸일 때
+                if (y2-self.y != 1) and (y2-self.y != -1): return False # 남쪽 or 북쪽으로 1칸이 아니면, 이동 실패
+                else : return True
+            elif (y2-self.y == 2) or (y2-self.y == -2): # 남쪽 or 북쪽으로 2칸일 때
+                if (x2-self.x != 1) and (x2-self.x != -1): return False # 동쪽 or 서쪽으로 1칸이 아니면, 이동 실패
+                else : return True
+            else:
+                return False
         
-        if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color): # 같은 색 기물이 있는 곳이면, 이동 실패 
-            return False
-        
-        if board.killable(self.p_x, self.p_y, x2, y2):
-            board.move(self.p_x, self.p_y, x2, y2)
-        else:
-            board.move(self.p_x, self.p_y, x2, y2)
         
 
 class Queen(Horse):#퀸
@@ -211,20 +208,21 @@ class Queen(Horse):#퀸
         self.color = c
         board.insert(x, y, self)
 
-    def move(self, board, amount, lr, ud): #amount : 움직이는 양, lr : 좌우(좌 : -1, 우 : +1), ud : 위아래(아래 : -1, 위 : +1)
+    def moveable(self, board, amount, lr, ud): #amount : 움직이는 양, lr : 좌우(좌 : -1, 우 : +1), ud : 위아래(아래 : -1, 위 : +1)
         x2 = self.p_x + amount * lr
         y2 = self.p_y + amount * ud
-        for i in range(1, amount+1):#킹이 이동하는 좌표 사이에 말이 있으면 그 좌표로 갈 수 없다.
-            x3 = self.p_x + i*lr
-            y3 = self.p_y + i*ud
-            if (0 <= x3 <= 7) and (0 <= y3 <= 7):
-                if (pos(x3, y3) != 0): return False
-            else: break
-
-        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
-            board.move(self.p_x, self.p_y, x2, y2)
-        else:
-            board.move(self.p_x, self.p_y, x2, y2)
+        if(x2 - p_x != 0 and y2 - p_x != 0) : return False
+        elif(x2 == p_x and y2 == p_y) : return False
+        elif(x2 - p_x != y2 - p_y) : return False
+        else :
+            for i in range(1, amount+1):#킹이 이동하는 좌표 사이에 말이 있으면 그 좌표로 갈 수 없다.
+                x3 = self.p_x + i*lr
+                y3 = self.p_y + i*ud
+                if (0 <= x3 <= 7) and (0 <= y3 <= 7):
+                    if (pos(x3, y3) != 0): return False
+                else: break
+            return True
+        
 
 
 class King(Horse):#킹
@@ -235,14 +233,14 @@ class King(Horse):#킹
         self.moved = False # 캐슬링 조건 : 킹이 움직인 적이 없어야함
         board.insert(x, y, self)
 
-    def move(self, board, x2, y2): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2
+    def moveable(self, board, x2, y2): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2
         
         # 킹 기본 행마
         if (((x2-self.x == -1) or (x2-self.x == +1)) and (-1 <= y2-self.y <= 1)) or (
             ((y2-self.y == -1) or (y2-self.y == +1)) and (-1 <= x2-self.x <= 1)):
             if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color): # 같은 색 기물이 있는 곳이면, 이동 실패
-                return False
-                
+                return False  
+            else : return True
         # 캐슬링
         elif (not self.moved):
             
@@ -266,7 +264,3 @@ class King(Horse):#킹
         else:
             return False
         
-        if board.killable(self.x, self.y, x2, y2) :#인공지능 활용을 위해 남겨둠
-            board.move(self.x, self.y, x2, y2)
-        else:
-            board.move(self.x, self.y, x2, y2)
