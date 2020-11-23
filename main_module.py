@@ -60,28 +60,28 @@ class Pawn(Horse):#폰
         self.promotionable = False
         
     def moveable(self, board, x2, y2):
-        enp = False
-        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False#좌표값 체크
-         #(x2,y2-1)좌표의 말의 색이 다르고, 폰이면 앙파상 가능
+        #enp = False
+        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False#(x2, y2)범위 조건
 
         if (board.front == self.color):#플레이어 폰
-            if board.pos(x2,y2-1) != 0 and board.pos(x2,y2-1).color != self.color and type(board.pos(x2,y2-1)) == Pawn and board.pos(x2,y2) == 0: enp = True
+            #if type(board.pos(x2,y2-1)) != Empty and board.pos(x2,y2-1).color != self.color and type(board.pos(x2,y2-1)) == Pawn and board.pos(x2,y2) == 0: enp = True
             if self.first_turn == True:
-                if ((self.p_x == x2) and (1 <= y2 - self.p_y <=2)): self.first_turn = False
+                if ((abs(self.p_x-x2) == 1) and (1 <= y2 - self.p_y <=2)): self.first_turn = False
                 else: return False
             else:
-                if ((self.p_x == x2) and self.p_y == y2-1): pass
+                if ((abs(self.p_x-x2) == 1) and self.p_y == y2-1): pass
                 elif enp == True : pass
                 else : return False
         else:#상대방 폰
-            if board.pos(x2,y2+1) != 0 and board.pos(x2,y2+1).color != self.color and type(board.pos(x2,y2+1)) == Pawn and board.pos(x2,y2) == 0: enp = True
+            #if type(board.pos(x2,y2+1)) != Empty and board.pos(x2,y2+1).color != self.color and type(board.pos(x2,y2+1)) == Pawn and board.pos(x2,y2) == 0: enp = True
             if self.first_turn == True:
-                if ((self.p_x == x2) and (-2 <= y2 - self.p_y <= -1)): self.first_turn = False
+                if ((abs(self.p_x-x2) == 1) and (-2 <= y2 - self.p_y <= -1)): self.first_turn = False
                 else : return False
             else:
-                if ((self.p_x == x2) and self.p_y == y2+1): pass
+                if ((abs(self.p_x-x2) == 1) and self.p_y == y2+1): pass
                 elif enp == True : pass
                 else : return False
+        return True
         
     def move(self, board, x2, y2):
         if not self.moveable(board, x2, y2) : return False
@@ -90,11 +90,11 @@ class Pawn(Horse):#폰
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
             self.p_y = y2
-        elif board.killable(self.p_x, self.p_y, x2, y2-1):
-            board.move(self.p_x, self.p_y, x2, y2)
-            board.delete(x2, y2-1)
-            self.p_x = x2
-            self.p_y = y2
+        # elif board.killable(self.p_x, self.p_y, x2, y2-1):
+        #     board.move(self.p_x, self.p_y, x2, y2)
+        #     board.delete(x2, y2-1)
+        #     self.p_x = x2
+        #     self.p_y = y2
         else:
             board.move(self.p_x, self.p_y, self.p_x, y2)
             self.p_x = x2
