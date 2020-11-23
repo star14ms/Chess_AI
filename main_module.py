@@ -23,6 +23,22 @@ class Board:
     def killable(self, x1, y1, x2, y2):#(x2,y2)에 말이 있고 색깔이 다르면 True, 아니면 False 출력
         if (self.pos(x2,y2) != 0) and (self.pos(x1,y1).color != self.pos(x2, y2).color) : return True
         
+    def attack(self, x1, y1):
+        if(Pawn.moveable(board, x1, y1)) : return False
+        elif(Bishop.moveable(board,x1,y1)) : return False
+        elif(Rook.moveable(board,x1,y1)) : return False
+        elif(Knight.moveable(board,x1,y1)) : return False
+        elif(Queen.moveable(board,x1,y1)) : return False
+        elif(King.moveable(board,x1,y1)) : return False
+        
+    def move_check(self,x1,y1,horse):
+        Board.delete(x1,y1)
+        if(King.check == True):
+            Board.insert(x1,y1,horse)
+            return False
+        
+        
+        
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
     p_x = 0
     p_y = 0
@@ -136,46 +152,26 @@ class Rook(Horse):#룩
         self.p_y = y
         self.color = c
         board.insert(x, y, self)
-
-    def moveable(self, board, amount, direction): #amount : 움직이는 양, direction : 방향(오른쪽 0, 왼쪽 1, 위 2, 아래 3)
-        x2 = p_x
-        y2 = p_y
-        if(x2 == p_x and y2 == p_y) : return False
-        elif (x2 - p_x != 0  and y2 - p_x != 0): return False
+    
+    def moveable(self, board, x2, y2):
+        if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color):
+            return False
+        elif(x2 >= 8 or x2<0 or y2<0 or y2 >= 8 ) : return False
+        elif(x2 == p_x and y2 == p_y) : return False
+        elif(x2 - p_x != 0 and y2 == p_x != 0) : return False
         else :
-            if direction == 0 : #오른쪽으로 이동할 경우
-                for i in range(1, amount):  # 한칸씩 다른 물체가 있는 지 확인
-                  x2 = x2+i
-                  if pos(x2,y2) != 0 or x2>=8 or x2<0: # 룩이 이동 범위가 좌표를 벗어나거나 이동하는 좌표 사이에 말이 있으면 갈 수 없다.
-                    x2 = x2-i
-                    return False
-                  else: break
-          
-            elif direction == 1 : #왼쪽으로 이동할 경우
-                for i in range(1, amount):
-                  x2 = x2-i
-                  if pos(x2,y2) != 0 or x2>=8 or x2<0:
-                    x2 = x2+i
-                    return False
-                  else: break
-            elif direction == 2 : #위쪽으로 이동할 경우
-                for i in range(1, amount):
-                  y2 = y2+i
-                  if pos(x2,y2) != 0 or y2>=8 or y2<0:
-                    y2 = y2-i
-                    return False
-                  else: break
-      
-            elif direction == 3 : #아래쪽으로 이동할 경우
-                for i in range(1, amount):
-                  y2 = y2-i
-                  if pos(x2,y2) != 0 or y2>=8 or y2<0:
-                    y2 = y2+i
-                    return False
-                  else: break
-
-            return True
-
+            if(x2 - p_x == 0) :
+                for i in range(p_y,y2):
+                    if (pos(x2,i) != 0) :
+                        return False
+                    else : return True
+            else :
+                for i in range(p_x,x2):
+                    if (pos(i,y2) != 0):
+                        return False
+                    else : return True
+    
+    
 
 class Knight(Horse):#나이트
     def __init__(self, board, x, y, c):
@@ -189,6 +185,7 @@ class Knight(Horse):#나이트
         # 나이트 기본 행마
         if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color):
             return False
+        elif (x2 < 0 or x2>7 or y2 < 0 or y2>7) : return False
         else :
             if (x2-self.x == 2) or (x2-self.x == -2): # 동쪽 or 서쪽으로 2칸일 때
                 if (y2-self.y != 1) and (y2-self.y != -1): return False # 남쪽 or 북쪽으로 1칸이 아니면, 이동 실패
@@ -207,21 +204,27 @@ class Queen(Horse):#퀸
         self.p_y = y
         self.color = c
         board.insert(x, y, self)
-
-    def moveable(self, board, amount, lr, ud): #amount : 움직이는 양, lr : 좌우(좌 : -1, 우 : +1), ud : 위아래(아래 : -1, 위 : +1)
-        x2 = self.p_x + amount * lr
-        y2 = self.p_y + amount * ud
-        if(x2 - p_x != 0 and y2 - p_x != 0) : return False
+        
+    def moveable(self, x2, y2):
+        if(x2 < 0 or x2>7 or y2 < 0 or y2>7) : return False
+        elif(board.pos(x2, y2).color == self.color) : return False
+        elif(x2 - p_x != 0 and y2 - p_x != 0) : return False
         elif(x2 == p_x and y2 == p_y) : return False
-        elif(x2 - p_x != y2 - p_y) : return False
-        else :
-            for i in range(1, amount+1):#킹이 이동하는 좌표 사이에 말이 있으면 그 좌표로 갈 수 없다.
-                x3 = self.p_x + i*lr
-                y3 = self.p_y + i*ud
-                if (0 <= x3 <= 7) and (0 <= y3 <= 7):
-                    if (pos(x3, y3) != 0): return False
-                else: break
+        elif(x2 - p_x == y2 - p_y) :
+            for i in range(1, x2 - p_x):
+                if(pos(p_x + i, p_y + i) != 0) : return False
             return True
+        else:
+            if(x2 - p_x == 0) :
+                for i in range(p_y,y2):
+                    if (pos(x2,i) != 0) :
+                        return False
+                    else : return True
+            else :
+                for i in range(p_x,x2):
+                    if (pos(i,y2) != 0):
+                        return False
+                    else : return True
         
 
 
@@ -232,7 +235,7 @@ class King(Horse):#킹
         self.color = c
         self.moved = False # 캐슬링 조건 : 킹이 움직인 적이 없어야함
         board.insert(x, y, self)
-
+        
     def moveable(self, board, x2, y2): # lr: 가만히 0, 오른쪽 1, 왼쪽 2 / ud: 가만히 0, 위쪽 1, 아래쪽 2
         
         # 킹 기본 행마
@@ -264,3 +267,20 @@ class King(Horse):#킹
         else:
             return False
         
+    def check(self,board):
+        if(board.attack(board,p_x,p_y) == False):
+            return True # 체크이다.
+        
+    def checkmate(self,board):
+        if(board.attack(board,p_x,p_y) == False): # 왕을 제외한 나머지 기물은 모두 이동불가이거나 모두 잡혀있을 떄의 조건 추가해야함
+            if(p_x < 7 and board.attack(board,p_x+1,p_y) == False):
+                if(p_x > 0 and board.attack(board,p_x-1,p_y) == False):
+                    if(p_y < 7 and board.attack(board,p_x,p_y+1) == False):
+                        if(p_x > 0 and board.attack(board,p_x,p_y-1) == False):
+                            if(p_x < 7 and p_y < 7 and board.attack(board,p_x+1,p_y+1) == False):
+                                if(p_x < 7 and p_y >0 and board.attack(board,p_x+1,p_y-1) == False):
+                                    if(p_x > 0 and p_y < 7 and board.attack(board,p_x-1,p_y+1) == False):
+                                        if(p_x < 7 and p_y < 7 and board.attack(board,p_x+1,p_y+1) == False):
+                                            return True # 체크 메이트 상태이다.
+        
+            
