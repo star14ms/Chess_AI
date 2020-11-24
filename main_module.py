@@ -7,7 +7,7 @@ class Board:
         self.history = []#기보 기록
         
     def delete(self, x, y):#x,y 좌표의 말 삭제
-        self.board[y][x] = 0
+        self.board[y][x] = Empty()
 
     def pos(self, x, y):#x, y좌표의 말 클래스 출력
         return self.board[y][x]
@@ -21,7 +21,7 @@ class Board:
         self.history.append(self.pos(x1,y1))#(x1,y1)좌표의 말을 기보에 기록한다.
 
     def killable(self, x1, y1, x2, y2):#(x2,y2)에 말이 있고 색깔이 다르면 True, 아니면 False 출력
-        if (self.pos(x2,y2) != 0) and (self.pos(x1,y1).color != self.pos(x2, y2).color) : return True
+        if (type(self.pos(x2,y2)) != Empty) and (self.pos(x1,y1).color != self.pos(x2, y2).color) : return True
         
     def attack(self, x1, y1):
         if(Pawn.moveable(board, x1, y1)) : return False
@@ -72,8 +72,7 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
 
 
 class Empty:
-    def __repr__(self): #해당 클래스 호출 시 출력하는 것
-        return 0
+    color = 0
 
 
 class Pawn(Horse):#폰
@@ -84,7 +83,7 @@ class Pawn(Horse):#폰
          #(x2,y2-1)좌표의 말의 색이 다르고, 폰이면 앙파상 가능
 
         if (board.front == self.color):#플레이어 폰
-            if board.pos(x2,y2-1) != 0 and board.pos(x2,y2-1).color != self.color and type(board.pos(x2,y2-1)) == Pawn and board.pos(x2,y2) == 0: enp = True
+            if type(board.pos(x2,y2-1)) != Empty and board.pos(x2,y2-1).color != self.color and type(board.pos(x2,y2-1)) == Pawn and type(board.pos(x2,y2)) == Empty: enp = True
             if self.first_turn == True:
                 if ((self.p_x == x2) and (1 <= y2 - self.p_y <=2)): self.first_turn = False
                 else: return False
@@ -93,7 +92,7 @@ class Pawn(Horse):#폰
                 elif enp == True : pass
                 else : return False
         else:#상대방 폰
-            if board.pos(x2,y2+1) != 0 and board.pos(x2,y2+1).color != self.color and type(board.pos(x2,y2+1)) == Pawn and board.pos(x2,y2) == 0: enp = True
+            if type(board.pos(x2,y2+1)) != Empty and board.pos(x2,y2+1).color != self.color and type(board.pos(x2,y2+1)) == Pawn and type(board.pos(x2,y2)) == Empty: enp = True
             if self.first_turn == True:
                 if ((self.p_x == x2) and (-2 <= y2 - self.p_y <= -1)): self.first_turn = False
                 else : return False
@@ -140,7 +139,7 @@ class Bishop(Horse):#비숍
         for i in range(1, amount+1):#가는 길을 다른 말이 막지 않을 조건
             x3 = i * lr
             y3 = -(i * ud)
-            if (self.pos(x3, y3) != 0): return False
+            if (type(self.pos(x3, y3)) != Empty): return False
             else: break
         
         return True # 모든 조건을 검사했으니, True 출력
@@ -149,7 +148,7 @@ class Bishop(Horse):#비숍
 class Rook(Horse):#룩
     
     def moveable(self, board, x2, y2):
-        if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color):
+        if (type(board.pos(x2, y2)) != Empty) and (board.pos(x2, y2).color == self.color):
             return False
         elif(x2 >= 8 or x2<0 or y2<0 or y2 >= 8 ) : return False
         elif(x2 == p_x and y2 == p_y) : return False
@@ -157,12 +156,12 @@ class Rook(Horse):#룩
         else :
             if(x2 - p_x == 0) :
                 for i in range(p_y,y2):
-                    if (pos(x2,i) != 0) :
+                    if (type(pos(x2,i)) != Empty) :
                         return False
                     else : return True
             else :
                 for i in range(p_x,x2):
-                    if (pos(i,y2) != 0):
+                    if (type(pos(i,y2)) != Empty):
                         return False
                     else : return True
     
@@ -182,7 +181,7 @@ class Knight(Horse):#나이트
         else:
             return False
 
-        if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color): 
+        if (type(board.pos(x2, y2)) != Empty) and (board.pos(x2, y2).color == self.color): 
             return False
         
         return True
@@ -197,17 +196,17 @@ class Queen(Horse):#퀸
         elif(x2 == p_x and y2 == p_y) : return False
         elif(x2 - p_x == y2 - p_y) :
             for i in range(1, x2 - p_x):
-                if(pos(p_x + i, p_y + i) != 0) : return False
+                if(type(pos(p_x + i, p_y + i)) != Empty) : return False
             return True
         else:
             if(x2 - p_x == 0) :
                 for i in range(p_y,y2):
-                    if (pos(x2,i) != 0) :
+                    if (type(pos(x2,i)) != Empty) :
                         return False
                     else : return True
             else :
                 for i in range(p_x,x2):
-                    if (pos(i,y2) != 0):
+                    if (type(pos(i,y2)) != Empty):
                         return False
                     else : return True
         
@@ -221,7 +220,7 @@ class King(Horse):#킹
         # 킹 기본 행마
         if (((x2-self.p_x == -1) or (x2-self.p_x == +1)) and (-1 <= y2-self.p_y <= 1)) or (
             ((y2-self.p_y == -1) or (y2-self.p_y == +1)) and (-1 <= x2-self.p_x <= 1)):
-            if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color): # 같은 색 기물이 있는 곳이면, 이동 실패
+            if (type(board.pos(x2, y2)) != Empty) and (board.pos(x2, y2).color == self.color): # 같은 색 기물이 있는 곳이면, 이동 실패
                 return False
             else:
                 self.moved = True
@@ -232,7 +231,7 @@ class King(Horse):#킹
             
             # 킹 사이드 캐슬링
             if (x2-self.p_x == -2) and (y2 == self.p_y) and (
-                board.pos(self.p_x-1, self.p_y) == 0) and (board.pos(self.p_x-2, self.p_y) == 0) and (board.pos(self.p_x-3, self.p_y) == 0):
+                type(board.pos(self.p_x-1, self.p_y)) == Empty) and (type(board.pos(self.p_x-2, self.p_y)) == Empty) and (type(board.pos(self.p_x-3, self.p_y)) == Empty):
                 if self.color == -1:
                     board.move(0, 7, 3, 7) # 룩도 이동
                     return True
@@ -242,7 +241,7 @@ class King(Horse):#킹
             
             # 퀸 사이드 캐슬링
             elif (x2-self.p_x == +2) and (y2 == self.p_y) and (
-                board.pos(self.p_x+1, self.p_y) == 0) and (board.pos(self.p_x+2, self.p_y) == 0):
+                type(board.pos(self.p_x+1, self.p_y)) == Empty) and (type(board.pos(self.p_x+2, self.p_y)) == Empty):
                 if self.color == -1:
                     board.move(7, 7, 5, 7)
                     return True
