@@ -40,26 +40,24 @@ class Board:
         
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
     
-    # 모든 말의 __init__ 함수들을 Horse class에 하나의 함수로 나타낼 수 있는데 어떤가요?
+    def __init__(self, board, x, y, color):
+
+        # 말의 기본 정보
+        self.x = x
+        self.y = y
+        self.color = color # -1 -> 백, 1 -> 흑
+        board.insert(x, y, self)
     
-    # def __init__(self, board, x, y, color):
+        # 특정 말의 추가 정보
+        if (type(self) == Pawn):
+            self.first_turn = True
+        elif (type(self) == Rook) or (type(self) == King):
+            self.moved = False
     
-    #     # 말의 기본 정보
-    #     self.x = x
-    #     self.y = y
-    #     self.color = color # -1 -> 백, 1 -> 흑
-    
-    #     # 특정 말의 추가 정보
-    #     if (type(self) == Pawn):
-    #         self.first_turn = True
-    #     elif (type(self) == Rook) or (type(self) == King):
-    #         self.moved = False
-    
-    #     board.insert(x, y, self)
     
     def move(self, board, x2, y2):
 
-        if self.moveable(board, x2, y2) == False:
+        if not self.moveable(board, x2, y2):
             return False
         
         if board.killable(self.x, self.y, x2, y2) :#인공지능 활용을 위해 남겨둠
@@ -79,12 +77,6 @@ class Empty:
 
 
 class Pawn(Horse):#폰
-    def __init__(self, board, x, y, c):
-        self.p_x = x
-        self.p_y = y
-        self.color = c
-        self.first_turn = True
-        board.insert(x, y, self)
         
 
     def moveable(self, board, x2, y2):
@@ -131,11 +123,6 @@ class Pawn(Horse):#폰
 
 
 class Bishop(Horse):#비숍
-    def __init__(self, board, x, y, c):
-        self.p_x = x
-        self.p_y = y
-        self.color = c
-        board.insert(x, y, self)
 
     def moveable(self, board, x2, y2):
         #체크 해야할 조건 :
@@ -161,11 +148,6 @@ class Bishop(Horse):#비숍
 
 
 class Rook(Horse):#룩
-    def __init__(self, board, x, y, c):
-        self.p_x = x
-        self.p_y = y
-        self.color = c
-        board.insert(x, y, self)
     
     def moveable(self, board, x2, y2):
         if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color):
@@ -187,33 +169,25 @@ class Rook(Horse):#룩
     
     
 class Knight(Horse):#나이트
-    def __init__(self, board, x, y, c):
-        self.x = x
-        self.y = y
-        self.color = c
-        board.insert(x, y, self)
     
     def moveable(self, board, x2, y2):
         
         # 나이트 기본 행마
+        # if (x2 < 0 or x2>7 or y2 < 0 or y2>7) : return False
+        if (x2-self.x == 2) or (x2-self.x == -2): # 동쪽 or 서쪽으로 2칸일 때
+            if (y2-self.y != 1) and (y2-self.y != -1): return False # 남쪽 or 북쪽으로 1칸이 아니면, 이동 실패
+        elif (y2-self.y == 2) or (y2-self.y == -2): # 남쪽 or 북쪽으로 2칸일 때
+            if (x2-self.x != 1) and (x2-self.x != -1): return False # 동쪽 or 서쪽으로 1칸이 아니면, 이동 실패
+        else:
+            return False
+
         if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color):
             return False
-        elif (x2 < 0 or x2>7 or y2 < 0 or y2>7) : return False
-        else :
-            if (x2-self.x == 2) or (x2-self.x == -2): # 동쪽 or 서쪽으로 2칸일 때
-                if (y2-self.y != 1) and (y2-self.y != -1): return False # 남쪽 or 북쪽으로 1칸이 아니면, 이동 실패
-            elif (y2-self.y == 2) or (y2-self.y == -2): # 남쪽 or 북쪽으로 2칸일 때
-                if (x2-self.x != 1) and (x2-self.x != -1): return False # 동쪽 or 서쪽으로 1칸이 아니면, 이동 실패
-            else:
-                return False
+        
+        return True
         
 
 class Queen(Horse):#퀸
-    def __init__(self, board, x, y, c):
-        self.p_x = x
-        self.p_y = y
-        self.color = c
-        board.insert(x, y, self)
         
     def moveable(self, x2, y2):
         if(x2 < 0 or x2>7 or y2 < 0 or y2>7) : return False
@@ -238,15 +212,11 @@ class Queen(Horse):#퀸
         
 
 class King(Horse):#킹
-    def __init__(self, board, x, y, c):
-        self.x = x
-        self.y = y
-        self.color = c
-        self.moved = False # 캐슬링 조건 : 킹이 움직인 적이 없어야함
-        board.insert(x, y, self)
-        
+    
     def moveable(self, board, x2, y2):
         
+        if(x2 < 0 or x2 > 7 or y2 < 0 or y2>7) : return False
+
         # 킹 기본 행마
         if (((x2-self.x == -1) or (x2-self.x == +1)) and (-1 <= y2-self.y <= 1)) or (
             ((y2-self.y == -1) or (y2-self.y == +1)) and (-1 <= x2-self.x <= 1)):
@@ -254,6 +224,7 @@ class King(Horse):#킹
                 return False
             else:
                 self.moved = True
+                return True
 
         # 캐슬링
         elif (not self.moved):
@@ -263,26 +234,29 @@ class King(Horse):#킹
                 board.pos(self.x-1, self.y) == 0) and (board.pos(self.x-2, self.y) == 0) and (board.pos(self.x-3, self.y) == 0):
                 if self.color == -1:
                     board.move(0, 7, 3, 7) # 룩도 이동
+                    return True
                 else:
                     board.move(0, 0, 3, 0)
+                    return True
             
             # 퀸 사이드 캐슬링
             elif (x2-self.x == +2) and (y2 == self.y) and (
                 board.pos(self.x+1, self.y) == 0) and (board.pos(self.x+2, self.y) == 0):
                 if self.color == -1:
                     board.move(7, 7, 5, 7)
+                    return True
                 else:
                     board.move(7, 0, 5, 0)
-
+                    return True
             else:
                 return False
         else:
             return False
-        
+    
     def check(self,board):
         if(board.attack(board,p_x,p_y) == False):
             return True # 체크이다.
-        
+    
     def checkmate(self,board):
         if(board.attack(board,p_x,p_y) == False): # 왕을 제외한 나머지 기물은 모두 이동불가이거나 모두 잡혀있을 떄의 조건 추가해야함
             if(p_x < 7 and board.attack(board,p_x+1,p_y) == False):

@@ -504,7 +504,7 @@ pygame.display.set_caption("와! 체스!") # 창 제목
 quit = False
 
 while not quit:
-
+    
     # 보드 초기화
     board = Board(-1) # -1 : 보드 앞쪽이 흰색 진영
     do_init()
@@ -512,22 +512,22 @@ while not quit:
     # 보드 그래픽 초기화
     screen_blit_initialized_board()
     pygame.display.update()
-
+    
     print(board.board) # 보드 상태 출력
     pygame.mixer.music.play(-1) # -1 : BGM 반복 재생
     whose_turn = -1 # -1: 백, 1: 흑 (백 선)
-
+    
     selected_xy = [] # 선택한 기물의 좌표
     selected_chessboard_xy = [] # 선택한 기물의 체스 보드에서의 좌표
     selected_win_xy = [] # 선택한 기물의 화면 좌표
-
+    
     to_move_xy = [] # 움직일 좌표
     to_move_chessboard_xy = [] # 움직일 체스 보드에서의 좌표
     to_move_win_xy = [] # 움직일 화면 좌표
-
+    
     promotionable = False
     game_end = False
-
+    
     # 게임 시작
     while not game_end:
     
