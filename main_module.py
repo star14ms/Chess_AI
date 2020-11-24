@@ -43,11 +43,11 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
     def __init__(self, board, x, y, color):
 
         # 말의 기본 정보
-        self.x = x
-        self.y = y
+        self.p_x = x
+        self.p_y = y
         self.color = color # -1 -> 백, 1 -> 흑
         board.insert(x, y, self)
-    
+        
         # 특정 말의 추가 정보
         if (type(self) == Pawn):
             self.first_turn = True
@@ -56,18 +56,18 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
     
     
     def move(self, board, x2, y2):
-
+        
         if not self.moveable(board, x2, y2):
             return False
         
-        if board.killable(self.x, self.y, x2, y2) :#인공지능 활용을 위해 남겨둠
-            board.move(self.x, self.y, x2, y2)
-            self.x = x2
-            self.y = y2
+        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+            board.move(self.p_x, self.p_y, x2, y2)
+            self.p_x = x2
+            self.p_y = y2
         else:
-            board.move(self.x, self.y, x2, y2)
-            self.x = x2
-            self.y = y2
+            board.move(self.p_x, self.p_y, x2, y2)
+            self.p_x = x2
+            self.p_y = y2
         return True
 
 
@@ -77,8 +77,7 @@ class Empty:
 
 
 class Pawn(Horse):#폰
-        
-
+    
     def moveable(self, board, x2, y2):
         enp = False
         if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False#좌표값 체크
@@ -172,16 +171,18 @@ class Knight(Horse):#나이트
     
     def moveable(self, board, x2, y2):
         
+        if (x2 < 0 or x2>7 or y2 < 0 or y2>7): 
+            return False
+
         # 나이트 기본 행마
-        # if (x2 < 0 or x2>7 or y2 < 0 or y2>7) : return False
-        if (x2-self.x == 2) or (x2-self.x == -2): # 동쪽 or 서쪽으로 2칸일 때
-            if (y2-self.y != 1) and (y2-self.y != -1): return False # 남쪽 or 북쪽으로 1칸이 아니면, 이동 실패
-        elif (y2-self.y == 2) or (y2-self.y == -2): # 남쪽 or 북쪽으로 2칸일 때
-            if (x2-self.x != 1) and (x2-self.x != -1): return False # 동쪽 or 서쪽으로 1칸이 아니면, 이동 실패
+        if (x2-self.p_x == 2) or (x2-self.p_x == -2): # 동쪽 or 서쪽으로 2칸일 때
+            if (y2-self.p_y != 1) and (y2-self.p_y != -1): return False # 남쪽 or 북쪽으로 1칸이 아니면, 이동 실패
+        elif (y2-self.p_y == 2) or (y2-self.p_y == -2): # 남쪽 or 북쪽으로 2칸일 때
+            if (x2-self.p_x != 1) and (x2-self.p_x != -1): return False # 동쪽 or 서쪽으로 1칸이 아니면, 이동 실패
         else:
             return False
 
-        if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color):
+        if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color): 
             return False
         
         return True
@@ -215,11 +216,11 @@ class King(Horse):#킹
     
     def moveable(self, board, x2, y2):
         
-        if(x2 < 0 or x2 > 7 or y2 < 0 or y2>7) : return False
-
+        if (x2<0 or x2>7 or y2<0 or y2>7) : return False
+        
         # 킹 기본 행마
-        if (((x2-self.x == -1) or (x2-self.x == +1)) and (-1 <= y2-self.y <= 1)) or (
-            ((y2-self.y == -1) or (y2-self.y == +1)) and (-1 <= x2-self.x <= 1)):
+        if (((x2-self.p_x == -1) or (x2-self.p_x == +1)) and (-1 <= y2-self.p_y <= 1)) or (
+            ((y2-self.p_y == -1) or (y2-self.p_y == +1)) and (-1 <= x2-self.p_x <= 1)):
             if (board.pos(x2, y2) != 0) and (board.pos(x2, y2).color == self.color): # 같은 색 기물이 있는 곳이면, 이동 실패
                 return False
             else:
@@ -230,8 +231,8 @@ class King(Horse):#킹
         elif (not self.moved):
             
             # 킹 사이드 캐슬링
-            if (x2-self.x == -2) and (y2 == self.y) and (
-                board.pos(self.x-1, self.y) == 0) and (board.pos(self.x-2, self.y) == 0) and (board.pos(self.x-3, self.y) == 0):
+            if (x2-self.p_x == -2) and (y2 == self.p_y) and (
+                board.pos(self.p_x-1, self.p_y) == 0) and (board.pos(self.p_x-2, self.p_y) == 0) and (board.pos(self.p_x-3, self.p_y) == 0):
                 if self.color == -1:
                     board.move(0, 7, 3, 7) # 룩도 이동
                     return True
@@ -240,8 +241,8 @@ class King(Horse):#킹
                     return True
             
             # 퀸 사이드 캐슬링
-            elif (x2-self.x == +2) and (y2 == self.y) and (
-                board.pos(self.x+1, self.y) == 0) and (board.pos(self.x+2, self.y) == 0):
+            elif (x2-self.p_x == +2) and (y2 == self.p_y) and (
+                board.pos(self.p_x+1, self.p_y) == 0) and (board.pos(self.p_x+2, self.p_y) == 0):
                 if self.color == -1:
                     board.move(7, 7, 5, 7)
                     return True
