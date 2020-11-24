@@ -3,6 +3,7 @@ import pygame
 
 pygame.init()
 
+
 # 보드, 체스말과 기타 이미지, BGM 가져오기
 img_board = pygame.image.load("img\chess_board.png")
 img_board = pygame.transform.scale(img_board,(800,800))
