@@ -171,8 +171,7 @@ class Knight(Horse):#나이트
     
     def moveable(self, board, x2, y2):
         
-        if (x2 < 0 or x2>7 or y2 < 0 or y2>7): 
-            return False
+        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False
 
         # 나이트 기본 행마
         if (x2-self.p_x == 2) or (x2-self.p_x == -2): # 동쪽 or 서쪽으로 2칸일 때
@@ -216,7 +215,7 @@ class King(Horse):#킹
     
     def moveable(self, board, x2, y2):
         
-        if (x2<0 or x2>7 or y2<0 or y2>7) : return False
+        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False
         
         # 킹 기본 행마
         if (((x2-self.p_x == -1) or (x2-self.p_x == +1)) and (-1 <= y2-self.p_y <= 1)) or (
