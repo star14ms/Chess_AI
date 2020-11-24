@@ -127,11 +127,9 @@ class Bishop(Horse):#비숍
         #대각선 조건
         #(x2,y2)에 같은 색의 말이 아닌 조건
         #가는 길을 다른 말이 막지 않는 조건
-        print(board.pos(x2,y2))
-        print(board.pos(x2,y2).color)
         if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7 or not abs(self.p_x - x2) == abs(self.p_y - y2) or board.pos(x2,y2).color == self.color): return False#(x2,y2)범위, 대각선 조건, (x2,y2)에 같은 색의 말이 아닌 조건 체크
 
-        amount = abs(x2 - p_x) #거리
+        amount = abs(x2 - self.p_x) #거리
         if x2-self.p_x < 0 : lr = 1
         else : lr = -1
         if y2-self.p_x < 0 : ud = 1
@@ -140,7 +138,7 @@ class Bishop(Horse):#비숍
         for i in range(1, amount+1):#가는 길을 다른 말이 막지 않을 조건
             x3 = i * lr
             y3 = -(i * ud)
-            if (type(self.pos(x3, y3)) != Empty): return False
+            if (type(board.pos(x3, y3)) != Empty): return False
             else: break
         
         return True # 모든 조건을 검사했으니, True 출력
