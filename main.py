@@ -600,7 +600,7 @@ while not quit:
                         print_xy_to_move(to_move_xy, to_move_chessboard_xy)
                         
                         # 폰이 승진할 수 있다면 
-                        if (str(type(selected_piece)) == "<class 'main_module.Pawn'>") and (
+                        if (type(selected_piece) == Pawn) and (
                             (((whose_turn == -1) and (to_move_xy[1] == 0)) or (
                             (whose_turn == 1) and (to_move_xy[1] == 7)))):
 
