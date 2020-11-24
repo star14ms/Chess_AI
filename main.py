@@ -123,10 +123,10 @@ def do_init(): # 판에 말을 세팅해놓는다
     pawn_w2 = Pawn(board, 1, 6, -1)
     pawn_w3 = Pawn(board, 2, 6, -1)
     pawn_w4 = Pawn(board, 3, 6, -1)
-    pawn_w5 = Pawn(board, 4, 6, -1)
-    pawn_w6 = Pawn(board, 5, 6, -1)
-    pawn_w7 = Pawn(board, 6, 6, -1)
-    pawn_w8 = Pawn(board, 7, 6, -1)
+    # pawn_w5 = Pawn(board, 4, 6, -1)
+    # pawn_w6 = Pawn(board, 5, 6, -1)
+    # pawn_w7 = Pawn(board, 6, 6, -1)
+    # pawn_w8 = Pawn(board, 7, 6, -1)
     
     rook_w1 = Rook(board, 0, 7, -1)
     knight_w1 = Knight(board, 1, 7, -1) # (1,7) 좌표에 백색 나이트 생성
@@ -152,7 +152,7 @@ def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운�
     # screen.blit(img_knight_b,(600,0))
     screen.blit(img_rook_b,(700,0))
 
-    for x in range(0, 1000, 100):
+    for x in range(0, 800, 100):
         screen.blit(img_pawn_b,(x,100))
 
     # 백의 말들
@@ -165,7 +165,7 @@ def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운�
     screen.blit(img_knight_w,(600,700))
     screen.blit(img_rook_w,(700,700))
 
-    for x in range(0, 1000, 100):
+    for x in range(0, 400, 100):
         screen.blit(img_pawn_w,(x,600))
 
 # 클릭한 위치의 좌표를 저장한다
