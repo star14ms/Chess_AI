@@ -86,14 +86,14 @@ class Pawn(Horse):#폰
                 if self.p_y == 6 and (1 <= self.p_y - y2 <=2) : return True  #첫 턴, 움직임
                 elif self.p_y - y2 == 1 : return True# 1>턴, 움직임
 
-            elif abs(self.p_x - x2) == 1 and self.p_y - y2 == 1 and board.pos(x2,y2) != Empty and board.pos(x2, y2).color != self.color : return True#공격
+            elif abs(self.p_x - x2) == 1 and self.p_y - y2 == 1 and type(board.pos(x2,y2)) != Empty and board.pos(x2, y2).color != self.color : return True#공격
 
         else:
             if self.p_x == x2 and type(board.pos(x2,y2) == Empty):#앞으로 움직임
                 if self.p_y == 1 and (-2 <= self.p_y - y2 <= -1) : return True #첫 턴, 움직임
                 elif self.p_y - y2 == -1 : return True# 1>턴, 움직임
-            elif abs(self.p_x - x2) == 1 and self.p_y - y2 == -1 and board.pos(x2,y2) != Empty and board.pos(x2, y2).color != self.color : return True#공격
-
+            elif abs(self.p_x - x2) == 1 and self.p_y - y2 == -1 and type(board.pos(x2,y2)) != Empty and board.pos(x2, y2).color != self.color : return True#공격
+        return False
         #type(board.pos(x2,y2-1)) != Empty and board.pos(x2,y2-1).color != self.color and type(board.pos(x2,y2-1)) == Pawn and type(board.pos(x2,y2)) == Empty: enp = True
 
         
