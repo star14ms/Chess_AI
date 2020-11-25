@@ -81,24 +81,21 @@ class Pawn(Horse):#폰
         if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False#좌표값 체크
          #(x2,y2-1)좌표의 말의 색이 다르고, 폰이면 앙파상 가능
 
-        if (board.front == self.color):#플레이어 폰
-            if type(board.pos(x2,y2-1)) != Empty and board.pos(x2,y2-1).color != self.color and type(board.pos(x2,y2-1)) == Pawn and type(board.pos(x2,y2)) == Empty: enp = True
-            if self.first_turn == True:
-                if ((self.p_x == x2) and (1 <= y2 - self.p_y <=2)): self.first_turn = False
-                else: return False
-            else:
-                if ((self.p_x == x2) and self.p_y == y2-1): pass
-                elif enp == True : pass
-                else : return False
-        else:#상대방 폰
-            if type(board.pos(x2,y2+1)) != Empty and board.pos(x2,y2+1).color != self.color and type(board.pos(x2,y2+1)) == Pawn and type(board.pos(x2,y2)) == Empty: enp = True
-            if self.first_turn == True:
-                if ((self.p_x == x2) and (-2 <= y2 - self.p_y <= -1)): self.first_turn = False
-                else : return False
-            else:
-                if ((self.p_x == x2) and self.p_y == y2+1): pass
-                elif enp == True : pass
-                else : return False
+        if board.front == self.color:
+            if self.p_x == x2 and type(board.pos(x2,y2)) == Empty:#앞으로 움직임
+                if self.p_y == 6 and (1 <= self.p_y - y2 <=2) : return True  #첫 턴, 움직임
+                elif self.p_y - y2 == 1 : return True# 1>턴, 움직임
+
+            elif abs(self.p_x - x2) == 1 and self.p_y - y2 == 1 and board.pos(x2,y2) != Empty and board.pos(x2, y2).color != self.color : return True#공격
+
+        else:
+            if self.p_x == x2 and type(board.pos(x2,y2) == Empty):#앞으로 움직임
+                if self.p_y == 1 and (-2 <= self.p_y - y2 <= -1) : return True #첫 턴, 움직임
+                elif self.p_y - y2 == -1 : return True# 1>턴, 움직임
+            elif abs(self.p_x - x2) == 1 and self.p_y - y2 == -1 and board.pos(x2,y2) != Empty and board.pos(x2, y2).color != self.color : return True#공격
+
+        #type(board.pos(x2,y2-1)) != Empty and board.pos(x2,y2-1).color != self.color and type(board.pos(x2,y2-1)) == Pawn and type(board.pos(x2,y2)) == Empty: enp = True
+
         
     def move(self, board, x2, y2):
         if not self.moveable(board, x2, y2) : return False
@@ -133,8 +130,7 @@ class Bishop(Horse):#비숍
         if x2-self.p_x < 0 : lr = -1 #lr : -1, +1 오른쪽 위면 lr = 1, du = -1
         else : lr = 1
         if y2-self.p_y < 0 : du = -1 #ud : -1, +1
-        else : ud = 1
-        print('대각선')
+        else : du = 1
         for i in range(1, amount+1):#가는 길을 다른 말이 막지 않을 조건
             x3 = self.p_x + i * lr
             y3 = self.p_y + i * du
