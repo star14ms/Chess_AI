@@ -104,11 +104,11 @@ class Pawn(Horse):#폰
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
             self.p_y = y2
-        elif board.killable(self.p_x, self.p_y, x2, y2-1):
-            board.move(self.p_x, self.p_y, x2, y2)
-            board.delete(x2, y2-1)
-            self.p_x = x2
-            self.p_y = y2
+        # elif board.killable(self.p_x, self.p_y, x2, y2-1): #앙파상 미구현됨
+        #     board.move(self.p_x, self.p_y, x2, y2)
+        #     board.delete(x2, y2-1)
+        #     self.p_x = x2
+        #     self.p_y = y2
         else:
             board.move(self.p_x, self.p_y, self.p_x, y2)
             self.p_x = x2
