@@ -54,7 +54,6 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
         elif (type(self) == Rook) or (type(self) == King):
             self.moved = False
     
-    
     def move(self, board, x2, y2):
         
         if not self.moveable(board, x2, y2):
@@ -166,8 +165,6 @@ class Knight(Horse):#나이트
     
     def moveable(self, board, x2, y2):
         
-        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False
-
         # 나이트 기본 행마
         if (x2-self.p_x == 2) or (x2-self.p_x == -2): # 동쪽 or 서쪽으로 2칸일 때
             if (y2-self.p_y != 1) and (y2-self.p_y != -1): return False # 남쪽 or 북쪽으로 1칸이 아니면, 이동 실패
@@ -176,7 +173,7 @@ class Knight(Horse):#나이트
         else:
             return False
 
-        if (type(board.pos(x2, y2)) != Empty) and (board.pos(x2, y2).color == self.color): 
+        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7) or (board.pos(x2, y2).color == self.color): # 좌표 범위 밖이거나, 우리편과 겹치나 조사
             return False
         
         return True
@@ -210,13 +207,11 @@ class King(Horse):#킹
     
     def moveable(self, board, x2, y2):
         
-        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False
-        
         # 킹 기본 행마
         if (((x2-self.p_x == -1) or (x2-self.p_x == +1)) and (-1 <= y2-self.p_y <= 1)) or (
             ((y2-self.p_y == -1) or (y2-self.p_y == +1)) and (-1 <= x2-self.p_x <= 1)):
-            if (type(board.pos(x2, y2)) != Empty) and (board.pos(x2, y2).color == self.color): # 같은 색 기물이 있는 곳이면, 이동 실패
-                return False
+            if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7) or (board.pos(x2, y2).color == self.color): 
+                return False # 좌표 범위 밖이거나, 우리편과 겹치나 조사
             else:
                 self.moved = True
                 return True
