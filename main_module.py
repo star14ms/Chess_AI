@@ -3,8 +3,7 @@ class Board:
         self.front = f #플레이어가 플레이 할 색깔. False면 흰색 폰을 움직였을 때 +방향으로 나아가고 흑색 폰을 움직이면 -방향으로 나아간다.
         self.board = [[0 for col in range(8)] for row in range(8)]
         for i in range(0, 8):
-            for j in range(0, 8):
-                self.board[i][j] = Empty()
+            for j in range(0, 8): self.board[i][j] = Empty()
         self.history = []#기보 기록
         
     def delete(self, x, y):#x,y 좌표의 말 삭제
