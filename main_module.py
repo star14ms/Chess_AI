@@ -17,8 +17,9 @@ class Board:
         
     def move(self, x1, y1, x2, y2):#(x1, y1) -> (x2, y2)로 말의 이동. 색깔 상관없이 기존 (x2, y2)의 말을 지워버리니 주의할 것
         self.insert(x2, y2, self.pos(x1, y1))
+        self.pos(x1,y1).horse_history.append((x1, y1))#자신의 좌표 튜플을 기록한다.
+        self.history.append(self.pos(x1,y1))#(x1,y1)좌표의 말 클래스를 기보에 기록한다.
         self.delete(x1, y1)
-        self.history.append(self.pos(x1,y1))#(x1,y1)좌표의 말을 기보에 기록한다.
 
     def killable(self, x1, y1, x2, y2):#(x2,y2)에 말이 있고 색깔이 다르면 True, 아니면 False 출력
         if (type(self.pos(x2,y2)) != Empty) and (self.pos(x1,y1).color != self.pos(x2, y2).color) : return True
