@@ -45,6 +45,7 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
         self.p_x = x
         self.p_y = y
         self.color = color # -1 -> 백, 1 -> 흑
+        self.horse_history = []#말 기록
         board.insert(x, y, self)
         
         # 특정 말의 추가 정보
@@ -75,7 +76,6 @@ class Empty:
 class Pawn(Horse):#폰
     
     def moveable(self, board, x2, y2):
-        enp = False
         if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7): return False#좌표값 체크
          #(x2,y2-1)좌표의 말의 색이 다르고, 폰이면 앙파상 가능
 
@@ -142,22 +142,43 @@ class Bishop(Horse):#비숍
 class Rook(Horse):#룩
     
     def moveable(self, board, x2, y2):
-        if (type(board.pos(x2, y2)) != Empty) and (board.pos(x2, y2).color == self.color):
-            return False
-        elif(x2 >= 8 or x2<0 or y2<0 or y2 >= 8 ) : return False
-        elif(x2 == p_x and y2 == p_y) : return False
-        elif(x2 - p_x != 0 and y2 == p_x != 0) : return False
-        else :
-            if(x2 - p_x == 0) :
-                for i in range(p_y,y2):
-                    if (type(pos(x2,i)) != Empty) :
-                        return False
-                    else : return True
-            else :
-                for i in range(p_x,x2):
-                    if (type(pos(i,y2)) != Empty):
-                        return False
-                    else : return True
+        #가는 길을 다른 말이 막지 않는 조건
+        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7 or board.pos(x2,y2).color == self.color): return False
+        if x2-self.p_x == y2-self.p_y == 0 : return False
+
+        if (x2 == self.p_x):
+            am = abs(self.p_y - y2)#거리
+            for i in range(1, am):
+                if self.p_y < y2:
+                    if type(board.pos(x2, self.p_y+i)) != Empty : return False
+                else :
+                    print(board.pos(x2, self.p_y-i))
+                    if type(board.pos(x2, self.p_y-i)) != Empty : return False
+        elif (y2-self.p_y == 0):
+            am = abs(self.p_x - x2)#거리
+            for i in range(1, am):
+                if self.p_x < x2:
+                    if type(board.pos(self.p_x+i, y2)) != Empty : return False
+                else :
+                    if type(board.pos(self.p_x-i, y2)) != Empty : return False
+        else: return False
+        return True
+        # if (type(board.pos(x2, y2)) != Empty) and (board.pos(x2, y2).color == self.color):
+        #     return False
+        # elif(x2 >= 8 or x2<0 or y2<0 or y2 >= 8 ) : return False
+        # elif(x2 == p_x and y2 == p_y) : return False
+        # elif(x2 - p_x != 0 and y2 == p_x != 0) : return False
+        # else :
+        #     if(x2 - p_x == 0) :
+        #         for i in range(p_y,y2):
+        #             if (type(pos(x2,i)) != Empty) :
+        #                 return False
+        #             else : return True
+        #     else :
+        #         for i in range(p_x,x2):
+        #             if (type(pos(i,y2)) != Empty):
+        #                 return False
+        #             else : return True
     
     
 class Knight(Horse):#나이트
