@@ -193,35 +193,38 @@ class Knight(Horse):#나이트
         else:
             return False
 
-        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7) or (board.pos(x2, y2).color == self.color): # 좌표 범위 밖이거나, 우리편과 겹치나 조사
+        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7) or (board.pos(x2, y2).color == self.color): # 좌표 범위 밖이거나, 우리편과 겹치나 검사
             return False
-        
+
         return True
         
 
 class Queen(Horse):#퀸
         
-    def moveable(self, x2, y2):
-        if(x2 < 0 or x2>7 or y2 < 0 or y2>7) : return False
-        elif(board.pos(x2, y2).color == self.color) : return False
-        elif(x2 - p_x != 0 and y2 - p_x != 0) : return False
-        elif(x2 == p_x and y2 == p_y) : return False
-        elif(x2 - p_x == y2 - p_y) :
-            for i in range(1, x2 - p_x):
-                if(type(pos(p_x + i, p_y + i)) != Empty) : return False
-            return True
-        else:
-            if(x2 - p_x == 0) :
-                for i in range(p_y,y2):
-                    if (type(pos(x2,i)) != Empty) :
-                        return False
-                    else : return True
-            else :
-                for i in range(p_x,x2):
-                    if (type(pos(i,y2)) != Empty):
-                        return False
-                    else : return True
-        
+    def moveable(self, board, x2, y2):
+
+        lr = 1 if (x2-self.p_x > 0) else (-1 if (x2-self.p_x < 0) else 0) # x 이동 방향 right(1), left(-1), 0(None)
+        ud = 1 if (y2-self.p_y > 0) else (-1 if (y2-self.p_y < 0) else 0) # y 이동 방향 down(1), up(-1), 0(None)
+
+        # 대각선, 가로, 세로 방향 중 하나인가 검사
+        if ((abs(x2-self.p_x) == abs(y2-self.p_y)) and (lr != 0)) or ((lr != 0) and (ud == 0)) or ((lr == 0) and (ud != 0)):
+            
+            amount = abs(x2-self.p_x) if (x2-self.p_x != 0) else abs(y2-self.p_y)
+            x_focus, y_focus = self.p_x, self.p_y
+
+            for i in range(1, amount): # 시점을 한 칸씩 이동시키며 빈 곳인지 검사
+                x_focus = x_focus + lr
+                y_focus = y_focus + ud
+                if (type(board.pos(x_focus, y_focus)) != Empty):
+                    return False
+        else: 
+            return False
+
+        if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7) or (board.pos(x2, y2).color == self.color): 
+            return False # 좌표 범위 밖이거나, 우리편과 겹치나 조사
+            
+        return True
+
 
 class King(Horse):#킹
     
@@ -229,7 +232,7 @@ class King(Horse):#킹
         
         # 킹 기본 행마
         if (((x2-self.p_x == -1) or (x2-self.p_x == +1)) and (-1 <= y2-self.p_y <= 1)) or (
-            ((y2-self.p_y == -1) or (y2-self.p_y == +1)) and (-1 <= x2-self.p_x <= 1)):
+            ((y2-self.p_y == -1) or (y2-self.p_y == +1)) and (x2-self.p_x == 0)):
             if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7) or (board.pos(x2, y2).color == self.color): 
                 return False # 좌표 범위 밖이거나, 우리편과 겹치나 조사
             else:
