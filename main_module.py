@@ -142,7 +142,6 @@ class Bishop(Horse):#비숍
 class Rook(Horse):#룩
     
     def moveable(self, board, x2, y2):
-        #가는 길을 다른 말이 막지 않는 조건
         if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7 or board.pos(x2,y2).color == self.color): return False
         if x2-self.p_x == y2-self.p_y == 0 : return False
 
@@ -163,22 +162,6 @@ class Rook(Horse):#룩
                     if type(board.pos(self.p_x-i, y2)) != Empty : return False
         else: return False
         return True
-        # if (type(board.pos(x2, y2)) != Empty) and (board.pos(x2, y2).color == self.color):
-        #     return False
-        # elif(x2 >= 8 or x2<0 or y2<0 or y2 >= 8 ) : return False
-        # elif(x2 == p_x and y2 == p_y) : return False
-        # elif(x2 - p_x != 0 and y2 == p_x != 0) : return False
-        # else :
-        #     if(x2 - p_x == 0) :
-        #         for i in range(p_y,y2):
-        #             if (type(pos(x2,i)) != Empty) :
-        #                 return False
-        #             else : return True
-        #     else :
-        #         for i in range(p_x,x2):
-        #             if (type(pos(i,y2)) != Empty):
-        #                 return False
-        #             else : return True
     
     
 class Knight(Horse):#나이트
