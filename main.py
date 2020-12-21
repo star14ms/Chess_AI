@@ -103,12 +103,12 @@ sound_promotion = pygame.mixer.Sound("sound\승진.wav")
 def do_init(): # 판에 말을 세팅해놓는다
     
     rook_b1 = Rook(board, 0, 0, 1)
-    # knight_b1 = Knight(board, 1, 0, 1) #(1,0)좌표에 흑색 나이트 생성
-    # bishop_bb = Bishop(board, 2, 0, 1)
-    # queen_b = Queen(board, 3, 0, 1)
+    knight_b1 = Knight(board, 1, 0, 1) #(1,0)좌표에 흑색 나이트 생성
+    bishop_bb = Bishop(board, 2, 0, 1)
+    queen_b = Queen(board, 3, 0, 1)
     king_b = King(board, 4, 0, 1)
-    # bishop_bw = Bishop(board, 5, 0, 1)
-    # knight_b2 = Knight(board, 6, 0, 1)
+    bishop_bw = Bishop(board, 5, 0, 1)
+    knight_b2 = Knight(board, 6, 0, 1)
     rook_b2 = Rook(board, 7, 0, 1)
 
     pawn_b1 = Pawn(board, 0, 1, 1) #(0,1)좌표에 흑색 폰 생성
@@ -123,11 +123,11 @@ def do_init(): # 판에 말을 세팅해놓는다
     pawn_w1 = Pawn(board, 0, 6, -1) 
     pawn_w2 = Pawn(board, 1, 6, -1)
     pawn_w3 = Pawn(board, 2, 6, -1)
-    # pawn_w4 = Pawn(board, 3, 6, -1)
-    # pawn_w5 = Pawn(board, 4, 6, -1)
-    # pawn_w6 = Pawn(board, 5, 6, -1)
-    # pawn_w7 = Pawn(board, 6, 6, -1)
-    # pawn_w8 = Pawn(board, 7, 6, -1)
+    pawn_w4 = Pawn(board, 3, 6, -1)
+    pawn_w5 = Pawn(board, 4, 6, -1)
+    pawn_w6 = Pawn(board, 5, 6, -1)
+    pawn_w7 = Pawn(board, 6, 6, -1)
+    pawn_w8 = Pawn(board, 7, 6, -1)
     
     rook_w1 = Rook(board, 0, 7, -1)
     knight_w1 = Knight(board, 1, 7, -1) # (1,7) 좌표에 백색 나이트 생성
@@ -145,12 +145,12 @@ def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운�
 
     # 흑의 말들
     screen.blit(img_rook_b,(0,0))
-    # screen.blit(img_knight_b,(100,0))
-    # screen.blit(img_bishop_b,(200,0))
-    # screen.blit(img_queen_b,(300,0))
+    screen.blit(img_knight_b,(100,0))
+    screen.blit(img_bishop_b,(200,0))
+    screen.blit(img_queen_b,(300,0))
     screen.blit(img_king_b,(400,0))
-    # screen.blit(img_bishop_b,(500,0))
-    # screen.blit(img_knight_b,(600,0))
+    screen.blit(img_bishop_b,(500,0))
+    screen.blit(img_knight_b,(600,0))
     screen.blit(img_rook_b,(700,0))
 
     for x in range(0, 800, 100):
@@ -166,7 +166,7 @@ def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운�
     screen.blit(img_knight_w,(600,700))
     screen.blit(img_rook_w,(700,700))
 
-    for x in range(0, 300, 100):
+    for x in range(0, 800, 100):
         screen.blit(img_pawn_w,(x,600))
 
 # 클릭한 위치의 좌표를 저장한다
