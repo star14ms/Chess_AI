@@ -38,6 +38,13 @@ class Board:
             Board.insert(x1,y1,horse)
             return False
         
+    def being_attacked(self, x2, y2, color):
+        for y1 in range(8):
+            for x1 in range(8):
+                if (self.pos(x1, y1).color == color*-1) and (self.pos(x1, y1).moveable(self, x2, y2)): ### self.board -> self
+                    return True
+        return False
+
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
     
     def __init__(self, board, x, y, color):
@@ -75,6 +82,7 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
 class Empty:
     color = 0
     horse_history = [(-1,-1)]
+    
 class Pawn(Horse):#폰
     
     def moveable(self, board, x2, y2):
@@ -237,11 +245,14 @@ class King(Horse):#킹
                 return True
 
         # 캐슬링
-        elif (not self.moved):
+        elif (not self.moved) and (not self.checked(board)):
             
             # 킹 사이드 캐슬링
             if (x2-self.p_x == -2) and (y2 == self.p_y) and (
-                type(board.pos(self.p_x-1, self.p_y)) == Empty) and (type(board.pos(self.p_x-2, self.p_y)) == Empty) and (type(board.pos(self.p_x-3, self.p_y)) == Empty):
+                type(board.pos(self.p_x-1, self.p_y)) == Empty) and (type(board.pos(self.p_x-2, self.p_y)) == Empty) and (type(board.pos(self.p_x-3, self.p_y)) == Empty) and (
+                not board.being_attacked(self.p_x-1, self.p_y, self.color)) and (
+                not board.being_attacked(self.p_x-2, self.p_y, self.color)):
+
                 if self.color == -1:
                     board.move(0, 7, 3, 7) # 룩도 이동
                     return True
@@ -251,7 +262,10 @@ class King(Horse):#킹
             
             # 퀸 사이드 캐슬링
             elif (x2-self.p_x == +2) and (y2 == self.p_y) and (
-                type(board.pos(self.p_x+1, self.p_y)) == Empty) and (type(board.pos(self.p_x+2, self.p_y)) == Empty):
+                type(board.pos(self.p_x+1, self.p_y)) == Empty) and (type(board.pos(self.p_x+2, self.p_y)) == Empty) and (
+                not board.being_attacked(self.p_x+1, self.p_y, self.color)) and (
+                not board.being_attacked(self.p_x+2, self.p_y, self.color)):
+                
                 if self.color == -1:
                     board.move(7, 7, 5, 7)
                     return True
@@ -263,20 +277,22 @@ class King(Horse):#킹
         else:
             return False
     
-    def check(self,board):
-        if(board.attack(board,p_x,p_y) == False):
-            return True # 체크이다.
+    def checked(self, board):
+        if board.being_attacked(self.p_x, self.p_y, self.color):
+            return True # 체크이다
+        else:
+            return False # 체크가 아니다
     
-    def checkmate(self,board):
-        if(board.attack(board,p_x,p_y) == False): # 왕을 제외한 나머지 기물은 모두 이동불가이거나 모두 잡혀있을 떄의 조건 추가해야함
-            if(p_x < 7 and board.attack(board,p_x+1,p_y) == False):
-                if(p_x > 0 and board.attack(board,p_x-1,p_y) == False):
-                    if(p_y < 7 and board.attack(board,p_x,p_y+1) == False):
-                        if(p_x > 0 and board.attack(board,p_x,p_y-1) == False):
-                            if(p_x < 7 and p_y < 7 and board.attack(board,p_x+1,p_y+1) == False):
-                                if(p_x < 7 and p_y >0 and board.attack(board,p_x+1,p_y-1) == False):
-                                    if(p_x > 0 and p_y < 7 and board.attack(board,p_x-1,p_y+1) == False):
-                                        if(p_x < 7 and p_y < 7 and board.attack(board,p_x+1,p_y+1) == False):
-                                            return True # 체크 메이트 상태이다.
+    # def checkmate(self,board):
+    #     if(board.attack(board,self.p_x,self.p_y) == False): # 왕을 제외한 나머지 기물은 모두 이동불가이거나 모두 잡혀있을 떄의 조건 추가해야함
+    #         if(self.p_x < 7 and board.attack(board,self.p_x+1,self.p_y) == False):
+    #             if(self.p_x > 0 and board.attack(board,self.p_x-1,self.p_y) == False):
+    #                 if(self.p_y < 7 and board.attack(board,self.p_x,self.p_y+1) == False):
+    #                     if(self.p_x > 0 and board.attack(board,self.p_x,self.p_y-1) == False):
+    #                         if(self.p_x < 7 and self.p_y < 7 and board.attack(board,self.p_x+1,self.p_y+1) == False):
+    #                             if(self.p_x < 7 and self.p_y >0 and board.attack(board,self.p_x+1,self.p_y-1) == False):
+    #                                 if(self.p_x > 0 and self.p_y < 7 and board.attack(board,self.p_x-1,self.p_y+1) == False):
+    #                                     if(self.p_x < 7 and self.p_y < 7 and board.attack(board,self.p_x+1,self.p_y+1) == False):
+    #                                         return True # 체크 메이트 상태이다.
 
 
