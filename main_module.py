@@ -46,8 +46,9 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
         self.p_x = x
         self.p_y = y
         self.color = color # -1 -> 백, 1 -> 흑
-        self.horse_history = []#말 기록
+        self.horse_history = [(self.p_x, self.p_y)]#말 기록
         board.insert(x, y, self)
+
         
         # 특정 말의 추가 정보
         if (type(self) == Pawn):
@@ -73,7 +74,7 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
 
 class Empty:
     color = 0
-
+    horse_history = [(-1,-1)]
 class Pawn(Horse):#폰
     
     def moveable(self, board, x2, y2):
@@ -86,28 +87,40 @@ class Pawn(Horse):#폰
                 elif self.p_y - y2 == 1 : return True# 1>턴, 움직임
 
             elif abs(self.p_x - x2) == 1 and self.p_y - y2 == 1 and type(board.pos(x2,y2)) != Empty and board.pos(x2, y2).color != self.color : return True#공격
+            elif board.pos(x2,y2+1).horse_history[0][1] == 1 and abs(self.p_x - x2) == 1 and self.p_y - y2 == 1 and type(board.pos(x2,y2)) == Empty:
+                print('enp!')
+                return 'enp'
 
         else:
             if self.p_x == x2 and type(board.pos(x2,y2) == Empty):#앞으로 움직임
                 if self.p_y == 1 and (-2 <= self.p_y - y2 <= -1) : return True #첫 턴, 움직임
                 elif self.p_y - y2 == -1 : return True# 1>턴, 움직임
             elif abs(self.p_x - x2) == 1 and self.p_y - y2 == -1 and type(board.pos(x2,y2)) != Empty and board.pos(x2, y2).color != self.color : return True#공격
+            elif board.pos(x2,y2-1).horse_history[0][1] == 6 and abs(self.p_x - x2) == 1 and self.p_y - y2 == -1 and type(board.pos(x2,y2)) == Empty :
+                print('enp!')
+                return 'enp'
         return False
-        #type(board.pos(x2,y2-1)) != Empty and board.pos(x2,y2-1).color != self.color and type(board.pos(x2,y2-1)) == Pawn and type(board.pos(x2,y2)) == Empty: enp = True
 
         
     def move(self, board, x2, y2):
-        if not self.moveable(board, x2, y2) : return False
+        tf = self.moveable(board, x2, y2)
+        if tf == False : return False
 
-        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+        if board.front == self.color and tf == 'enp':
+            if board.killable(self.p_x, self.p_y, x2, y2-1):
+                board.move(self.p_x, self.p_y, x2, y2)
+                board.delete(x2, y2-1)
+                self.p_x = x2
+                self.p_y = y2
+            elif board.killable(self.p_x, self.p_y, x2, y2+1):
+                board.move(self.p_x, self.p_y, x2, y2)
+                board.delete(x2, y2+1)
+                self.p_x = x2
+                self.p_y = y2
+        elif board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
             self.p_y = y2
-        # elif board.killable(self.p_x, self.p_y, x2, y2-1): #앙파상 미구현됨
-        #     board.move(self.p_x, self.p_y, x2, y2)
-        #     board.delete(x2, y2-1)
-        #     self.p_x = x2
-        #     self.p_y = y2
         else:
             board.move(self.p_x, self.p_y, self.p_x, y2)
             self.p_x = x2
