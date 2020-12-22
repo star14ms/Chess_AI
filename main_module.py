@@ -38,12 +38,55 @@ class Board:
     #         Board.insert(x1,y1,horse)
     #         return False
         
-    def being_attacked(self, x2, y2, color):
-        for y1 in range(8):
-            for x1 in range(8):
+    def being_attacked(self, x2, y2, color): # x2, y2 자리가 공격받는 자리인가 판단
+        
+        for y1 in range(8): # 보드 전체를 검사해
+            for x1 in range(8): # x2, y2 좌표로 이동할 수 있는 상대 기물이 있는지 검사
                 if (self.pos(x1, y1).color == color*-1) and (self.pos(x1, y1).moveable(self, x2, y2)): ### self.board -> self
                     return True
         return False
+
+    def can_defend(self, x, y, color): # x, y 자리를 방어할 수 있는지 검사
+        
+        board2 = Board(-1) # 보드 복사하기 (시뮬레이션용)
+        board2.board = self.board
+        dangerous = True
+
+        for y1 in range(8): # 보드 전체를 검사해 내 기물들을 찾고
+            for x1 in range(8): 
+                if (self.pos(x1, y1).color == color):
+                     
+                    for y2 in range(8): # 그 기물이 움직였을때 x, y에 있는 기물이 안전해질 수 있는 경우가 있나 검사
+                        for x2 in range(8):
+
+                            xy1_horse = board2.pos(x1, y1) # 움직일 기물 백업
+                            xy2_horse = board2.pos(x2, y2) # 먹히는 기물 백업
+
+                            if board2.pos(x1, y1).moveable(board2, x2, y2):
+
+                                print(board2.pos(x1, y1), "가", x2, y2, "로 이동가능", end=" ")
+                                board2.insert(x2, y2, board2.pos(x1, y1))
+                                board2.delete(x1, y1)
+
+                                if (x == x1) and (y == y1): # 1. 공격받는 자신이 직접 자리를 피하기
+                                    dangerous2 = board2.being_attacked(x2, y2, color)
+                                else:                       # 2. 다른 기물을 움직여 방패세우기
+                                    dangerous2 = board2.being_attacked(x, y, color) ### self. -> board2.
+
+                                board2.insert(x1, y1, xy1_horse) # 보드 되돌리기
+                                board2.insert(x2, y2, xy2_horse)
+
+                                if not dangerous2:
+                                    print(x, y, "방어 가능!")
+                                    dangerous = False
+                                else:
+                                    print(x, y, "은 여전히 위험")
+        if not dangerous:
+            return True
+        return False
+                    
+
+
 
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
     
@@ -82,7 +125,8 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
 class Empty:
     color = 0
     horse_history = [(-1,-1)]
-    
+
+
 class Pawn(Horse):#폰
     
     def moveable(self, board, x2, y2):
@@ -155,7 +199,7 @@ class Bishop(Horse):#비숍
             x3 = self.p_x + i * lr
             y3 = self.p_y + i * du
             if (type(board.pos(x3, y3)) != Empty):
-                print(x3, y3)
+                # print(x3, y3)
                 return False
             else: break
         return True # 모든 조건을 검사했으니, True 출력
@@ -184,8 +228,8 @@ class Rook(Horse):#룩
                     if type(board.pos(self.p_x-i, y2)) != Empty : return False
         else: return False
         return True
-    
-    
+
+
 class Knight(Horse):#나이트
     
     def moveable(self, board, x2, y2):
@@ -202,7 +246,7 @@ class Knight(Horse):#나이트
             return False
 
         return True
-        
+
 
 class Queen(Horse):#퀸
         
@@ -287,6 +331,8 @@ class King(Horse):#킹
             return False # 체크가 아니다
     
     def checkmate(self, board):
+        
+        # 주변 8곳이 공격받거나 막혀있을 때
         if ((not 0 <= self.p_x-1) or board.being_attacked(self.p_x-1, self.p_y, self.color) or not self.moveable(board, self.p_x-1, self.p_y)) and (
             (not self.p_x+1 <= 7) or board.being_attacked(self.p_x+1, self.p_y, self.color) or not self.moveable(board, self.p_x+1, self.p_y)) and (
             (not 0 <= self.p_y-1) or board.being_attacked(self.p_x, self.p_y-1, self.color) or not self.moveable(board, self.p_x, self.p_y-1)) and (
@@ -295,13 +341,16 @@ class King(Horse):#킹
             (not 0 <= self.p_x-1) or (not self.p_y+1 <= 7) or board.being_attacked(self.p_x-1, self.p_y+1, self.color) or not self.moveable(board, self.p_x-1, self.p_y+1)) and (
             (not self.p_x+1 <= 7) or (not 0 <= self.p_y-1) or board.being_attacked(self.p_x+1, self.p_y-1, self.color) or not self.moveable(board, self.p_x+1, self.p_y-1)) and (
             (not self.p_x+1 <= 7) or (not self.p_y+1 <= 7) or board.being_attacked(self.p_x+1, self.p_y+1, self.color) or not self.moveable(board, self.p_x+1, self.p_y+1)):
-            if self.checked(board):
+            
+            if self.checked(board) and not board.can_defend(self.p_x, self.p_y, self.color): # 체크면서 방어 못하면 체크메이트
                 print("checkmate!")
                 return "checkmate"
-            else:
+            else: # 체크가 아니면서 (+다른 기물들도 못 움직이면) 스테일메이트
                 return False
                 # print("stalemate!")
                 # return "stalemate"
+        elif self.checked(board):
+            return False
         else:
             return False
 
