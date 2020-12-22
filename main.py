@@ -96,6 +96,7 @@ img_selected = pygame.transform.scale(img_selected,(102,102))
 pygame.mixer.music.load("bgm\Gyakuten_Kenji_2_Showdown_Suite.wav")
 sound_place = pygame.mixer.Sound("sound\체스말_놓기.wav")
 sound_promotion = pygame.mixer.Sound("sound\승진.wav")
+sound_game_end = pygame.mixer.Sound("sound\[효과음]BOING.wav")
 
 ################################################################
 
@@ -497,6 +498,16 @@ def promote(whose_turn, to_move_xy, to_move_win_xy):
                 screen.blit(img_knight_b,(to_move_win_xy[0],to_move_win_xy[1]))
                 return "Completed"
 
+# 승패가 결정났나 확인한다
+def gameover(board):
+    for y in range(8):
+        for x in range(8):
+            if (type(board.pos(x, y)) == King):
+                if (((board.pos(x, y).color) == 1 and (whose_turn == -1)) or (
+                    (board.pos(x, y).color) == -1 and (whose_turn == 1))):
+                    return board.pos(x, y).checkmate(board)
+    return False
+
 ################################################################
 
 # 게임 창 띄우기
@@ -528,6 +539,7 @@ while not quit:
     
     promotionable = False
     game_end = False
+    game_over = False
     print("-" * 64)
 
     # 게임 시작
@@ -544,18 +556,26 @@ while not quit:
                 if event.key == pygame.K_F5: # F5 버튼
                     game_end = True
                 
-            elif event.type == pygame.MOUSEBUTTONUP: # 마우스를 눌렀다 떼는 순간
+                elif event.key == pygame.K_RETURN and game_over != False:
+                    game_end = True
+            
+            elif event.type == pygame.MOUSEBUTTONUP and not game_over: # 마우스를 눌렀다 떼는 순간
                 
                 # 폰 승진 단계
                 if promotionable:
 
                     # 승진할 기물을 클릭하면 승진시키고 턴 전환
                     if promote(whose_turn, to_move_xy, to_move_win_xy) == "Completed":
-
+                        
                         pygame.mixer.Sound.play(sound_promotion)
                         promotionable = False
+                        game_over = gameover(board)
                         whose_turn *= -1
 
+                        if game_over != False:
+                            pygame.mixer.Sound.play(sound_game_end)
+                            pygame.mixer.music.stop()
+                        
                         selected_xy = []
                         selected_win_xy = []
                         selected_chessboard_xy = []
@@ -582,7 +602,7 @@ while not quit:
                         selected_xy = []
                         selected_win_xy = []
                         selected_chessboard_xy = []
-
+                
                 # 기물 움직이기 단계
                 else:
                     
@@ -612,7 +632,12 @@ while not quit:
                         else:
                             screen.blit(img_board,(0,0))
                             screen_blit_all_pieces(board)
+                            game_over = gameover(board)
                             whose_turn *= -1
+
+                            if game_over != False:
+                                pygame.mixer.Sound.play(sound_game_end)
+                                pygame.mixer.music.stop()
     
                     # 갈 수 없는 곳이나, 선택 했던 곳을 또 선택할 경우 선택 취소
                     else:

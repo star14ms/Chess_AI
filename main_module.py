@@ -24,19 +24,19 @@ class Board:
     def killable(self, x1, y1, x2, y2):#(x2,y2)에 말이 있고 색깔이 다르면 True, 아니면 False 출력
         if (type(self.pos(x2,y2)) != Empty) and (self.pos(x1,y1).color != self.pos(x2, y2).color) : return True
         
-    def attack(self, x1, y1):
-        if(Pawn.moveable(board, x1, y1)) : return False
-        elif(Bishop.moveable(board,x1,y1)) : return False
-        elif(Rook.moveable(board,x1,y1)) : return False
-        elif(Knight.moveable(board,x1,y1)) : return False
-        elif(Queen.moveable(board,x1,y1)) : return False
-        elif(King.moveable(board,x1,y1)) : return False
+    # def attack(self, x1, y1):
+    #     if(Pawn.moveable(board, x1, y1)) : return False
+    #     elif(Bishop.moveable(board,x1,y1)) : return False
+    #     elif(Rook.moveable(board,x1,y1)) : return False
+    #     elif(Knight.moveable(board,x1,y1)) : return False
+    #     elif(Queen.moveable(board,x1,y1)) : return False
+    #     elif(King.moveable(board,x1,y1)) : return False
         
-    def move_check(self,x1,y1,horse):
-        Board.delete(x1,y1)
-        if(King.check == True):
-            Board.insert(x1,y1,horse)
-            return False
+    # def move_check(self,x1,y1,horse):
+    #     Board.delete(x1,y1)
+    #     if(King.check == True):
+    #         Board.insert(x1,y1,horse)
+    #         return False
         
     def being_attacked(self, x2, y2, color):
         for y1 in range(8):
@@ -245,11 +245,12 @@ class King(Horse):#킹
                 return True
 
         # 캐슬링
-        elif (not self.moved) and (not self.checked(board)):
+        elif (not self.moved):
             
             # 킹 사이드 캐슬링
             if (x2-self.p_x == -2) and (y2 == self.p_y) and (
                 type(board.pos(self.p_x-1, self.p_y)) == Empty) and (type(board.pos(self.p_x-2, self.p_y)) == Empty) and (type(board.pos(self.p_x-3, self.p_y)) == Empty) and (
+                not self.checked(board)) and (
                 not board.being_attacked(self.p_x-1, self.p_y, self.color)) and (
                 not board.being_attacked(self.p_x-2, self.p_y, self.color)):
 
@@ -263,6 +264,7 @@ class King(Horse):#킹
             # 퀸 사이드 캐슬링
             elif (x2-self.p_x == +2) and (y2 == self.p_y) and (
                 type(board.pos(self.p_x+1, self.p_y)) == Empty) and (type(board.pos(self.p_x+2, self.p_y)) == Empty) and (
+                not self.checked(board)) and (
                 not board.being_attacked(self.p_x+1, self.p_y, self.color)) and (
                 not board.being_attacked(self.p_x+2, self.p_y, self.color)):
                 
@@ -279,10 +281,30 @@ class King(Horse):#킹
     
     def checked(self, board):
         if board.being_attacked(self.p_x, self.p_y, self.color):
+            print("check!")
             return True # 체크이다
         else:
             return False # 체크가 아니다
     
+    def checkmate(self, board):
+        if ((not 0 <= self.p_x-1) or board.being_attacked(self.p_x-1, self.p_y, self.color) or not self.moveable(board, self.p_x-1, self.p_y)) and (
+            (not self.p_x+1 <= 7) or board.being_attacked(self.p_x+1, self.p_y, self.color) or not self.moveable(board, self.p_x+1, self.p_y)) and (
+            (not 0 <= self.p_y-1) or board.being_attacked(self.p_x, self.p_y-1, self.color) or not self.moveable(board, self.p_x, self.p_y-1)) and (
+            (not self.p_y+1 <= 7) or board.being_attacked(self.p_x, self.p_y+1, self.color) or not self.moveable(board, self.p_x, self.p_y+1)) and (
+            (not 0 <= self.p_x-1) or (not 0 <= self.p_y-1) or board.being_attacked(self.p_x-1, self.p_y-1, self.color) or not self.moveable(board, self.p_x-1, self.p_y-1)) and (
+            (not 0 <= self.p_x-1) or (not self.p_y+1 <= 7) or board.being_attacked(self.p_x-1, self.p_y+1, self.color) or not self.moveable(board, self.p_x-1, self.p_y+1)) and (
+            (not self.p_x+1 <= 7) or (not 0 <= self.p_y-1) or board.being_attacked(self.p_x+1, self.p_y-1, self.color) or not self.moveable(board, self.p_x+1, self.p_y-1)) and (
+            (not self.p_x+1 <= 7) or (not self.p_y+1 <= 7) or board.being_attacked(self.p_x+1, self.p_y+1, self.color) or not self.moveable(board, self.p_x+1, self.p_y+1)):
+            if self.checked(board):
+                print("checkmate!")
+                return "checkmate"
+            else:
+                return False
+                # print("stalemate!")
+                # return "stalemate"
+        else:
+            return False
+
     # def checkmate(self,board):
     #     if(board.attack(board,self.p_x,self.p_y) == False): # 왕을 제외한 나머지 기물은 모두 이동불가이거나 모두 잡혀있을 떄의 조건 추가해야함
     #         if(self.p_x < 7 and board.attack(board,self.p_x+1,self.p_y) == False):
@@ -294,5 +316,4 @@ class King(Horse):#킹
     #                                 if(self.p_x > 0 and self.p_y < 7 and board.attack(board,self.p_x-1,self.p_y+1) == False):
     #                                     if(self.p_x < 7 and self.p_y < 7 and board.attack(board,self.p_x+1,self.p_y+1) == False):
     #                                         return True # 체크 메이트 상태이다.
-
 
