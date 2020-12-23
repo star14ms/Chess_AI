@@ -97,6 +97,7 @@ pygame.mixer.music.load("bgm\Gyakuten_Kenji_2_Showdown_Suite.wav")
 sound_place = pygame.mixer.Sound("sound\체스말_놓기.wav")
 sound_promotion = pygame.mixer.Sound("sound\승진.wav")
 sound_game_end = pygame.mixer.Sound("sound\[효과음]BOING.wav")
+sound_check = pygame.mixer.Sound("sound\미스테리.wav")
 
 ################################################################
 
@@ -499,7 +500,7 @@ def promote(whose_turn, to_move_xy, to_move_win_xy):
                 return "Completed"
 
 # 승패가 결정났나 확인한다
-def gameover(board):
+def gamestate(board):
     for y in range(8):
         for x in range(8):
             if (type(board.pos(x, y)) == King):
@@ -556,7 +557,7 @@ while not quit:
                 if event.key == pygame.K_F5: # F5 버튼
                     game_end = True
                 
-                elif event.key == pygame.K_RETURN and game_over != False:
+                elif event.key == pygame.K_RETURN and game_over:
                     game_end = True
             
             elif event.type == pygame.MOUSEBUTTONUP and not game_over: # 마우스를 눌렀다 떼는 순간
@@ -569,10 +570,13 @@ while not quit:
                         
                         pygame.mixer.Sound.play(sound_promotion)
                         promotionable = False
-                        game_over = gameover(board)
+                        game_state = gamestate(board)
                         whose_turn *= -1
 
-                        if game_over != False:
+                        if game_state == "Check":
+                            pygame.mixer.Sound.play(sound_check)
+                        elif game_state == "Checkmate" and game_state == "Stalemate":
+                            game_over = True
                             pygame.mixer.Sound.play(sound_game_end)
                             pygame.mixer.music.stop()
                         
@@ -632,10 +636,13 @@ while not quit:
                         else:
                             screen.blit(img_board,(0,0))
                             screen_blit_all_pieces(board)
-                            game_over = gameover(board)
+                            game_state = gamestate(board)
                             whose_turn *= -1
 
-                            if game_over != False:
+                            if game_state == "Check":
+                                pygame.mixer.Sound.play(sound_check)
+                            elif game_state == "Checkmate" or game_state == "Stalemate":
+                                game_over = True
                                 pygame.mixer.Sound.play(sound_game_end)
                                 pygame.mixer.music.stop()
     

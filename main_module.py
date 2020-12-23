@@ -40,10 +40,18 @@ class Board:
         
     def being_attacked(self, x2, y2, color): # x2, y2 자리가 공격받는 자리인가 판단
         
+        board2 = Board(-1) # 보드 복사하기 (시뮬레이션용)
+        board2.board = self.board
+        xy2_horse = board2.pos(x2, y2)
+        Pawn(board2, x2, y2, color) # x2, y2 좌표의 아군 말이 먹히고 상대 말이 와 있다고 가정한다.
+        
         for y1 in range(8): # 보드 전체를 검사해
-            for x1 in range(8): # x2, y2 좌표로 이동할 수 있는 상대 기물이 있는지 검사
-                if (self.pos(x1, y1).color == color*-1) and (self.pos(x1, y1).moveable(self, x2, y2)): ### self.board -> self
+            for x1 in range(8): # x2, y2 좌표에 있는 말을 잡을 수 있는 상대 기물이 있는지 검사
+                if (board2.pos(x1, y1).color == color*-1) and (board2.pos(x1, y1).moveable(board2, x2, y2)): ### self.board -> self
+                    board2.insert(x2, y2, xy2_horse)
                     return True
+        
+        board2.insert(x2, y2, xy2_horse)
         return False
 
     def can_defend(self, x, y, color): # x, y 자리를 방어할 수 있는지 검사
@@ -56,37 +64,40 @@ class Board:
             for x1 in range(8): 
                 if (self.pos(x1, y1).color == color):
                      
-                    for y2 in range(8): # 그 기물이 움직였을때 x, y에 있는 기물이 안전해질 수 있는 경우가 있나 검사
+                    for y2 in range(8): 
                         for x2 in range(8):
 
                             xy1_horse = board2.pos(x1, y1) # 움직일 기물 백업
                             xy2_horse = board2.pos(x2, y2) # 먹히는 기물 백업
 
-                            if board2.pos(x1, y1).moveable(board2, x2, y2):
+                            try:
+                                if board2.pos(x1, y1).moveable(board2, x2, y2): # 그 기물이 움직일 수 있는 모든 경우를 둬본다
 
-                                print(board2.pos(x1, y1), "가", x2, y2, "로 이동가능", end=" ")
-                                board2.insert(x2, y2, board2.pos(x1, y1))
-                                board2.delete(x1, y1)
-
-                                if (x == x1) and (y == y1): # 1. 공격받는 자신이 직접 자리를 피하기
-                                    dangerous2 = board2.being_attacked(x2, y2, color)
-                                else:                       # 2. 다른 기물을 움직여 방패세우기
-                                    dangerous2 = board2.being_attacked(x, y, color) ### self. -> board2.
-
-                                board2.insert(x1, y1, xy1_horse) # 보드 되돌리기
-                                board2.insert(x2, y2, xy2_horse)
-
-                                if not dangerous2:
-                                    print(x, y, "방어 가능!")
-                                    dangerous = False
-                                else:
-                                    print(x, y, "은 여전히 위험")
+                                    # print(board2.pos(x1, y1), "가", x2, y2, "로 이동가능", end=" ")
+                                    board2.insert(x2, y2, board2.pos(x1, y1))
+                                    board2.delete(x1, y1)
+    
+                                    # 그 기물이 움직였을때 x, y에 있는 기물이 안전해질 수 있는 경우가 있나 검사
+    
+                                    if (x == x1) and (y == y1): # 1. 공격받는 자신이 직접 자리를 피하기
+                                        dangerous2 = board2.being_attacked(x2, y2, color)
+                                    else:                       # 2. 다른 기물을 움직여 방패세우기
+                                        dangerous2 = board2.being_attacked(x, y, color) ### self. -> board2.
+    
+                                    board2.insert(x1, y1, xy1_horse) # 보드 원상태로
+                                    board2.insert(x2, y2, xy2_horse)
+    
+                                    if not dangerous2:
+                                        # print(x, y, "방어 가능!")
+                                        dangerous = False
+                                    # else:
+                                        # print()
+                            except:
+                                print(x1, y1, x2, y2)
         if not dangerous:
             return True
         return False
                     
-
-
 
 class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자식클래스가 됨
     
@@ -99,7 +110,6 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
         self.horse_history = [(self.p_x, self.p_y)]#말 기록
         board.insert(x, y, self)
 
-        
         # 특정 말의 추가 정보
         if (type(self) == Pawn):
             self.first_turn = True
@@ -108,9 +118,11 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
     
     def move(self, board, x2, y2):
         
-        if not self.moveable(board, x2, y2):
+        movable = self.moveable(board, x2, y2)
+
+        if not movable:
             return False
-        
+
         if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
@@ -119,6 +131,20 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
             self.p_y = y2
+            
+        if (type(self) == Rook) or (type(self) == King):
+            self.moved = True
+        
+        # 캐슬링 시, 룩도 이동
+        if movable == "White_Queen_Side_Castling":
+            board.move(0, 7, 3, 7)
+        elif movable == "Black_Queen_Side_Castling":
+            board.move(0, 0, 3, 0)
+        elif movable == "White_King_Side_Castling":
+            board.move(7, 7, 5, 7)
+        elif movable == "Black_King_Side_Castling":
+            board.move(7, 0, 5, 0)
+
         return True
 
 
@@ -139,7 +165,7 @@ class Pawn(Horse):#폰
                 elif self.p_y - y2 == 1 : return True# 1>턴, 움직임
 
             elif abs(self.p_x - x2) == 1 and self.p_y - y2 == 1 and type(board.pos(x2,y2)) != Empty and board.pos(x2, y2).color != self.color : return True#공격
-            elif board.pos(x2,y2+1).horse_history[0][1] == 1 and abs(self.p_x - x2) == 1 and self.p_y - y2 == 1 and type(board.pos(x2,y2)) == Empty:
+            elif y2 < 7 and board.pos(x2,y2+1).horse_history[0][1] == 1 and abs(self.p_x - x2) == 1 and self.p_y - y2 == 1 and type(board.pos(x2,y2)) == Empty:
                 print('enp!')
                 return 'enp'
 
@@ -148,7 +174,7 @@ class Pawn(Horse):#폰
                 if self.p_y == 1 and (-2 <= self.p_y - y2 <= -1) : return True #첫 턴, 움직임
                 elif self.p_y - y2 == -1 : return True# 1>턴, 움직임
             elif abs(self.p_x - x2) == 1 and self.p_y - y2 == -1 and type(board.pos(x2,y2)) != Empty and board.pos(x2, y2).color != self.color : return True#공격
-            elif board.pos(x2,y2-1).horse_history[0][1] == 6 and abs(self.p_x - x2) == 1 and self.p_y - y2 == -1 and type(board.pos(x2,y2)) == Empty :
+            elif y2 > 0 and board.pos(x2,y2-1).horse_history[0][1] == 6 and abs(self.p_x - x2) == 1 and self.p_y - y2 == -1 and type(board.pos(x2,y2)) == Empty :
                 print('enp!')
                 return 'enp'
         return False
@@ -217,7 +243,7 @@ class Rook(Horse):#룩
                 if self.p_y < y2:
                     if type(board.pos(x2, self.p_y+i)) != Empty : return False
                 else :
-                    print(board.pos(x2, self.p_y-i))
+                    # print(board.pos(x2, self.p_y-i))
                     if type(board.pos(x2, self.p_y-i)) != Empty : return False
         elif (y2-self.p_y == 0):
             am = abs(self.p_x - x2)#거리
@@ -278,46 +304,43 @@ class Queen(Horse):#퀸
 class King(Horse):#킹
     
     def moveable(self, board, x2, y2):
-        
+
         # 킹 기본 행마
         if (((x2-self.p_x == -1) or (x2-self.p_x == +1)) and (-1 <= y2-self.p_y <= 1)) or (
             ((y2-self.p_y == -1) or (y2-self.p_y == +1)) and (x2-self.p_x == 0)):
             if (not 0 <= x2 <= 7 or not 0 <= y2 <= 7) or (board.pos(x2, y2).color == self.color): 
                 return False # 좌표 범위 밖이거나, 우리편과 겹치나 조사
             else:
-                self.moved = True
                 return True
 
         # 캐슬링
         elif (not self.moved):
             
             # 킹 사이드 캐슬링
-            if (x2-self.p_x == -2) and (y2 == self.p_y) and (
-                type(board.pos(self.p_x-1, self.p_y)) == Empty) and (type(board.pos(self.p_x-2, self.p_y)) == Empty) and (type(board.pos(self.p_x-3, self.p_y)) == Empty) and (
-                not self.checked(board)) and (
-                not board.being_attacked(self.p_x-1, self.p_y, self.color)) and (
-                not board.being_attacked(self.p_x-2, self.p_y, self.color)):
-
-                if self.color == -1:
-                    board.move(0, 7, 3, 7) # 룩도 이동
-                    return True
-                else:
-                    board.move(0, 0, 3, 0)
-                    return True
-            
-            # 퀸 사이드 캐슬링
-            elif (x2-self.p_x == +2) and (y2 == self.p_y) and (
+            if (x2-self.p_x == +2) and (y2 == self.p_y) and (
+                type(board.pos(self.p_x+3, self.p_y)) == Rook and not board.pos(self.p_x+3, self.p_y).moved) and (
                 type(board.pos(self.p_x+1, self.p_y)) == Empty) and (type(board.pos(self.p_x+2, self.p_y)) == Empty) and (
                 not self.checked(board)) and (
                 not board.being_attacked(self.p_x+1, self.p_y, self.color)) and (
                 not board.being_attacked(self.p_x+2, self.p_y, self.color)):
                 
                 if self.color == -1:
-                    board.move(7, 7, 5, 7)
-                    return True
+                    return "White_King_Side_Castling"
                 else:
-                    board.move(7, 0, 5, 0)
-                    return True
+                    return "Black_King_Side_Castling"
+
+            # 퀸 사이드 캐슬링
+            elif (x2-self.p_x == -2) and (y2 == self.p_y) and (
+                type(board.pos(self.p_x-4, self.p_y)) == Rook and not board.pos(self.p_x-4, self.p_y).moved) and (
+                type(board.pos(self.p_x-1, self.p_y)) == Empty) and (type(board.pos(self.p_x-2, self.p_y)) == Empty) and (type(board.pos(self.p_x-3, self.p_y)) == Empty) and (
+                not self.checked(board)) and (
+                not board.being_attacked(self.p_x-1, self.p_y, self.color)) and (
+                not board.being_attacked(self.p_x-2, self.p_y, self.color)):
+
+                if self.color == -1:
+                    return "White_Queen_Side_Castling"
+                else:
+                    return "Black_Queen_Side_Castling"
             else:
                 return False
         else:
@@ -325,32 +348,34 @@ class King(Horse):#킹
     
     def checked(self, board):
         if board.being_attacked(self.p_x, self.p_y, self.color):
-            print("check!")
             return True # 체크이다
         else:
             return False # 체크가 아니다
     
-    def checkmate(self, board):
+    def checkmate(self, board): # 체크, 체크메이트, 스테일메이트 판정
         
-        # 주변 8곳이 공격받거나 막혀있을 때
-        if ((not 0 <= self.p_x-1) or board.being_attacked(self.p_x-1, self.p_y, self.color) or not self.moveable(board, self.p_x-1, self.p_y)) and (
-            (not self.p_x+1 <= 7) or board.being_attacked(self.p_x+1, self.p_y, self.color) or not self.moveable(board, self.p_x+1, self.p_y)) and (
-            (not 0 <= self.p_y-1) or board.being_attacked(self.p_x, self.p_y-1, self.color) or not self.moveable(board, self.p_x, self.p_y-1)) and (
-            (not self.p_y+1 <= 7) or board.being_attacked(self.p_x, self.p_y+1, self.color) or not self.moveable(board, self.p_x, self.p_y+1)) and (
-            (not 0 <= self.p_x-1) or (not 0 <= self.p_y-1) or board.being_attacked(self.p_x-1, self.p_y-1, self.color) or not self.moveable(board, self.p_x-1, self.p_y-1)) and (
-            (not 0 <= self.p_x-1) or (not self.p_y+1 <= 7) or board.being_attacked(self.p_x-1, self.p_y+1, self.color) or not self.moveable(board, self.p_x-1, self.p_y+1)) and (
-            (not self.p_x+1 <= 7) or (not 0 <= self.p_y-1) or board.being_attacked(self.p_x+1, self.p_y-1, self.color) or not self.moveable(board, self.p_x+1, self.p_y-1)) and (
-            (not self.p_x+1 <= 7) or (not self.p_y+1 <= 7) or board.being_attacked(self.p_x+1, self.p_y+1, self.color) or not self.moveable(board, self.p_x+1, self.p_y+1)):
-            
-            if self.checked(board) and not board.can_defend(self.p_x, self.p_y, self.color): # 체크면서 방어 못하면 체크메이트
-                print("checkmate!")
-                return "checkmate"
-            else: # 체크가 아니면서 (+다른 기물들도 못 움직이면) 스테일메이트
-                return False
-                # print("stalemate!")
-                # return "stalemate"
-        elif self.checked(board):
-            return False
+        # # 왕 주변 8곳이 공격받거나 막혀있을 때
+        # if ((not 0 <= self.p_x-1) or board.being_attacked(self.p_x-1, self.p_y, self.color) or not self.moveable(board, self.p_x-1, self.p_y)) and (
+        #     (not self.p_x+1 <= 7) or board.being_attacked(self.p_x+1, self.p_y, self.color) or not self.moveable(board, self.p_x+1, self.p_y)) and (
+        #     (not 0 <= self.p_y-1) or board.being_attacked(self.p_x, self.p_y-1, self.color) or not self.moveable(board, self.p_x, self.p_y-1)) and (
+        #     (not self.p_y+1 <= 7) or board.being_attacked(self.p_x, self.p_y+1, self.color) or not self.moveable(board, self.p_x, self.p_y+1)) and (
+        #     (not 0 <= self.p_x-1) or (not 0 <= self.p_y-1) or board.being_attacked(self.p_x-1, self.p_y-1, self.color) or not self.moveable(board, self.p_x-1, self.p_y-1)) and (
+        #     (not 0 <= self.p_x-1) or (not self.p_y+1 <= 7) or board.being_attacked(self.p_x-1, self.p_y+1, self.color) or not self.moveable(board, self.p_x-1, self.p_y+1)) and (
+        #     (not self.p_x+1 <= 7) or (not 0 <= self.p_y-1) or board.being_attacked(self.p_x+1, self.p_y-1, self.color) or not self.moveable(board, self.p_x+1, self.p_y-1)) and (
+        #     (not self.p_x+1 <= 7) or (not self.p_y+1 <= 7) or board.being_attacked(self.p_x+1, self.p_y+1, self.color) or not self.moveable(board, self.p_x+1, self.p_y+1)):
+        
+        check = self.checked(board) # 체크 상태인가
+        next_turn_check = not board.can_defend(self.p_x, self.p_y, self.color) # 어떤 기물을 움직이든 체크가 되는 상태인가
+        
+        if check and not next_turn_check:
+            print("Check!") # 체크
+            return "Check"
+        elif check and next_turn_check: # 체크메이트
+            print("Checkmate!")
+            return "Checkmate"
+        elif not check and next_turn_check:
+            print("Stalemate!") # 스테일메이트
+            return "Stalemate"
         else:
             return False
 
@@ -365,4 +390,3 @@ class King(Horse):#킹
     #                                 if(self.p_x > 0 and self.p_y < 7 and board.attack(board,self.p_x-1,self.p_y+1) == False):
     #                                     if(self.p_x < 7 and self.p_y < 7 and board.attack(board,self.p_x+1,self.p_y+1) == False):
     #                                         return True # 체크 메이트 상태이다.
-
