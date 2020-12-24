@@ -98,6 +98,7 @@ sound_place = pygame.mixer.Sound("sound\체스말_놓기.wav")
 sound_promotion = pygame.mixer.Sound("sound\승진.wav")
 sound_game_end = pygame.mixer.Sound("sound\[효과음]BOING.wav")
 sound_check = pygame.mixer.Sound("sound\미스테리.wav")
+sound_dangerous = pygame.mixer.Sound("sound\디제이스탑.wav")
 
 ################################################################
 
@@ -172,156 +173,86 @@ def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운�
         screen.blit(img_pawn_w,(x,600))
 
 # 클릭한 위치의 좌표를 저장한다
-def save_xy_selected(): # 선택한 기물의 좌표를 저장
-
+def save_xy_selected(xy, win_xy, chessboard_xy): # 선택한 기물의 좌표를 저장
+    
     # x좌표 선택
     if 0 <= pygame.mouse.get_pos()[0] < 100:
-        selected_xy.append(0)
-        selected_win_xy.append(0)
-        selected_chessboard_xy.append("a")
+        xy.append(0)
+        win_xy.append(0)
+        chessboard_xy.append("a")
     elif 100 <= pygame.mouse.get_pos()[0] < 200:
-        selected_xy.append(1)
-        selected_win_xy.append(100)
-        selected_chessboard_xy.append("b")
+        xy.append(1)
+        win_xy.append(100)
+        chessboard_xy.append("b")
     elif 200 <= pygame.mouse.get_pos()[0] < 300:
-        selected_xy.append(2)
-        selected_win_xy.append(200)
-        selected_chessboard_xy.append("c")
+        xy.append(2)
+        win_xy.append(200)
+        chessboard_xy.append("c")
     elif 300 <= pygame.mouse.get_pos()[0] < 400:
-        selected_xy.append(3)
-        selected_win_xy.append(300)
-        selected_chessboard_xy.append("d")
+        xy.append(3)
+        win_xy.append(300)
+        chessboard_xy.append("d")
     elif 400 <= pygame.mouse.get_pos()[0] < 500:
-        selected_xy.append(4)
-        selected_win_xy.append(400)
-        selected_chessboard_xy.append("e")
+        xy.append(4)
+        win_xy.append(400)
+        chessboard_xy.append("e")
     elif 500 <= pygame.mouse.get_pos()[0] < 600:
-        selected_xy.append(5)
-        selected_win_xy.append(500)
-        selected_chessboard_xy.append("f")
+        xy.append(5)
+        win_xy.append(500)
+        chessboard_xy.append("f")
     elif 600 <= pygame.mouse.get_pos()[0] < 700:
-        selected_xy.append(6)
-        selected_win_xy.append(600)
-        selected_chessboard_xy.append("g")
+        xy.append(6)
+        win_xy.append(600)
+        chessboard_xy.append("g")
     elif 700 <= pygame.mouse.get_pos()[0] < 800:
-        selected_xy.append(7)
-        selected_win_xy.append(700)
-        selected_chessboard_xy.append("h")
+        xy.append(7)
+        win_xy.append(700)
+        chessboard_xy.append("h")
 
     # y좌표 선택
     if 0 <= pygame.mouse.get_pos()[1] < 100:
-        selected_xy.append(0)
-        selected_win_xy.append(0)
-        selected_chessboard_xy.append(8)
+        xy.append(0)
+        win_xy.append(0)
+        chessboard_xy.append(8)
     elif 100 <= pygame.mouse.get_pos()[1] < 200:
-        selected_xy.append(1)
-        selected_win_xy.append(100)
-        selected_chessboard_xy.append(7)
+        xy.append(1)
+        win_xy.append(100)
+        chessboard_xy.append(7)
     elif 200 <= pygame.mouse.get_pos()[1] < 300:
-        selected_xy.append(2)
-        selected_win_xy.append(200)
-        selected_chessboard_xy.append(6)
+        xy.append(2)
+        win_xy.append(200)
+        chessboard_xy.append(6)
     elif 300 <= pygame.mouse.get_pos()[1] < 400:
-        selected_xy.append(3)
-        selected_win_xy.append(300)
-        selected_chessboard_xy.append(5)
+        xy.append(3)
+        win_xy.append(300)
+        chessboard_xy.append(5)
     elif 400 <= pygame.mouse.get_pos()[1] < 500:
-        selected_xy.append(4)
-        selected_win_xy.append(400)
-        selected_chessboard_xy.append(4)
+        xy.append(4)
+        win_xy.append(400)
+        chessboard_xy.append(4)
     elif 500 <= pygame.mouse.get_pos()[1] < 600:
-        selected_xy.append(5)
-        selected_win_xy.append(500)
-        selected_chessboard_xy.append(3)
+        xy.append(5)
+        win_xy.append(500)
+        chessboard_xy.append(3)
     elif 600 <= pygame.mouse.get_pos()[1] < 700:
-        selected_xy.append(6)
-        selected_win_xy.append(600)
-        selected_chessboard_xy.append(2)
+        xy.append(6)
+        win_xy.append(600)
+        chessboard_xy.append(2)
     elif 700 <= pygame.mouse.get_pos()[1] < 800:
-        selected_xy.append(7)
-        selected_win_xy.append(700)
-        selected_chessboard_xy.append(1)
-
-def save_xy_to_move(): # 움직일 곳의 좌표를 저장
-
-    # x좌표 선택
-    if 0 <= pygame.mouse.get_pos()[0] < 100:
-        to_move_xy.append(0)
-        to_move_win_xy.append(0)
-        to_move_chessboard_xy.append("a")
-    elif 100 <= pygame.mouse.get_pos()[0] < 200:
-        to_move_xy.append(1)
-        to_move_win_xy.append(100)
-        to_move_chessboard_xy.append("b")
-    elif 200 <= pygame.mouse.get_pos()[0] < 300:
-        to_move_xy.append(2)
-        to_move_win_xy.append(200)
-        to_move_chessboard_xy.append("c")
-    elif 300 <= pygame.mouse.get_pos()[0] < 400:
-        to_move_xy.append(3)
-        to_move_win_xy.append(300)
-        to_move_chessboard_xy.append("d")
-    elif 400 <= pygame.mouse.get_pos()[0] < 500:
-        to_move_xy.append(4)
-        to_move_win_xy.append(400)
-        to_move_chessboard_xy.append("e")
-    elif 500 <= pygame.mouse.get_pos()[0] < 600:
-        to_move_xy.append(5)
-        to_move_win_xy.append(500)
-        to_move_chessboard_xy.append("f")
-    elif 600 <= pygame.mouse.get_pos()[0] < 700:
-        to_move_xy.append(6)
-        to_move_win_xy.append(600)
-        to_move_chessboard_xy.append("g")
-    elif 700 <= pygame.mouse.get_pos()[0] < 800:
-        to_move_xy.append(7)
-        to_move_win_xy.append(700)
-        to_move_chessboard_xy.append("h")
-
-    # y좌표 선택
-    if 0 <= pygame.mouse.get_pos()[1] < 100:
-        to_move_xy.append(0)
-        to_move_win_xy.append(0)
-        to_move_chessboard_xy.append(8)
-    elif 100 <= pygame.mouse.get_pos()[1] < 200:
-        to_move_xy.append(1)
-        to_move_win_xy.append(100)
-        to_move_chessboard_xy.append(7)
-    elif 200 <= pygame.mouse.get_pos()[1] < 300:
-        to_move_xy.append(2)
-        to_move_win_xy.append(200)
-        to_move_chessboard_xy.append(6)
-    elif 300 <= pygame.mouse.get_pos()[1] < 400:
-        to_move_xy.append(3)
-        to_move_win_xy.append(300)
-        to_move_chessboard_xy.append(5)
-    elif 400 <= pygame.mouse.get_pos()[1] < 500:
-        to_move_xy.append(4)
-        to_move_win_xy.append(400)
-        to_move_chessboard_xy.append(4)
-    elif 500 <= pygame.mouse.get_pos()[1] < 600:
-        to_move_xy.append(5)
-        to_move_win_xy.append(500)
-        to_move_chessboard_xy.append(3)
-    elif 600 <= pygame.mouse.get_pos()[1] < 700:
-        to_move_xy.append(6)
-        to_move_win_xy.append(600)
-        to_move_chessboard_xy.append(2)
-    elif 700 <= pygame.mouse.get_pos()[1] < 800:
-        to_move_xy.append(7)
-        to_move_win_xy.append(700)
-        to_move_chessboard_xy.append(1)
+        xy.append(7)
+        win_xy.append(700)
+        chessboard_xy.append(1)
 
 # 클릭한 좌표의 정보를 출력한다
-def print_xy_selected(selected_xy, selected_chessboard_xy):
+def print_xy_selected(move_from_xy, move_from_chessboard_xy):
     print("selecting phase")
-    print("chess xy :", selected_chessboard_xy[0], selected_chessboard_xy[1])
-    print("np xy :", selected_xy[0], selected_xy[1])
+    print("chess xy :", move_from_chessboard_xy[0], move_from_chessboard_xy[1])
+    print("np xy :", move_from_xy[0], move_from_xy[1])
 
-def print_xy_to_move(to_move_xy, to_move_chessboard_xy):
+def print_xy_move_to(move_to_xy, move_to_chessboard_xy):
     print("moving phase")
-    print("chess xy :", to_move_chessboard_xy[0], to_move_chessboard_xy[1])
-    print("np xy :", to_move_xy[0], to_move_xy[1])
+    print("chess xy :", move_to_chessboard_xy[0], move_to_chessboard_xy[1])
+    print("np xy :", move_to_xy[0], move_to_xy[1])
 
 # 선택됬던 기물 이미지를 띄운다
 def screen_blit_selected_piece(selected_piece, win_xy):
@@ -427,76 +358,76 @@ def screen_blit_empty_tile(xy, win_xy):
             screen.blit(bright_tile,(win_xy[0], win_xy[1]))
 
 # 승진할 기물을 선택하라는 이미지를 띄운다
-def screen_blit_about_promotion(to_move_xy, to_move_win_xy):
+def screen_blit_about_promotion(move_to_xy, move_to_win_xy):
 
-    screen_blit_empty_tile(to_move_xy, to_move_win_xy)
+    screen_blit_empty_tile(move_to_xy, move_to_win_xy)
 
     if whose_turn == -1:
-        screen.blit(img_queen_w2,(to_move_win_xy[0],to_move_win_xy[1]))
-        screen.blit(img_rook_w2,(to_move_win_xy[0]+50,to_move_win_xy[1]))
-        screen.blit(img_bishop_w2,(to_move_win_xy[0],to_move_win_xy[1]+50))
-        screen.blit(img_knight_w2,(to_move_win_xy[0]+50,to_move_win_xy[1]+50))
+        screen.blit(img_queen_w2,(move_to_win_xy[0],move_to_win_xy[1]))
+        screen.blit(img_rook_w2,(move_to_win_xy[0]+50,move_to_win_xy[1]))
+        screen.blit(img_bishop_w2,(move_to_win_xy[0],move_to_win_xy[1]+50))
+        screen.blit(img_knight_w2,(move_to_win_xy[0]+50,move_to_win_xy[1]+50))
     else:
-        screen.blit(img_queen_b2,(to_move_win_xy[0],to_move_win_xy[1]))
-        screen.blit(img_rook_b2,(to_move_win_xy[0]+50,to_move_win_xy[1]))
-        screen.blit(img_bishop_b2,(to_move_win_xy[0],to_move_win_xy[1]+50))
-        screen.blit(img_knight_b2,(to_move_win_xy[0]+50,to_move_win_xy[1]+50))
+        screen.blit(img_queen_b2,(move_to_win_xy[0],move_to_win_xy[1]))
+        screen.blit(img_rook_b2,(move_to_win_xy[0]+50,move_to_win_xy[1]))
+        screen.blit(img_bishop_b2,(move_to_win_xy[0],move_to_win_xy[1]+50))
+        screen.blit(img_knight_b2,(move_to_win_xy[0]+50,move_to_win_xy[1]+50))
 
 # 승진할 기물을 클릭하면 승진시킨다
-def promote(whose_turn, to_move_xy, to_move_win_xy):
+def promote(whose_turn, move_to_xy, move_to_win_xy):
 
     # 클릭한 기물로 백 폰 승진
     if whose_turn == -1:
 
-        if to_move_win_xy[1] <= pygame.mouse.get_pos()[1] < to_move_win_xy[1]+50: 
-            if to_move_win_xy[0] <= pygame.mouse.get_pos()[0] < to_move_win_xy[0]+50: # 퀸 클릭
-                Queen(board, to_move_xy[0], to_move_xy[1], -1)
-                screen_blit_empty_tile(to_move_xy, to_move_win_xy)
-                screen.blit(img_queen_w,(to_move_win_xy[0],to_move_win_xy[1]))
+        if move_to_win_xy[1] <= pygame.mouse.get_pos()[1] < move_to_win_xy[1]+50: 
+            if move_to_win_xy[0] <= pygame.mouse.get_pos()[0] < move_to_win_xy[0]+50: # 퀸 클릭
+                Queen(board, move_to_xy[0], move_to_xy[1], -1)
+                screen_blit_empty_tile(move_to_xy, move_to_win_xy)
+                screen.blit(img_queen_w,(move_to_win_xy[0],move_to_win_xy[1]))
                 return "Completed"
-            elif to_move_win_xy[0]+50 <= pygame.mouse.get_pos()[0] < to_move_win_xy[0]+100: # 룩 클릭
-                Rook(board, to_move_xy[0], to_move_xy[1], -1)
-                screen_blit_empty_tile(to_move_xy, to_move_win_xy)
-                screen.blit(img_rook_w,(to_move_win_xy[0],to_move_win_xy[1]))
+            elif move_to_win_xy[0]+50 <= pygame.mouse.get_pos()[0] < move_to_win_xy[0]+100: # 룩 클릭
+                Rook(board, move_to_xy[0], move_to_xy[1], -1)
+                screen_blit_empty_tile(move_to_xy, move_to_win_xy)
+                screen.blit(img_rook_w,(move_to_win_xy[0],move_to_win_xy[1]))
                 return "Completed"
         
-        elif to_move_win_xy[1]+50 <= pygame.mouse.get_pos()[1] < to_move_win_xy[1]+100: 
-            if to_move_win_xy[0] <= pygame.mouse.get_pos()[0] < to_move_win_xy[0]+50: # 비숍 클릭
-                Bishop(board, to_move_xy[0], to_move_xy[1], -1)
-                screen_blit_empty_tile(to_move_xy, to_move_win_xy)
-                screen.blit(img_bishop_w,(to_move_win_xy[0],to_move_win_xy[1]))
+        elif move_to_win_xy[1]+50 <= pygame.mouse.get_pos()[1] < move_to_win_xy[1]+100: 
+            if move_to_win_xy[0] <= pygame.mouse.get_pos()[0] < move_to_win_xy[0]+50: # 비숍 클릭
+                Bishop(board, move_to_xy[0], move_to_xy[1], -1)
+                screen_blit_empty_tile(move_to_xy, move_to_win_xy)
+                screen.blit(img_bishop_w,(move_to_win_xy[0],move_to_win_xy[1]))
                 return "Completed"
-            elif to_move_win_xy[0]+50 <= pygame.mouse.get_pos()[0] < to_move_win_xy[0]+100: # 나이트 클릭
-                Knight(board, to_move_xy[0], to_move_xy[1], -1)
-                screen_blit_empty_tile(to_move_xy, to_move_win_xy)
-                screen.blit(img_knight_w,(to_move_win_xy[0],to_move_win_xy[1]))
+            elif move_to_win_xy[0]+50 <= pygame.mouse.get_pos()[0] < move_to_win_xy[0]+100: # 나이트 클릭
+                Knight(board, move_to_xy[0], move_to_xy[1], -1)
+                screen_blit_empty_tile(move_to_xy, move_to_win_xy)
+                screen.blit(img_knight_w,(move_to_win_xy[0],move_to_win_xy[1]))
                 return "Completed"
     
     # 클릭한 기물로 흑 폰 승진
     elif whose_turn == 1:
         
-        if to_move_win_xy[1] <= pygame.mouse.get_pos()[1] < to_move_win_xy[1]+50:
-            if to_move_win_xy[0] <= pygame.mouse.get_pos()[0] < to_move_win_xy[0]+50:
-                Queen(board, to_move_xy[0], to_move_xy[1], 1)
-                screen_blit_empty_tile(to_move_xy, to_move_win_xy)
-                screen.blit(img_queen_b,(to_move_win_xy[0],to_move_win_xy[1]))
+        if move_to_win_xy[1] <= pygame.mouse.get_pos()[1] < move_to_win_xy[1]+50:
+            if move_to_win_xy[0] <= pygame.mouse.get_pos()[0] < move_to_win_xy[0]+50:
+                Queen(board, move_to_xy[0], move_to_xy[1], 1)
+                screen_blit_empty_tile(move_to_xy, move_to_win_xy)
+                screen.blit(img_queen_b,(move_to_win_xy[0],move_to_win_xy[1]))
                 return "Completed"
-            elif to_move_win_xy[0]+50 <= pygame.mouse.get_pos()[0] < to_move_win_xy[0]+100:
-                Rook(board, to_move_xy[0], to_move_xy[1], 1)
-                screen_blit_empty_tile(to_move_xy, to_move_win_xy)
-                screen.blit(img_rook_b,(to_move_win_xy[0],to_move_win_xy[1]))
+            elif move_to_win_xy[0]+50 <= pygame.mouse.get_pos()[0] < move_to_win_xy[0]+100:
+                Rook(board, move_to_xy[0], move_to_xy[1], 1)
+                screen_blit_empty_tile(move_to_xy, move_to_win_xy)
+                screen.blit(img_rook_b,(move_to_win_xy[0],move_to_win_xy[1]))
                 return "Completed"
         
-        elif to_move_win_xy[1]+50 <= pygame.mouse.get_pos()[1] < to_move_win_xy[1]+100:
-            if to_move_win_xy[0] <= pygame.mouse.get_pos()[0] < to_move_win_xy[0]+50:
-                Bishop(board, to_move_xy[0], to_move_xy[1], 1)
-                screen_blit_empty_tile(to_move_xy, to_move_win_xy)
-                screen.blit(img_bishop_b,(to_move_win_xy[0],to_move_win_xy[1]))
+        elif move_to_win_xy[1]+50 <= pygame.mouse.get_pos()[1] < move_to_win_xy[1]+100:
+            if move_to_win_xy[0] <= pygame.mouse.get_pos()[0] < move_to_win_xy[0]+50:
+                Bishop(board, move_to_xy[0], move_to_xy[1], 1)
+                screen_blit_empty_tile(move_to_xy, move_to_win_xy)
+                screen.blit(img_bishop_b,(move_to_win_xy[0],move_to_win_xy[1]))
                 return "Completed"
-            elif to_move_win_xy[0]+50 <= pygame.mouse.get_pos()[0] < to_move_win_xy[0]+100:
-                Knight(board, to_move_xy[0], to_move_xy[1], 1)
-                screen_blit_empty_tile(to_move_xy, to_move_win_xy)
-                screen.blit(img_knight_b,(to_move_win_xy[0],to_move_win_xy[1]))
+            elif move_to_win_xy[0]+50 <= pygame.mouse.get_pos()[0] < move_to_win_xy[0]+100:
+                Knight(board, move_to_xy[0], move_to_xy[1], 1)
+                screen_blit_empty_tile(move_to_xy, move_to_win_xy)
+                screen.blit(img_knight_b,(move_to_win_xy[0],move_to_win_xy[1]))
                 return "Completed"
 
 # 승패가 결정났나 확인한다
@@ -530,13 +461,13 @@ while not quit:
     pygame.mixer.music.play(-1) # -1 : BGM 반복 재생
     whose_turn = -1 # -1: 백, 1: 흑 (백 선)
     
-    selected_xy = [] # 선택한 기물의 좌표
-    selected_chessboard_xy = [] # 선택한 기물의 체스 보드에서의 좌표
-    selected_win_xy = [] # 선택한 기물의 화면 좌표
-    
-    to_move_xy = [] # 움직일 좌표
-    to_move_chessboard_xy = [] # 움직일 체스 보드에서의 좌표
-    to_move_win_xy = [] # 움직일 화면 좌표
+    move_from_xy = [] # 움직일 대상 좌표
+    move_from_chessboard_xy = []
+    move_from_win_xy = []
+
+    move_to_xy = [] # 움직일 위치 좌표
+    move_to_chessboard_xy = []
+    move_to_win_xy = []
     
     promotionable = False
     game_end = False
@@ -555,6 +486,7 @@ while not quit:
             elif event.type == pygame.KEYDOWN:
                 
                 if event.key == pygame.K_F5: # F5 버튼
+                    print("Reset")
                     game_end = True
                 
                 elif event.key == pygame.K_RETURN and game_over:
@@ -562,11 +494,18 @@ while not quit:
             
             elif event.type == pygame.MOUSEBUTTONUP and not game_over: # 마우스를 눌렀다 떼는 순간
                 
+                if not promotionable:
+                    selected_xy = [] # 선택한 좌표
+                    selected_win_xy = [] 
+                    selected_chessboard_xy = []
+                    save_xy_selected(selected_xy, selected_win_xy, selected_chessboard_xy)
+                    selected_xy_piece = board.board[selected_xy[1]][selected_xy[0]] # board.board는 x, y를 뒤집어 인식함
+
                 # 폰 승진 단계
                 if promotionable:
 
                     # 승진할 기물을 클릭하면 승진시키고 턴 전환
-                    if promote(whose_turn, to_move_xy, to_move_win_xy) == "Completed":
+                    if promote(whose_turn, move_to_xy, move_to_win_xy) == "Completed":
                         
                         pygame.mixer.Sound.play(sound_promotion)
                         promotionable = False
@@ -580,54 +519,54 @@ while not quit:
                             pygame.mixer.Sound.play(sound_game_end)
                             pygame.mixer.music.stop()
                         
-                        selected_xy = []
-                        selected_win_xy = []
-                        selected_chessboard_xy = []
-                        to_move_xy = []
-                        to_move_win_xy = []
-                        to_move_chessboard_xy = []
+                        move_from_xy = []
+                        move_from_win_xy = []
+                        move_from_chessboard_xy = []
+                        move_to_xy = []
+                        move_to_win_xy = []
+                        move_to_chessboard_xy = []
                 
-                # 기물 선택 단계
-                elif selected_xy == []:
+                # 자신의 말을 선택했을 때
+                elif (selected_xy_piece.color == whose_turn):
                     
+                    # 이미 말을 선택했었다면 그 말 선택 취소
+                    if move_from_xy != []:
+                        screen_blit_empty_tile(move_from_xy, move_from_win_xy)
+                        screen_blit_selected_piece(board.pos(move_from_xy[0], move_from_xy[1]), move_from_win_xy)
+                        move_from_xy = []
+                        move_from_win_xy = []
+                        move_from_chessboard_xy = []
+
                     # 클릭한 위치의 좌표와 말 저장
-                    save_xy_selected()
-                    selected_piece = board.board[selected_xy[1]][selected_xy[0]] # board.board는 x, y를 뒤집어 인식함
+                    move_from_xy, move_from_win_xy, move_from_chessboard_xy = selected_xy, selected_win_xy, selected_chessboard_xy
+                    selected_piece = board.board[move_from_xy[1]][move_from_xy[0]] # board.board는 x, y를 뒤집어 인식함
                     
-                    # 자신의 말을 선택했을 때 기물 움직이기 단계로 이동
-                    if (selected_piece.color == whose_turn):
-                        print_xy_selected(selected_xy, selected_chessboard_xy)
-                        print(type(selected_piece), "\n")
-                        screen.blit(img_selected,(selected_win_xy[0], selected_win_xy[1]))
-                        screen_blit_selected_piece(selected_piece, selected_win_xy)
+                    # 정보 출력하고, 선택된 기물 그래픽으로 표시
+                    print_xy_selected(move_from_xy, move_from_chessboard_xy)
+                    print(type(selected_piece), "\n")
+                    screen.blit(img_selected,(move_from_win_xy[0], move_from_win_xy[1]))
+                    screen_blit_selected_piece(selected_piece, move_from_win_xy)
                     
-                    else: # 빈공간이나 상대의 말을 선택했을 때 다시 선택
-                        print("Try again\n")
-                        selected_xy = []
-                        selected_win_xy = []
-                        selected_chessboard_xy = []
-                
-                # 기물 움직이기 단계
-                else:
+                # 자신의 말이 선택되어 있을 때
+                elif move_from_xy != []:
                     
                     # 클릭한 위치의 좌표 저장
-                    save_xy_to_move()
+                    move_to_xy, move_to_win_xy, move_to_chessboard_xy = selected_xy, selected_win_xy, selected_chessboard_xy
                     
                     # 갈 수 있는 곳을 선택하여 말이 움직인 경우
-                    if selected_piece.move(board, to_move_xy[0], to_move_xy[1]):
+                    if selected_piece.move(board, move_to_xy[0], move_to_xy[1]):
                         
                         pygame.mixer.Sound.play(sound_place)
-                        print_xy_to_move(to_move_xy, to_move_chessboard_xy)
-                        print("-" * 64)
+                        print_xy_move_to(move_to_xy, move_to_chessboard_xy)
 
                         # 폰이 승진할 수 있다면 
                         if (type(selected_piece) == Pawn) and (
-                            (((whose_turn == -1) and (to_move_xy[1] == 0)) or (
-                            (whose_turn == 1) and (to_move_xy[1] == 7)))):
+                            (((whose_turn == -1) and (move_to_xy[1] == 0)) or (
+                            (whose_turn == 1) and (move_to_xy[1] == 7)))):
 
                             # 승진할 기물을 선택하라는 이미지 띄우기
-                            screen_blit_empty_tile(selected_xy, selected_win_xy)
-                            screen_blit_about_promotion(to_move_xy, to_move_win_xy)
+                            screen_blit_empty_tile(move_from_xy, move_from_win_xy)
+                            screen_blit_about_promotion(move_to_xy, move_to_win_xy)
 
                             # 폰 승진 단계로 이동
                             promotionable = True
@@ -638,33 +577,47 @@ while not quit:
                             screen_blit_all_pieces(board)
                             game_state = gamestate(board)
                             whose_turn *= -1
-
+                            
+                            # 체크, 체크메이트, 스테일메이트 여부 확인
                             if game_state == "Check":
                                 pygame.mixer.Sound.play(sound_check)
+                                print("\nCheck!")
+
                             elif game_state == "Checkmate" or game_state == "Stalemate":
-                                game_over = True
                                 pygame.mixer.Sound.play(sound_game_end)
                                 pygame.mixer.music.stop()
-    
+                                game_over = True
+                                if game_state == "Checkmate":
+                                    print("\nCheckmate!")
+                                else:
+                                    print("\nStalemate!")
+
+                        print("-" * 64)
+
                     # 갈 수 없는 곳이나, 선택 했던 곳을 또 선택할 경우 선택 취소
                     else:
-                        screen_blit_empty_tile(selected_xy, selected_win_xy)
-                        screen_blit_selected_piece(selected_piece, selected_win_xy)
-
-                        if (selected_xy == to_move_xy):
-                            print("Unselect\n")
-                        else:
-                            print("Try again\n")
+                        if selected_piece.moveable(board, move_to_xy[0], move_to_xy[1]):
+                            pygame.mixer.Sound.play(sound_dangerous)
+                        screen_blit_empty_tile(move_from_xy, move_from_win_xy)
+                        screen_blit_selected_piece(selected_piece, move_from_win_xy)
+                        print("Try again\n")
                     
                     # 턴 전환 혹은 선택 취소
                     if not promotionable:
-                        selected_xy = []
-                        selected_win_xy = []
-                        selected_chessboard_xy = []
-                        to_move_xy = []
-                        to_move_win_xy = []
-                        to_move_chessboard_xy = []
+                        move_from_xy = []
+                        move_from_win_xy = []
+                        move_from_chessboard_xy = []
+                        move_to_xy = []
+                        move_to_win_xy = []
+                        move_to_chessboard_xy = []
                 
+                # 자신의 말을 선택하지 않았을 때
+                else: 
+                    print("Try again\n")
+                    move_from_xy = []
+                    move_from_win_xy = []
+                    move_from_chessboard_xy = []
+
                 # print(board.board)
                 pygame.display.update()
 

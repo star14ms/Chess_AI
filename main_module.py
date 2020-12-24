@@ -119,10 +119,28 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
     def move(self, board, x2, y2):
         
         movable = self.moveable(board, x2, y2)
-
         if not movable:
             return False
-
+        
+        # 움직였을 때 자신의 왕이 체크당하는지 확인
+        xy1_horse = board.pos(self.p_x, self.p_y) # 움직일 기물 백업
+        xy2_horse = board.pos(x2, y2) # 먹히는 기물 백업
+        
+        board.insert(x2, y2, board.pos(self.p_x, self.p_y))
+        board.delete(self.p_x, self.p_y)
+        
+        for y in range(8):
+            for x in range(8):
+                if (type(board.pos(x, y)) == King) and (board.pos(x, y).color == self.color):
+                    # print(x, y, board.pos(x, y).checked(board))
+                    if board.pos(x, y).checked(board):
+                        board.insert(self.p_x, self.p_y, xy1_horse) # 보드 원상태로
+                        board.insert(x2, y2, xy2_horse)
+                        return False
+                    
+        board.insert(self.p_x, self.p_y, xy1_horse) # 보드 원상태로
+        board.insert(x2, y2, xy2_horse)
+        
         if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
@@ -131,19 +149,21 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
             self.p_y = y2
-            
+        
+        # 캐슬링 조건에 쓰이는 정보 업데이트 (킹과 룩이 움직인 적이 없어야 함)
         if (type(self) == Rook) or (type(self) == King):
             self.moved = True
         
         # 캐슬링 시, 룩도 이동
-        if movable == "White_Queen_Side_Castling":
-            board.move(0, 7, 3, 7)
-        elif movable == "Black_Queen_Side_Castling":
-            board.move(0, 0, 3, 0)
-        elif movable == "White_King_Side_Castling":
-            board.move(7, 7, 5, 7)
-        elif movable == "Black_King_Side_Castling":
-            board.move(7, 0, 5, 0)
+        if type(self) == King:
+            if movable == "White_Queen_Side_Castling":
+                board.move(0, 7, 3, 7)
+            elif movable == "Black_Queen_Side_Castling":
+                board.move(0, 0, 3, 0)
+            elif movable == "White_King_Side_Castling":
+                board.move(7, 7, 5, 7)
+            elif movable == "Black_King_Side_Castling":
+                board.move(7, 0, 5, 0)
 
         return True
 
@@ -367,14 +387,11 @@ class King(Horse):#킹
         check = self.checked(board) # 체크 상태인가
         next_turn_check = not board.can_defend(self.p_x, self.p_y, self.color) # 어떤 기물을 움직이든 체크가 되는 상태인가
         
-        if check and not next_turn_check:
-            print("Check!") # 체크
+        if check and not next_turn_check: # 체크
             return "Check"
         elif check and next_turn_check: # 체크메이트
-            print("Checkmate!")
             return "Checkmate"
-        elif not check and next_turn_check:
-            print("Stalemate!") # 스테일메이트
+        elif not check and next_turn_check: # 스테일메이트
             return "Stalemate"
         else:
             return False
