@@ -123,25 +123,39 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
             return False
         
         # 움직였을 때 자신의 왕이 체크당하는지 확인
-        xy1_horse = board.pos(self.p_x, self.p_y) # 움직일 기물 백업
-        xy2_horse = board.pos(x2, y2) # 먹히는 기물 백업
-        
-        board.insert(x2, y2, board.pos(self.p_x, self.p_y))
-        board.delete(self.p_x, self.p_y)
-        
+        board2 = Board(-1) # 보드 복사하기 (시뮬레이션용)
+        board2.board = board.board 
+        xy1_horse = board2.pos(self.p_x, self.p_y) # 움직일 기물 백업
+        xy2_horse = board2.pos(x2, y2)             # 먹히는 기물 백업
+        board2.insert(x2, y2, board2.pos(self.p_x, self.p_y)) # 말을 시험삼아 움직여본다
+        board2.delete(self.p_x, self.p_y)
+
         for y in range(8):
             for x in range(8):
-                if (type(board.pos(x, y)) == King) and (board.pos(x, y).color == self.color):
-                    # print(x, y, board.pos(x, y).checked(board))
-                    if board.pos(x, y).checked(board):
-                        board.insert(self.p_x, self.p_y, xy1_horse) # 보드 원상태로
-                        board.insert(x2, y2, xy2_horse)
-                        return False
+                if (type(board2.pos(x, y)) == King) and (board2.pos(x, y).color == self.color):
                     
-        board.insert(self.p_x, self.p_y, xy1_horse) # 보드 원상태로
-        board.insert(x2, y2, xy2_horse)
+                    # 킹이 체크가 되면
+                    if board2.being_attacked(x, y, self.color):
+                        board2.insert(self.p_x, self.p_y, xy1_horse) # 보드 원상태로
+                        board2.insert(x2, y2, xy2_horse)
+                        return False
         
-        if board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+        board2.insert(self.p_x, self.p_y, xy1_horse) # 보드 원상태로
+        board2.insert(x2, y2, xy2_horse)
+        
+        # 말 움직이기
+        if movable == 'enp':
+            if board.killable(self.p_x, self.p_y, x2, y2-1):
+                board.move(self.p_x, self.p_y, x2, y2)
+                board.delete(x2, y2-1)
+                self.p_x = x2
+                self.p_y = y2
+            elif board.killable(self.p_x, self.p_y, x2, y2+1):
+                board.move(self.p_x, self.p_y, x2, y2)
+                board.delete(x2, y2+1)
+                self.p_x = x2
+                self.p_y = y2
+        elif board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
             self.p_y = y2
@@ -149,10 +163,6 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
             board.move(self.p_x, self.p_y, x2, y2)
             self.p_x = x2
             self.p_y = y2
-        
-        # 캐슬링 조건에 쓰이는 정보 업데이트 (킹과 룩이 움직인 적이 없어야 함)
-        if (type(self) == Rook) or (type(self) == King):
-            self.moved = True
         
         # 캐슬링 시, 룩도 이동
         if type(self) == King:
@@ -165,6 +175,10 @@ class Horse:#말 정의하는 부모클래스 -> 폰, 킹, 나이트 등은 자�
             elif movable == "Black_King_Side_Castling":
                 board.move(7, 0, 5, 0)
 
+        # 캐슬링 조건에 쓰이는 정보 업데이트 (킹과 룩이 움직인 적이 없어야 함)
+        if (type(self) == Rook) or (type(self) == King):
+            self.moved = True
+        
         return True
 
 
@@ -200,30 +214,30 @@ class Pawn(Horse):#폰
         return False
 
         
-    def move(self, board, x2, y2):
-        tf = self.moveable(board, x2, y2)
-        if tf == False : return False
+    # def move(self, board, x2, y2):
+    #     tf = self.moveable(board, x2, y2)
+    #     if tf == False : return False
 
-        if board.front == self.color and tf == 'enp':
-            if board.killable(self.p_x, self.p_y, x2, y2-1):
-                board.move(self.p_x, self.p_y, x2, y2)
-                board.delete(x2, y2-1)
-                self.p_x = x2
-                self.p_y = y2
-            elif board.killable(self.p_x, self.p_y, x2, y2+1):
-                board.move(self.p_x, self.p_y, x2, y2)
-                board.delete(x2, y2+1)
-                self.p_x = x2
-                self.p_y = y2
-        elif board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
-            board.move(self.p_x, self.p_y, x2, y2)
-            self.p_x = x2
-            self.p_y = y2
-        else:
-            board.move(self.p_x, self.p_y, self.p_x, y2)
-            self.p_x = x2
-            self.p_y = y2
-        return True
+    #     if board.front == self.color and tf == 'enp':
+    #         if board.killable(self.p_x, self.p_y, x2, y2-1):
+    #             board.move(self.p_x, self.p_y, x2, y2)
+    #             board.delete(x2, y2-1)
+    #             self.p_x = x2
+    #             self.p_y = y2
+    #         elif board.killable(self.p_x, self.p_y, x2, y2+1):
+    #             board.move(self.p_x, self.p_y, x2, y2)
+    #             board.delete(x2, y2+1)
+    #             self.p_x = x2
+    #             self.p_y = y2
+    #     elif board.killable(self.p_x, self.p_y, x2, y2) :#인공지능 활용을 위해 남겨둠
+    #         board.move(self.p_x, self.p_y, x2, y2)
+    #         self.p_x = x2
+    #         self.p_y = y2
+    #     else:
+    #         board.move(self.p_x, self.p_y, self.p_x, y2)
+    #         self.p_x = x2
+    #         self.p_y = y2
+    #     return True
 
 
 class Bishop(Horse):#비숍
