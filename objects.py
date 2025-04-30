@@ -1,6 +1,5 @@
-from typing import Optional, Union, List, Tuple, TypeVar, Any
+from typing import Optional, Union, List, Tuple
 
-T = TypeVar('T')
 
 class Board:
     def __init__(self, f: bool) -> None:
