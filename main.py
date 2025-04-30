@@ -114,74 +114,116 @@ def show_possible_moves(selected_piece, board):
                 screen.blit(s, (x*100 + 10, y*100 + 10))
 
 # 체스판 초기화 함수
-def do_init(): # 판에 말을 세팅해놓는다
-    
-    rook_b1 = Rook(board, 0, 0, 1)
-    knight_b1 = Knight(board, 1, 0, 1) #(1,0)좌표에 흑색 나이트 생성
-    bishop_bb = Bishop(board, 2, 0, 1)
-    queen_b = Queen(board, 3, 0, 1)
-    king_b = King(board, 4, 0, 1)
-    bishop_bw = Bishop(board, 5, 0, 1)
-    knight_b2 = Knight(board, 6, 0, 1)
-    rook_b2 = Rook(board, 7, 0, 1)
+def do_init(my_color): # 판에 말을 세팅해놓는다
+    if my_color == -1:  # Black pieces at top
+        # Black pieces (top)
+        Rook(board, 0, 0, 1)
+        Knight(board, 1, 0, 1)
+        Bishop(board, 2, 0, 1)
+        Queen(board, 3, 0, 1)
+        King(board, 4, 0, 1)
+        Bishop(board, 5, 0, 1)
+        Knight(board, 6, 0, 1)
+        Rook(board, 7, 0, 1)
 
-    pawn_b1 = Pawn(board, 0, 1, 1) #(0,1)좌표에 흑색 폰 생성
-    pawn_b2 = Pawn(board, 1, 1, 1)
-    pawn_b3 = Pawn(board, 2, 1, 1)
-    pawn_b4 = Pawn(board, 3, 1, 1)
-    pawn_b5 = Pawn(board, 4, 1, 1)
-    pawn_b6 = Pawn(board, 5, 1, 1)
-    pawn_b7 = Pawn(board, 6, 1, 1)
-    pawn_b8 = Pawn(board, 7, 1, 1)
+        for x in range(8):
+            Pawn(board, x, 1, 1)
 
-    pawn_w1 = Pawn(board, 0, 6, -1) 
-    pawn_w2 = Pawn(board, 1, 6, -1)
-    pawn_w3 = Pawn(board, 2, 6, -1)
-    pawn_w4 = Pawn(board, 3, 6, -1)
-    pawn_w5 = Pawn(board, 4, 6, -1)
-    pawn_w6 = Pawn(board, 5, 6, -1)
-    pawn_w7 = Pawn(board, 6, 6, -1)
-    pawn_w8 = Pawn(board, 7, 6, -1)
-    
-    rook_w1 = Rook(board, 0, 7, -1)
-    knight_w1 = Knight(board, 1, 7, -1) # (1,7) 좌표에 백색 나이트 생성
-    bishop_ww = Bishop(board, 2, 7, -1)
-    queen_w = Queen(board, 3, 7, -1)
-    king_w = King(board, 4, 7, -1)
-    bishop_wb = Bishop(board, 5, 7, -1)
-    knight_w2 = Knight(board, 6, 7, -1)
-    rook_w2 = Rook(board, 7, 7, -1)
+        # White pieces (bottom)
+        Rook(board, 0, 7, -1)
+        Knight(board, 1, 7, -1)
+        Bishop(board, 2, 7, -1)
+        Queen(board, 3, 7, -1)
+        King(board, 4, 7, -1)
+        Bishop(board, 5, 7, -1)
+        Knight(board, 6, 7, -1)
+        Rook(board, 7, 7, -1)
 
-def screen_blit_initialized_board(): # 판과 세팅된 말 이미지를 띄운다
-    
+        for x in range(8):
+            Pawn(board, x, 6, -1)
+    else:  # White pieces at top
+        # White pieces (top)
+        Rook(board, 0, 0, -1)
+        Knight(board, 1, 0, -1)
+        Bishop(board, 2, 0, -1)
+        Queen(board, 3, 0, -1)
+        King(board, 4, 0, -1)
+        Bishop(board, 5, 0, -1)
+        Knight(board, 6, 0, -1)
+        Rook(board, 7, 0, -1)
+
+        for x in range(8):
+            Pawn(board, x, 1, -1)
+
+        # Black pieces (bottom)
+        Rook(board, 0, 7, 1)
+        Knight(board, 1, 7, 1)
+        Bishop(board, 2, 7, 1)
+        Queen(board, 3, 7, 1)
+        King(board, 4, 7, 1)
+        Bishop(board, 5, 7, 1)
+        Knight(board, 6, 7, 1)
+        Rook(board, 7, 7, 1)
+
+        for x in range(8):
+            Pawn(board, x, 6, 1)
+
+def screen_blit_initialized_board(my_color): # 판과 세팅된 말 이미지를 띄운다
     # 보드
     screen.blit(img_board,(0,0))
 
-    # 흑의 말들
-    screen.blit(img_rook_b,(0,0))
-    screen.blit(img_knight_b,(100,0))
-    screen.blit(img_bishop_b,(200,0))
-    screen.blit(img_queen_b,(300,0))
-    screen.blit(img_king_b,(400,0))
-    screen.blit(img_bishop_b,(500,0))
-    screen.blit(img_knight_b,(600,0))
-    screen.blit(img_rook_b,(700,0))
+    if my_color == -1:
+        # Black pieces (top)
+        screen.blit(img_rook_b,(0,0))
+        screen.blit(img_knight_b,(100,0))
+        screen.blit(img_bishop_b,(200,0))
+        screen.blit(img_queen_b,(300,0))
+        screen.blit(img_king_b,(400,0))
+        screen.blit(img_bishop_b,(500,0))
+        screen.blit(img_knight_b,(600,0))
+        screen.blit(img_rook_b,(700,0))
 
-    for x in range(0, 800, 100):
-        screen.blit(img_pawn_b,(x,100))
+        for x in range(0, 800, 100):
+            screen.blit(img_pawn_b,(x,100))
 
-    # 백의 말들
-    screen.blit(img_rook_w,(0,700)) 
-    screen.blit(img_knight_w,(100,700))
-    screen.blit(img_bishop_w,(200,700))
-    screen.blit(img_queen_w,(300,700))
-    screen.blit(img_king_w,(400,700))
-    screen.blit(img_bishop_w,(500,700))
-    screen.blit(img_knight_w,(600,700))
-    screen.blit(img_rook_w,(700,700))
+        # White pieces (bottom)
+        screen.blit(img_rook_w,(0,700))
+        screen.blit(img_knight_w,(100,700))
+        screen.blit(img_bishop_w,(200,700))
+        screen.blit(img_queen_w,(300,700))
+        screen.blit(img_king_w,(400,700))
+        screen.blit(img_bishop_w,(500,700))
+        screen.blit(img_knight_w,(600,700))
+        screen.blit(img_rook_w,(700,700))
 
-    for x in range(0, 800, 100):
-        screen.blit(img_pawn_w,(x,600))
+        for x in range(0, 800, 100):
+            screen.blit(img_pawn_w,(x,600))
+    else:
+        # White pieces (top)
+        screen.blit(img_rook_w,(0,0))
+        screen.blit(img_knight_w,(100,0))
+        screen.blit(img_bishop_w,(200,0))
+        screen.blit(img_queen_w,(300,0))
+        screen.blit(img_king_w,(400,0))
+        screen.blit(img_bishop_w,(500,0))
+        screen.blit(img_knight_w,(600,0))
+        screen.blit(img_rook_w,(700,0))
+
+        for x in range(0, 800, 100):
+            screen.blit(img_pawn_w,(x,100))
+
+        # Black pieces (bottom)
+        screen.blit(img_rook_b,(0,700))
+        screen.blit(img_knight_b,(100,700))
+        screen.blit(img_bishop_b,(200,700))
+        screen.blit(img_queen_b,(300,700))
+        screen.blit(img_king_b,(400,700))
+        screen.blit(img_bishop_b,(500,700))
+        screen.blit(img_knight_b,(600,700))
+        screen.blit(img_rook_b,(700,700))
+
+        for x in range(0, 800, 100):
+            screen.blit(img_pawn_b,(x,600))
 
 # 클릭한 위치의 좌표를 저장한다
 def save_xy_selected(xy, win_xy, chessboard_xy): # 선택한 기물의 좌표를 저장
@@ -495,11 +537,12 @@ quit = False
 while not quit:
     
     # 보드 초기화
-    board = Board(-1) # -1 : 보드 앞쪽이 흰색 진영
-    do_init()
-    
+    my_color = -1
+    board = Board(my_color) # -1 : 보드 앞쪽이 흰색 진영
+    do_init(my_color)
+
     # 보드 그래픽 초기화
-    screen_blit_initialized_board()
+    screen_blit_initialized_board(my_color)
     pygame.display.update()
     
     pygame.mixer.music.play(-1) # -1 : BGM 반복 재생
