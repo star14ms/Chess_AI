@@ -264,22 +264,22 @@ def print_xy(xy, chessboard_xy):
     piece_symbol = ""
     piece_emoji = ""
     
-    if str(type(piece)) == "<class 'main_module.King'>":
+    if isinstance(piece, King):
         piece_symbol = "K"
         piece_emoji = "♚" if piece.color == -1 else "♔"
-    elif str(type(piece)) == "<class 'main_module.Queen'>":
+    elif isinstance(piece, Queen):
         piece_symbol = "Q"
         piece_emoji = "♛" if piece.color == -1 else "♕"
-    elif str(type(piece)) == "<class 'main_module.Rook'>":
+    elif isinstance(piece, Rook):
         piece_symbol = "R"
         piece_emoji = "♜" if piece.color == -1 else "♖"
-    elif str(type(piece)) == "<class 'main_module.Bishop'>":
+    elif isinstance(piece, Bishop):
         piece_symbol = "B"
         piece_emoji = "♝" if piece.color == -1 else "♗"
-    elif str(type(piece)) == "<class 'main_module.Knight'>":
+    elif isinstance(piece, Knight):
         piece_symbol = "N"
         piece_emoji = "♞" if piece.color == -1 else "♘"
-    elif str(type(piece)) == "<class 'main_module.Pawn'>":
+    elif isinstance(piece, Pawn):
         piece_symbol = ""
         piece_emoji = "♟" if piece.color == -1 else "♙"
     
@@ -289,37 +289,37 @@ def print_xy(xy, chessboard_xy):
 # 선택됬던 기물 이미지를 띄운다
 def screen_blit_selected_piece(selected_piece, win_xy):
 
-    if str(type(selected_piece)) == "<class 'main_module.King'>":
+    if isinstance(selected_piece, King):
         if whose_turn == -1:
             screen.blit(img_king_w,(win_xy[0], win_xy[1]))
         else:
             screen.blit(img_king_b,(win_xy[0], win_xy[1]))
     
-    elif str(type(selected_piece)) == "<class 'main_module.Queen'>":
+    elif isinstance(selected_piece, Queen):
         if whose_turn == -1:
             screen.blit(img_queen_w,(win_xy[0], win_xy[1]))
         else:
             screen.blit(img_queen_b,(win_xy[0], win_xy[1]))
     
-    elif str(type(selected_piece)) == "<class 'main_module.Rook'>":
+    elif isinstance(selected_piece, Rook):
         if whose_turn == -1:
             screen.blit(img_rook_w,(win_xy[0], win_xy[1]))
         else:
             screen.blit(img_rook_b,(win_xy[0], win_xy[1]))
     
-    elif str(type(selected_piece)) == "<class 'main_module.Knight'>":
+    elif isinstance(selected_piece, Knight):
         if whose_turn == -1:
             screen.blit(img_knight_w,(win_xy[0], win_xy[1]))
         else:
             screen.blit(img_knight_b,(win_xy[0], win_xy[1]))
     
-    elif str(type(selected_piece)) == "<class 'main_module.Bishop'>":
+    elif isinstance(selected_piece, Bishop):
         if whose_turn == -1:
             screen.blit(img_bishop_w,(win_xy[0], win_xy[1]))
         else:
             screen.blit(img_bishop_b,(win_xy[0], win_xy[1]))
     
-    elif str(type(selected_piece)) == "<class 'main_module.Pawn'>":
+    elif isinstance(selected_piece, Pawn):
         if whose_turn == -1:
             screen.blit(img_pawn_w,(win_xy[0], win_xy[1]))
         else:
@@ -331,7 +331,8 @@ def screen_blit_all_pieces(board):
     if game_state == "Checkmate":
         for y in range(8):
             for x in range(8):
-                if str(type(board.board[y][x])) == "<class 'main_module.King'>" and board.board[y][x].color != whose_turn:
+                piece = board.board[y][x]
+                if isinstance(piece, King) and piece.color != whose_turn:
                     # Create a surface for the gradient circle
                     s = pygame.Surface((100, 100), pygame.SRCALPHA)
                     # Draw multiple circles with decreasing opacity for gradient effect
@@ -342,38 +343,39 @@ def screen_blit_all_pieces(board):
 
     for y in range(8):
         for x in range(8):
-            if str(type(board.board[y][x])) == "<class 'main_module.King'>":
-                if board.board[y][x].color == -1:
+            piece = board.board[y][x]
+            if isinstance(piece, King):
+                if piece.color == -1:
                     screen.blit(img_king_w,(x*100, y*100))
                 else:
                     screen.blit(img_king_b,(x*100, y*100))
             
-            elif str(type(board.board[y][x])) == "<class 'main_module.Queen'>":
-                if board.board[y][x].color == -1:
+            elif isinstance(piece, Queen):
+                if piece.color == -1:
                     screen.blit(img_queen_w,(x*100, y*100))
                 else:
                     screen.blit(img_queen_b,(x*100, y*100))
             
-            elif str(type(board.board[y][x])) == "<class 'main_module.Rook'>":
-                if board.board[y][x].color == -1:
+            elif isinstance(piece, Rook):
+                if piece.color == -1:
                     screen.blit(img_rook_w,(x*100, y*100))
                 else:
                     screen.blit(img_rook_b,(x*100, y*100))
             
-            elif str(type(board.board[y][x])) == "<class 'main_module.Knight'>":
-                if board.board[y][x].color == -1:
+            elif isinstance(piece, Knight):
+                if piece.color == -1:
                     screen.blit(img_knight_w,(x*100, y*100))
                 else:
                     screen.blit(img_knight_b,(x*100, y*100))
             
-            elif str(type(board.board[y][x])) == "<class 'main_module.Bishop'>":
-                if board.board[y][x].color == -1:
+            elif isinstance(piece, Bishop):
+                if piece.color == -1:
                     screen.blit(img_bishop_w,(x*100, y*100))
                 else:
                     screen.blit(img_bishop_b,(x*100, y*100))
             
-            elif str(type(board.board[y][x])) == "<class 'main_module.Pawn'>":
-                if board.board[y][x].color == -1:
+            elif isinstance(piece, Pawn):
+                if piece.color == -1:
                     screen.blit(img_pawn_w,(x*100, y*100))
                 else:
                     screen.blit(img_pawn_b,(x*100, y*100))
@@ -477,7 +479,7 @@ def promote(whose_turn, move_to_xy, move_to_win_xy):
 def gamestate(board):
     for y in range(8):
         for x in range(8):
-            if (type(board.pos(x, y)) == King):
+            if (isinstance(board.pos(x, y), King)):
                 if (((board.pos(x, y).color) == 1 and (whose_turn == -1)) or (
                     (board.pos(x, y).color) == -1 and (whose_turn == 1))):
                     return board.pos(x, y).state(board)
@@ -500,18 +502,18 @@ while not quit:
     screen_blit_initialized_board()
     pygame.display.update()
     
-    # print(board.board) # 보드 상태 출력
     pygame.mixer.music.play(-1) # -1 : BGM 반복 재생
     whose_turn = -1 # -1: 백, 1: 흑 (백 선)
     
     move_from_xy = [] # 움직일 대상 좌표
-    move_from_chessboard_xy = []
     move_from_win_xy = []
+    move_from_chessboard_xy = []
 
     move_to_xy = [] # 움직일 위치 좌표
-    move_to_chessboard_xy = []
     move_to_win_xy = []
+    move_to_chessboard_xy = []
     
+    game_state = "Normal"
     promotionable = False
     game_end = False
     game_over = False
@@ -635,12 +637,11 @@ while not quit:
                             pygame.display.update()
 
                             # 승진할 기물을 선택하라는 이미지 띄우기
-                            screen_blit_empty_tile(move_from_xy, move_from_win_xy)
                             screen_blit_about_promotion(move_to_xy, move_to_win_xy)
 
                             # 폰 승진 단계로 이동
                             promotionable = True
-                            
+
                         # 승진 할 수 없다면 턴 종료
                         else:
                             screen.blit(img_board,(0,0))
@@ -689,7 +690,6 @@ while not quit:
                     move_from_win_xy = []
                     move_from_chessboard_xy = []
 
-                # print(board.board)
                 pygame.display.update()
 
 pygame.quit()
