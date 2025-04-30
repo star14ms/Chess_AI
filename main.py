@@ -1,106 +1,117 @@
-from main_module import *
+from main_module import Board, Pawn, Bishop, Rook, Knight, Queen, King
 import pygame
 
 pygame.init()
 
 
 # 보드, 체스말과 기타 이미지, BGM 가져오기
-img_board = pygame.image.load("img\chess_board.png")
+img_board = pygame.image.load("./img/chess_board.png")
 img_board = pygame.transform.scale(img_board,(800,800))
 
-img_king_b = pygame.image.load("img\king_b.png") # b, w = black, white
+img_king_b = pygame.image.load("./img/king_b.png") # b, w = black, white
 img_king_b = pygame.transform.scale(img_king_b,(100,100))
-img_king_w = pygame.image.load("img\king_w.png")
+img_king_w = pygame.image.load("./img/king_w.png")
 img_king_w = pygame.transform.scale(img_king_w,(100,100))
 
-img_queen_b = pygame.image.load("img\queen_b.png")
+img_queen_b = pygame.image.load("./img/queen_b.png")
 img_queen_b = pygame.transform.scale(img_queen_b,(100,100))
 img_queen_b2 = pygame.transform.scale(img_queen_b,(50,50))
-img_queen_w = pygame.image.load("img\queen_w.png")
+img_queen_w = pygame.image.load("./img/queen_w.png")
 img_queen_w = pygame.transform.scale(img_queen_w,(100,100))
 img_queen_w2 = pygame.transform.scale(img_queen_w,(50,50))
 
-img_rook_b = pygame.image.load("img\\rook_b.png")
+img_rook_b = pygame.image.load("./img/rook_b.png")
 img_rook_b = pygame.transform.scale(img_rook_b,(100,100))
 img_rook_b2 = pygame.transform.scale(img_rook_b,(50,50))
-img_rook_w = pygame.image.load("img\\rook_w.png")
+img_rook_w = pygame.image.load("./img/rook_w.png")
 img_rook_w = pygame.transform.scale(img_rook_w,(100,100))
 img_rook_w2 = pygame.transform.scale(img_rook_w,(50,50))
 
-img_bishop_b = pygame.image.load("img\\bishop_b.png")
+img_bishop_b = pygame.image.load("./img/bishop_b.png")
 img_bishop_b = pygame.transform.scale(img_bishop_b,(100,100))
 img_bishop_b2 = pygame.transform.scale(img_bishop_b,(50,50))
-img_bishop_w = pygame.image.load("img\\bishop_w.png")
+img_bishop_w = pygame.image.load("./img/bishop_w.png")
 img_bishop_w = pygame.transform.scale(img_bishop_w,(100,100))
 img_bishop_w2 = pygame.transform.scale(img_bishop_w,(50,50))
 
-img_knight_b = pygame.image.load("img\knight_b.png")
+img_knight_b = pygame.image.load("./img/knight_b.png")
 img_knight_b = pygame.transform.scale(img_knight_b,(100,100))
 img_knight_b2 = pygame.transform.scale(img_knight_b,(50,50))
-img_knight_w = pygame.image.load("img\knight_w.png")
+img_knight_w = pygame.image.load("./img/knight_w.png")
 img_knight_w = pygame.transform.scale(img_knight_w,(100,100))
 img_knight_w2 = pygame.transform.scale(img_knight_w,(50,50))
 
-img_pawn_b = pygame.image.load("img\pawn_b.png")
+img_pawn_b = pygame.image.load("./img/pawn_b.png")
 img_pawn_b = pygame.transform.scale(img_pawn_b,(100,100))
-img_pawn_w = pygame.image.load("img\pawn_w.png")
+img_pawn_w = pygame.image.load("./img/pawn_w.png")
 img_pawn_w = pygame.transform.scale(img_pawn_w,(100,100))
 
 # 일반적인 밝고 어두운 타일 이미지
-bright_tile = pygame.image.load("img\\bright.png")
+bright_tile = pygame.image.load("./img/bright.png")
 bright_tile = pygame.transform.scale(bright_tile,(102,102))
 
-dark_tile = pygame.image.load("img\dark_tile.png")
+dark_tile = pygame.image.load("./img/dark_tile.png")
 dark_tile = pygame.transform.scale(dark_tile,(102,102))
 
 # 좌표 기호 써있는 타일 이미지
-a1_tile = pygame.image.load("img\\a1.png")
+a1_tile = pygame.image.load("./img/a1.png")
 a1_tile = pygame.transform.scale(a1_tile,(100,100))
-a2_tile = pygame.image.load("img\\a2.png")
+a2_tile = pygame.image.load("./img/a2.png")
 a2_tile = pygame.transform.scale(a2_tile,(100,100))
-a3_tile = pygame.image.load("img\\a3.png")
+a3_tile = pygame.image.load("./img/a3.png")
 a3_tile = pygame.transform.scale(a3_tile,(100,100))
-a4_tile = pygame.image.load("img\\a4.png")
+a4_tile = pygame.image.load("./img/a4.png")
 a4_tile = pygame.transform.scale(a4_tile,(100,100))
-a5_tile = pygame.image.load("img\\a5.png")
+a5_tile = pygame.image.load("./img/a5.png")
 a5_tile = pygame.transform.scale(a5_tile,(100,100))
-a6_tile = pygame.image.load("img\\a6.png")
+a6_tile = pygame.image.load("./img/a6.png")
 a6_tile = pygame.transform.scale(a6_tile,(100,100))
-a7_tile = pygame.image.load("img\\a7.png")
+a7_tile = pygame.image.load("./img/a7.png")
 a7_tile = pygame.transform.scale(a7_tile,(100,100))
-a8_tile = pygame.image.load("img\\a8.png")
+a8_tile = pygame.image.load("./img/a8.png")
 a8_tile = pygame.transform.scale(a8_tile,(100,100))
-b1_tile = pygame.image.load("img\\b1.png")
+b1_tile = pygame.image.load("./img/b1.png")
 b1_tile = pygame.transform.scale(b1_tile,(100,100))
-c1_tile = pygame.image.load("img\\c1.png")
+c1_tile = pygame.image.load("./img/c1.png")
 c1_tile = pygame.transform.scale(c1_tile,(100,100))
-d1_tile = pygame.image.load("img\\d1.png")
+d1_tile = pygame.image.load("./img/d1.png")
 d1_tile = pygame.transform.scale(d1_tile,(100,100))
-e1_tile = pygame.image.load("img\\e1.png")
+e1_tile = pygame.image.load("./img/e1.png")
 e1_tile = pygame.transform.scale(e1_tile,(100,100))
-f1_tile = pygame.image.load("img\\f1.png")
+f1_tile = pygame.image.load("./img/f1.png")
 f1_tile = pygame.transform.scale(f1_tile,(100,100))
-g1_tile = pygame.image.load("img\\g1.png")
+g1_tile = pygame.image.load("./img/g1.png")
 g1_tile = pygame.transform.scale(g1_tile,(100,100))
-h1_tile = pygame.image.load("img\\h1.png")
+h1_tile = pygame.image.load("./img/h1.png")
 h1_tile = pygame.transform.scale(h1_tile,(100,100))
 
 abc_tile = [a1_tile, b1_tile, c1_tile, d1_tile, e1_tile, f1_tile, g1_tile, h1_tile]
 num_tile = [a8_tile, a7_tile, a6_tile, a5_tile, a4_tile, a3_tile, a2_tile, a1_tile]
 
-# 선택된 타일 이미지
-img_selected = pygame.image.load("img\selected.png")
-img_selected = pygame.transform.scale(img_selected,(102,102))
-
 # BGM, sound
-pygame.mixer.music.load("bgm\Gyakuten_Kenji_2_Showdown_Suite.wav")
-sound_place = pygame.mixer.Sound("sound\체스말_놓기.wav")
-sound_promotion = pygame.mixer.Sound("sound\승진.wav")
-sound_game_end = pygame.mixer.Sound("sound\[효과음]BOING.wav")
-sound_check = pygame.mixer.Sound("sound\미스테리.wav")
-sound_dangerous = pygame.mixer.Sound("sound\디제이스탑.wav")
+pygame.mixer.music.load("./bgm/Gyakuten_Kenji_2_Showdown_Suite.wav")
+sound_place = pygame.mixer.Sound("sound/move-self.mp3")
+sound_capture = pygame.mixer.Sound("sound/capture.mp3")
+sound_promotion = pygame.mixer.Sound("sound/승진.wav")
+sound_game_end = pygame.mixer.Sound("sound/[효과음]BOING.wav")
+sound_dangerous = pygame.mixer.Sound("sound/미스테리.wav")
+sound_check = pygame.mixer.Sound("sound/췍.mp3")
+sound_blocked = pygame.mixer.Sound("sound/디제이스탑.wav")
+
+# Sound settings
+is_muted = False
 
 ################################################################
+
+# 선택된 기물의 가능한 이동 위치를 표시한다
+def show_possible_moves(selected_piece, board):
+    for y in range(8):
+        for x in range(8):
+            if selected_piece.movable(board, x, y):
+                # Draw a semi-transparent light gray circle
+                s = pygame.Surface((80, 80), pygame.SRCALPHA)
+                pygame.draw.circle(s, (200, 200, 200, 128), (40, 40), 20)
+                screen.blit(s, (x*100 + 10, y*100 + 10))
 
 # 체스판 초기화 함수
 def do_init(): # 판에 말을 세팅해놓는다
@@ -243,16 +254,37 @@ def save_xy_selected(xy, win_xy, chessboard_xy): # 선택한 기물의 좌표를
         win_xy.append(700)
         chessboard_xy.append(1)
 
-# 클릭한 좌표의 정보를 출력한다
-def print_xy_selected(move_from_xy, move_from_chessboard_xy):
-    print("selecting phase")
-    print("chess xy :", move_from_chessboard_xy[0], move_from_chessboard_xy[1])
-    print("np xy :", move_from_xy[0], move_from_xy[1])
-
-def print_xy_move_to(move_to_xy, move_to_chessboard_xy):
-    print("moving phase")
-    print("chess xy :", move_to_chessboard_xy[0], move_to_chessboard_xy[1])
-    print("np xy :", move_to_xy[0], move_to_xy[1])
+def print_xy(xy, chessboard_xy):
+    # Convert chessboard coordinates to PGN format
+    file = chessboard_xy[0]  # a-h
+    rank = chessboard_xy[1]  # 1-8
+    
+    # Get the piece type from the board
+    piece = board.board[xy[1]][xy[0]]
+    piece_symbol = ""
+    piece_emoji = ""
+    
+    if str(type(piece)) == "<class 'main_module.King'>":
+        piece_symbol = "K"
+        piece_emoji = "♚" if piece.color == -1 else "♔"
+    elif str(type(piece)) == "<class 'main_module.Queen'>":
+        piece_symbol = "Q"
+        piece_emoji = "♛" if piece.color == -1 else "♕"
+    elif str(type(piece)) == "<class 'main_module.Rook'>":
+        piece_symbol = "R"
+        piece_emoji = "♜" if piece.color == -1 else "♖"
+    elif str(type(piece)) == "<class 'main_module.Bishop'>":
+        piece_symbol = "B"
+        piece_emoji = "♝" if piece.color == -1 else "♗"
+    elif str(type(piece)) == "<class 'main_module.Knight'>":
+        piece_symbol = "N"
+        piece_emoji = "♞" if piece.color == -1 else "♘"
+    elif str(type(piece)) == "<class 'main_module.Pawn'>":
+        piece_symbol = ""
+        piece_emoji = "♟" if piece.color == -1 else "♙"
+    
+    # Print the move in PGN format with emojis
+    print(f"{piece_emoji}{piece_symbol}{file}{rank} ({xy[0]},{xy[1]})")
 
 # 선택됬던 기물 이미지를 띄운다
 def screen_blit_selected_piece(selected_piece, win_xy):
@@ -295,10 +327,21 @@ def screen_blit_selected_piece(selected_piece, win_xy):
 
 # 기물 이미지를 업데이트한다
 def screen_blit_all_pieces(board):
+    # Draw red gradient circle for checkmated king if game is over
+    if game_state == "Checkmate":
+        for y in range(8):
+            for x in range(8):
+                if str(type(board.board[y][x])) == "<class 'main_module.King'>" and board.board[y][x].color != whose_turn:
+                    # Create a surface for the gradient circle
+                    s = pygame.Surface((100, 100), pygame.SRCALPHA)
+                    # Draw multiple circles with decreasing opacity for gradient effect
+                    for i in range(50, 0, -1):
+                        alpha = int(255 * ((50-i)/50))  # Decrease opacity as radius decreases
+                        pygame.draw.circle(s, (255, 0, 0, alpha), (50, 50), i)
+                    screen.blit(s, (x*100, y*100))
 
     for y in range(8):
         for x in range(8):
-
             if str(type(board.board[y][x])) == "<class 'main_module.King'>":
                 if board.board[y][x].color == -1:
                     screen.blit(img_king_w,(x*100, y*100))
@@ -437,7 +480,7 @@ def gamestate(board):
             if (type(board.pos(x, y)) == King):
                 if (((board.pos(x, y).color) == 1 and (whose_turn == -1)) or (
                     (board.pos(x, y).color) == -1 and (whose_turn == 1))):
-                    return board.pos(x, y).checkmate(board)
+                    return board.pos(x, y).state(board)
     return False
 
 ################################################################
@@ -489,8 +532,19 @@ while not quit:
                     print("Reset")
                     game_end = True
                 
-                elif event.key == pygame.K_RETURN and game_over:
+                elif (event.key == pygame.K_SPACE or event.key == pygame.K_RETURN) and game_over:
                     game_end = True
+
+                elif event.key == pygame.K_ESCAPE: # ESC 버튼
+                    game_end = True
+                    quit = True
+                
+                elif event.key == pygame.K_m: # M 버튼
+                    is_muted = not is_muted
+                    if is_muted:
+                        pygame.mixer.music.pause()
+                    else:
+                        pygame.mixer.music.unpause()
             
             elif event.type == pygame.MOUSEBUTTONUP and not game_over: # 마우스를 눌렀다 떼는 순간
                 
@@ -507,18 +561,22 @@ while not quit:
                     # 승진할 기물을 클릭하면 승진시키고 턴 전환
                     if promote(whose_turn, move_to_xy, move_to_win_xy) == "Completed":
                         
-                        pygame.mixer.Sound.play(sound_promotion)
+                        if not is_muted:
+                            pygame.mixer.Sound.play(sound_promotion)
                         promotionable = False
                         game_state = gamestate(board)
                         whose_turn *= -1
 
                         if game_state == "Check":
-                            pygame.mixer.Sound.play(sound_check)
-                        elif game_state == "Checkmate" and game_state == "Stalemate":
+                            if not is_muted:
+                                pygame.mixer.Sound.play(sound_check)
+                            print("Check!")
+                        elif game_state == "Checkmate" or game_state == "Stalemate":
                             game_over = True
-                            pygame.mixer.Sound.play(sound_game_end)
-                            pygame.mixer.music.stop()
-                        
+                            if not is_muted:
+                                pygame.mixer.Sound.play(sound_game_end)
+                                pygame.mixer.music.stop()
+
                         move_from_xy = []
                         move_from_win_xy = []
                         move_from_chessboard_xy = []
@@ -528,25 +586,24 @@ while not quit:
                 
                 # 자신의 말을 선택했을 때
                 elif (selected_xy_piece.color == whose_turn):
-                    
-                    # 이미 말을 선택했었다면 그 말 선택 취소
                     if move_from_xy != []:
                         screen_blit_empty_tile(move_from_xy, move_from_win_xy)
                         screen_blit_selected_piece(board.pos(move_from_xy[0], move_from_xy[1]), move_from_win_xy)
-                        move_from_xy = []
-                        move_from_win_xy = []
-                        move_from_chessboard_xy = []
-
-                    # 클릭한 위치의 좌표와 말 저장
-                    move_from_xy, move_from_win_xy, move_from_chessboard_xy = selected_xy, selected_win_xy, selected_chessboard_xy
-                    selected_piece = board.board[move_from_xy[1]][move_from_xy[0]] # board.board는 x, y를 뒤집어 인식함
-                    
-                    # 정보 출력하고, 선택된 기물 그래픽으로 표시
-                    print_xy_selected(move_from_xy, move_from_chessboard_xy)
-                    print(type(selected_piece), "\n")
-                    screen.blit(img_selected,(move_from_win_xy[0], move_from_win_xy[1]))
-                    screen_blit_selected_piece(selected_piece, move_from_win_xy)
-                    
+                        screen.blit(img_board,(0,0))
+                        screen_blit_all_pieces(board)
+                        
+                    # 같은 말을 다시 선택했을 때 선택 취소
+                    if move_from_xy == selected_xy:
+                        move_from_xy, move_from_win_xy, move_from_chessboard_xy = [], [], []
+                    else:
+                        # 클릭한 위치의 좌표와 말 저장
+                        move_from_xy, move_from_win_xy, move_from_chessboard_xy = selected_xy, selected_win_xy, selected_chessboard_xy
+                        selected_piece = board.board[move_from_xy[1]][move_from_xy[0]] # board.board는 x, y를 뒤집어 인식함
+                        
+                        # 정보 출력하고, 선택된 기물 그래픽으로 표시
+                        screen_blit_selected_piece(selected_piece, move_from_win_xy)
+                        show_possible_moves(selected_piece, board)
+                
                 # 자신의 말이 선택되어 있을 때
                 elif move_from_xy != []:
                     
@@ -554,15 +611,28 @@ while not quit:
                     move_to_xy, move_to_win_xy, move_to_chessboard_xy = selected_xy, selected_win_xy, selected_chessboard_xy
                     
                     # 갈 수 있는 곳을 선택하여 말이 움직인 경우
-                    if selected_piece.move(board, move_to_xy[0], move_to_xy[1]):
-                        
-                        pygame.mixer.Sound.play(sound_place)
-                        print_xy_move_to(move_to_xy, move_to_chessboard_xy)
+                    if selected_piece.movable(board, *move_to_xy):
+                        is_killable = board.killable(move_from_xy[0], move_from_xy[1], move_to_xy[0], move_to_xy[1])
+                        selected_piece.move(board, move_to_xy[0], move_to_xy[1])
+
+                        if not is_muted:
+                            # Play capture sound if capturing a piece, otherwise play move sound
+                            if is_killable:
+                                pygame.mixer.Sound.play(sound_capture)
+                            else:
+                                pygame.mixer.Sound.play(sound_place)
+
+                        print_xy(move_to_xy, move_to_chessboard_xy)
 
                         # 폰이 승진할 수 있다면 
                         if (type(selected_piece) == Pawn) and (
                             (((whose_turn == -1) and (move_to_xy[1] == 0)) or (
                             (whose_turn == 1) and (move_to_xy[1] == 7)))):
+
+                            # Clear the board and redraw everything
+                            screen.blit(img_board,(0,0))
+                            screen_blit_all_pieces(board)
+                            pygame.display.update()
 
                             # 승진할 기물을 선택하라는 이미지 띄우기
                             screen_blit_empty_tile(move_from_xy, move_from_win_xy)
@@ -570,37 +640,39 @@ while not quit:
 
                             # 폰 승진 단계로 이동
                             promotionable = True
-
+                            
                         # 승진 할 수 없다면 턴 종료
                         else:
                             screen.blit(img_board,(0,0))
-                            screen_blit_all_pieces(board)
                             game_state = gamestate(board)
+                            screen_blit_all_pieces(board)
                             whose_turn *= -1
                             
                             # 체크, 체크메이트, 스테일메이트 여부 확인
                             if game_state == "Check":
-                                pygame.mixer.Sound.play(sound_check)
-                                print("\nCheck!")
+                                if not is_muted:
+                                    pygame.mixer.Sound.play(sound_check)
+                                print("Check!")
 
                             elif game_state == "Checkmate" or game_state == "Stalemate":
-                                pygame.mixer.Sound.play(sound_game_end)
-                                pygame.mixer.music.stop()
+                                if not is_muted:
+                                    pygame.mixer.Sound.play(sound_game_end)
+                                    pygame.mixer.music.stop()
                                 game_over = True
                                 if game_state == "Checkmate":
-                                    print("\nCheckmate!")
+                                    print("Checkmate!")
                                 else:
-                                    print("\nStalemate!")
-
-                        print("-" * 64)
+                                    print("Stalemate!")
 
                     # 갈 수 없는 곳이나, 선택 했던 곳을 또 선택할 경우 선택 취소
                     else:
-                        if selected_piece.moveable(board, move_to_xy[0], move_to_xy[1]):
-                            pygame.mixer.Sound.play(sound_dangerous)
+                        if selected_piece.movable(board, move_to_xy[0], move_to_xy[1]):
+                            if not is_muted:
+                                pygame.mixer.Sound.play(sound_blocked)
                         screen_blit_empty_tile(move_from_xy, move_from_win_xy)
                         screen_blit_selected_piece(selected_piece, move_from_win_xy)
-                        print("Try again\n")
+                        screen.blit(img_board,(0,0))
+                        screen_blit_all_pieces(board)
                     
                     # 턴 전환 혹은 선택 취소
                     if not promotionable:
@@ -613,7 +685,6 @@ while not quit:
                 
                 # 자신의 말을 선택하지 않았을 때
                 else: 
-                    print("Try again\n")
                     move_from_xy = []
                     move_from_win_xy = []
                     move_from_chessboard_xy = []
