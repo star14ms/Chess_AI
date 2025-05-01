@@ -1,0 +1,25 @@
+# Rule: Chess Action Space Representation
+
+When discussing or implementing the chess action space for this project, be aware of the following representations:
+
+1.  **AlphaZero Standard (4672 Actions):**
+    *   Based on the paper "Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm".
+    *   Format: 8x8 source squares × 73 move type planes.
+    *   Move Types: 56 Queen-like (8 directions x 7 distances), 8 Knight moves, 9 Underpromotions (R/B/N x 3 directions).
+    *   This representation maps a *source square* and a *move type* to an action index.
+
+2.  **Theoretical Max Actions per Piece (~754 Actions):**
+    *   An alternative calculation summing potential moves across all pieces.
+    *   Counts: Rooks (2x28), Knights (2x8), Bishops (2x28), Queen (1x56), King (1x10 incl. castling), Pawns (8x70 incl. promo/EP).
+    *   Represents a conceptual maximum, not necessarily a practical encoding scheme.
+
+3.  **Project's Current Implementation (Relative Move IDs, 1-62+):**
+    *   The `uci_to_*_action_id` functions developed map a specific UCI move string to an ID based on relative direction and distance.
+    *   Ranges: Rook (1-28), Knight (1-8), Bishop (1-28), Queen (1-56), King (1-8, no castling), Pawn (1-62 incl. Q/N promo).
+    *   This scheme focuses on the *semantics of the move itself*.
+
+**Guidance:**
+
+*   Acknowledge the existence of the AlphaZero standard (1) and the theoretical calculation (2) when relevant context is provided.
+*   **Default to using and discussing the project's current Relative Move ID scheme (3)**, as implemented in the `uci_to_*_action_id` functions, unless the user explicitly requests discussion or implementation based on the AlphaZero format or another representation.
+*   If the action space needs modification (e.g., adding castling IDs, different promotion handling), clarify how it fits into or modifies the current Relative Move ID scheme (3).
