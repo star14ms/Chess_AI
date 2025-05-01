@@ -1,4 +1,7 @@
 import pygame
+import os
+
+from config import IMG_DIR, BGM_DIR, SOUND_DIR
 from objects import Board, Pawn, Bishop, Rook, Knight, Queen, King
 from typing import List, Tuple, Optional, Union
 
@@ -7,99 +10,99 @@ from typing import List, Tuple, Optional, Union
 pygame.init()
 
 # 보드, 체스말과 기타 이미지, BGM 가져오기
-img_board = pygame.image.load("./img/chess_board.png")
+img_board = pygame.image.load(os.path.join(IMG_DIR, "chess_board.png"))
 img_board = pygame.transform.scale(img_board,(800,800))
 
-img_king_b = pygame.image.load("./img/king_b.png") # b, w = black, white
+img_king_b = pygame.image.load(os.path.join(IMG_DIR, "king_b.png")) # b, w = black, white
 img_king_b = pygame.transform.scale(img_king_b,(100,100))
-img_king_w = pygame.image.load("./img/king_w.png")
+img_king_w = pygame.image.load(os.path.join(IMG_DIR, "king_w.png"))
 img_king_w = pygame.transform.scale(img_king_w,(100,100))
 
-img_queen_b = pygame.image.load("./img/queen_b.png")
+img_queen_b = pygame.image.load(os.path.join(IMG_DIR, "queen_b.png"))
 img_queen_b = pygame.transform.scale(img_queen_b,(100,100))
 img_queen_b2 = pygame.transform.scale(img_queen_b,(50,50))
-img_queen_w = pygame.image.load("./img/queen_w.png")
+img_queen_w = pygame.image.load(os.path.join(IMG_DIR, "queen_w.png"))
 img_queen_w = pygame.transform.scale(img_queen_w,(100,100))
 img_queen_w2 = pygame.transform.scale(img_queen_w,(50,50))
 
-img_rook_b = pygame.image.load("./img/rook_b.png")
+img_rook_b = pygame.image.load(os.path.join(IMG_DIR, "rook_b.png"))
 img_rook_b = pygame.transform.scale(img_rook_b,(100,100))
 img_rook_b2 = pygame.transform.scale(img_rook_b,(50,50))
-img_rook_w = pygame.image.load("./img/rook_w.png")
+img_rook_w = pygame.image.load(os.path.join(IMG_DIR, "rook_w.png"))
 img_rook_w = pygame.transform.scale(img_rook_w,(100,100))
 img_rook_w2 = pygame.transform.scale(img_rook_w,(50,50))
 
-img_bishop_b = pygame.image.load("./img/bishop_b.png")
+img_bishop_b = pygame.image.load(os.path.join(IMG_DIR, "bishop_b.png"))
 img_bishop_b = pygame.transform.scale(img_bishop_b,(100,100))
 img_bishop_b2 = pygame.transform.scale(img_bishop_b,(50,50))
-img_bishop_w = pygame.image.load("./img/bishop_w.png")
+img_bishop_w = pygame.image.load(os.path.join(IMG_DIR, "bishop_w.png"))
 img_bishop_w = pygame.transform.scale(img_bishop_w,(100,100))
 img_bishop_w2 = pygame.transform.scale(img_bishop_w,(50,50))
 
-img_knight_b = pygame.image.load("./img/knight_b.png")
+img_knight_b = pygame.image.load(os.path.join(IMG_DIR, "knight_b.png"))
 img_knight_b = pygame.transform.scale(img_knight_b,(100,100))
 img_knight_b2 = pygame.transform.scale(img_knight_b,(50,50))
-img_knight_w = pygame.image.load("./img/knight_w.png")
+img_knight_w = pygame.image.load(os.path.join(IMG_DIR, "knight_w.png"))
 img_knight_w = pygame.transform.scale(img_knight_w,(100,100))
 img_knight_w2 = pygame.transform.scale(img_knight_w,(50,50))
 
-img_pawn_b = pygame.image.load("./img/pawn_b.png")
+img_pawn_b = pygame.image.load(os.path.join(IMG_DIR, "pawn_b.png"))
 img_pawn_b = pygame.transform.scale(img_pawn_b,(100,100))
-img_pawn_w = pygame.image.load("./img/pawn_w.png")
+img_pawn_w = pygame.image.load(os.path.join(IMG_DIR, "pawn_w.png"))
 img_pawn_w = pygame.transform.scale(img_pawn_w,(100,100))
 
 # 일반적인 밝고 어두운 타일 이미지
-bright_tile = pygame.image.load("./img/bright.png")
+bright_tile = pygame.image.load(os.path.join(IMG_DIR, "bright.png"))
 bright_tile = pygame.transform.scale(bright_tile,(102,102))
 
-dark_tile = pygame.image.load("./img/dark_tile.png")
+dark_tile = pygame.image.load(os.path.join(IMG_DIR, "dark_tile.png"))
 dark_tile = pygame.transform.scale(dark_tile,(102,102))
 
 # BGM, sound
-pygame.mixer.music.load("./bgm/Gyakuten_Kenji_2_Showdown_Suite.wav")
+pygame.mixer.music.load(os.path.join(BGM_DIR, "Gyakuten_Kenji_2_Showdown_Suite.wav"))
 
 sounds = {
-    'place': pygame.mixer.Sound("sound/move-self.mp3"),
-    'capture': pygame.mixer.Sound("sound/capture.mp3"),
-    'promotion': pygame.mixer.Sound("sound/승진.wav"),
-    'game_end': pygame.mixer.Sound("sound/[효과음]BOING.wav"),
-    'dangerous': pygame.mixer.Sound("sound/미스테리.wav"),
-    'check': pygame.mixer.Sound("sound/췍.mp3"),
-    'blocked': pygame.mixer.Sound("sound/디제이스탑.wav")
+    'place': pygame.mixer.Sound(os.path.join(SOUND_DIR, "move-self.mp3")),
+    'capture': pygame.mixer.Sound(os.path.join(SOUND_DIR, "capture.mp3")),
+    'promotion': pygame.mixer.Sound(os.path.join(SOUND_DIR, "승진.wav")),
+    'game_end': pygame.mixer.Sound(os.path.join(SOUND_DIR, "[효과음]BOING.wav")),
+    'dangerous': pygame.mixer.Sound(os.path.join(SOUND_DIR, "미스테리.wav")),
+    'check': pygame.mixer.Sound(os.path.join(SOUND_DIR, "췍.mp3")),
+    'blocked': pygame.mixer.Sound(os.path.join(SOUND_DIR, "디제이스탑.wav"))
 }
 
 # 좌표 기호 써있는 타일 이미지
 def get_special_tiles() -> Tuple[List[pygame.Surface], List[pygame.Surface]]:
     # 좌표 기호 써있는 타일 이미지
-    a1_tile = pygame.image.load("./img/a1.png")
+    a1_tile = pygame.image.load(os.path.join(IMG_DIR, "a1.png"))
     a1_tile = pygame.transform.scale(a1_tile,(100,100))
-    a2_tile = pygame.image.load("./img/a2.png")
+    a2_tile = pygame.image.load(os.path.join(IMG_DIR, "a2.png"))
     a2_tile = pygame.transform.scale(a2_tile,(100,100))
-    a3_tile = pygame.image.load("./img/a3.png")
+    a3_tile = pygame.image.load(os.path.join(IMG_DIR, "a3.png"))
     a3_tile = pygame.transform.scale(a3_tile,(100,100))
-    a4_tile = pygame.image.load("./img/a4.png")
+    a4_tile = pygame.image.load(os.path.join(IMG_DIR, "a4.png"))
     a4_tile = pygame.transform.scale(a4_tile,(100,100))
-    a5_tile = pygame.image.load("./img/a5.png")
+    a5_tile = pygame.image.load(os.path.join(IMG_DIR, "a5.png"))
     a5_tile = pygame.transform.scale(a5_tile,(100,100))
-    a6_tile = pygame.image.load("./img/a6.png")
+    a6_tile = pygame.image.load(os.path.join(IMG_DIR, "a6.png"))
     a6_tile = pygame.transform.scale(a6_tile,(100,100))
-    a7_tile = pygame.image.load("./img/a7.png")
+    a7_tile = pygame.image.load(os.path.join(IMG_DIR, "a7.png"))
     a7_tile = pygame.transform.scale(a7_tile,(100,100))
-    a8_tile = pygame.image.load("./img/a8.png")
+    a8_tile = pygame.image.load(os.path.join(IMG_DIR, "a8.png"))
     a8_tile = pygame.transform.scale(a8_tile,(100,100))
-    b1_tile = pygame.image.load("./img/b1.png")
+    b1_tile = pygame.image.load(os.path.join(IMG_DIR, "b1.png"))
     b1_tile = pygame.transform.scale(b1_tile,(100,100))
-    c1_tile = pygame.image.load("./img/c1.png")
+    c1_tile = pygame.image.load(os.path.join(IMG_DIR, "c1.png"))
     c1_tile = pygame.transform.scale(c1_tile,(100,100))
-    d1_tile = pygame.image.load("./img/d1.png")
+    d1_tile = pygame.image.load(os.path.join(IMG_DIR, "d1.png"))
     d1_tile = pygame.transform.scale(d1_tile,(100,100))
-    e1_tile = pygame.image.load("./img/e1.png")
+    e1_tile = pygame.image.load(os.path.join(IMG_DIR, "e1.png"))
     e1_tile = pygame.transform.scale(e1_tile,(100,100))
-    f1_tile = pygame.image.load("./img/f1.png")
+    f1_tile = pygame.image.load(os.path.join(IMG_DIR, "f1.png"))
     f1_tile = pygame.transform.scale(f1_tile,(100,100))
-    g1_tile = pygame.image.load("./img/g1.png")
+    g1_tile = pygame.image.load(os.path.join(IMG_DIR, "g1.png"))
     g1_tile = pygame.transform.scale(g1_tile,(100,100))
-    h1_tile = pygame.image.load("./img/h1.png")
+    h1_tile = pygame.image.load(os.path.join(IMG_DIR, "h1.png"))
     h1_tile = pygame.transform.scale(h1_tile,(100,100))
     
     abc_tile = [a1_tile, b1_tile, c1_tile, d1_tile, e1_tile, f1_tile, g1_tile, h1_tile]

@@ -1,6 +1,7 @@
 import pygame
+from config import SCREEN_WIDTH, SCREEN_HEIGHT
 from objects import Board, Pawn
-from pygame_modules import (
+from modules import (
     init_chessboard,
     screen_blit_initialized_board,
     show_possible_moves,
@@ -221,7 +222,7 @@ def run_game():
 
 
 # 게임 창 띄우기
-screen = pygame.display.set_mode((800,800))
+screen = pygame.display.set_mode((SCREEN_WIDTH,SCREEN_HEIGHT))
 pygame.display.set_caption("와! 체스!") # 창 제목
 
 is_muted = False
