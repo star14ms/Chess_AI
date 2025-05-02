@@ -3,7 +3,7 @@ import random
 import chess
 import numpy as np
 import gymnasium as gym # Assuming gym is imported
-from typing import Optional, List, Tuple # Added for type hinting
+from typing import Optional, List, Tuple, Union
 
 # --- Piece Values ---
 PIECE_VALUES = {
@@ -59,7 +59,7 @@ def is_safe_after_move(board: chess.Board, move: chess.Move, opponent_color: che
         if board.move_stack and board.peek() == move: board.pop()
         return False # Assume unsafe if simulation fails
 
-def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) -> Tuple[np.ndarray, int, str]:
+def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True, return_id: bool = False) -> Tuple[Union[np.ndarray, int], int, str]:
     """
     Samples an action using a hierarchy of heuristics, returning the action, policy ID, and policy title.
 
@@ -95,8 +95,8 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
     saving move was chosen).
     
     Returns:
-        Tuple[np.ndarray, int, str]: A tuple containing:
-            - The chosen action as a numpy array.
+        Tuple[Union[np.ndarray, int], int, str]: A tuple containing:
+            - The chosen action as a numpy array or integer ID (based on return_id).
             - The integer ID (1-8) of the policy that chose it (0 if no moves).
             - The string title of the policy.
     """
@@ -104,7 +104,9 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
     initial_legal_moves = list(board.legal_moves)
     if not initial_legal_moves:
         policy_id = 0
-        return np.zeros(action_space.shape, dtype=action_space.dtype), policy_id, POLICY_TITLES[policy_id]
+        # Handle return_id for no moves case (return 0 if ID requested, else array)
+        action_repr = 0 if return_id else np.zeros(action_space.shape, dtype=action_space.dtype)
+        return action_repr, policy_id, POLICY_TITLES[policy_id]
 
     current_player_color = board.turn
     opponent_color = not current_player_color
@@ -124,7 +126,7 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
     if mating_moves:
         chosen_move = random.choice(mating_moves)
         policy_id = 1
-        return action_space._move_to_action(chosen_move), policy_id, POLICY_TITLES[policy_id]
+        return action_space._move_to_action(chosen_move, return_id=return_id), policy_id, POLICY_TITLES[policy_id]
     # --- End Deliver Checkmate ---
 
     # --- 2. Avoid Being Checkmated ---    
@@ -171,7 +173,8 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
     if not moves_to_consider: moves_to_consider = initial_legal_moves
     if not moves_to_consider:
         policy_id = 0 # Treat as no legal moves if filtering failed unexpectedly
-        return np.zeros(action_space.shape, dtype=action_space.dtype), policy_id, POLICY_TITLES[policy_id]
+        action_repr = 0 if return_id else np.zeros(action_space.shape, dtype=action_space.dtype)
+        return action_repr, policy_id, POLICY_TITLES[policy_id]
     # --- End Avoid Being Checkmated ---
 
     # --- Initialize variable before first use --- 
@@ -196,51 +199,84 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
         if best_captures:
             heuristic_chosen_move = random.choice(best_captures)
             policy_id = 3
-            return action_space._move_to_action(heuristic_chosen_move), policy_id, POLICY_TITLES[policy_id]
+            return action_space._move_to_action(heuristic_chosen_move, return_id=return_id), policy_id, POLICY_TITLES[policy_id]
 
-    # --- 4. Attack Trapped Piece --- 
+    # --- 4. Attack Trapped Piece (Revised: Find moves that *will* trap a piece) --- 
     if not heuristic_chosen_move: 
-        good_attacks_on_trapped: List[Tuple[chess.Move, int]] = []        
-        opponent_attacked_squares = get_attacked_squares(board, opponent_color) # Squares opponent occupies attacked by us
+        candidate_trapping_moves: List[Tuple[chess.Move, int]] = [] # Store (trapping_move, value_of_trapped_piece)
 
-        for opp_sq in opponent_attacked_squares:
-            opponent_piece = board.piece_at(opp_sq)
-            if not opponent_piece: continue # Should not happen
+        for my_move in moves_to_consider:
+            highest_value_trapped_by_this_move = -1
+            try:
+                board.push(my_move)
+                
+                # Find all squares attacked by the player *after* the move
+                player_attacked_squares_after_move = set().union(*(board.attacks(sq) for sq in board.pieces(chess.ANY, current_player_color)))
+                
+                # Check each opponent piece
+                for opp_sq in board.pieces(chess.ANY, opponent_color):
+                    # Is this opponent piece attacked *now*?
+                    if opp_sq in player_attacked_squares_after_move:
+                        opponent_piece = board.piece_at(opp_sq)
+                        if not opponent_piece: continue # Should not happen
 
-            # Check if opponent piece is trapped (has no safe escape moves)
-            is_trapped = True
-            has_any_escape = False
-            for opp_escape_move in board.generate_legal_moves(from_mask=chess.BB_SQUARES[opp_sq]):
-                has_any_escape = True
-                if is_safe_after_move(board, opp_escape_move, current_player_color): # Is opp destination safe from us? 
-                    is_trapped = False
-                    break # Found a safe escape, piece is not trapped
-            
-            # If opponent piece has NO legal moves at all, it's also trapped (or stalemated/checkmated) 
-            if not has_any_escape: is_trapped = True
+                        # Check if this attacked opponent piece is trapped (no safe escapes)
+                        is_trapped = True
+                        has_any_escape = False
+                        for opp_escape_move in board.generate_legal_moves(from_mask=chess.BB_SQUARES[opp_sq]):
+                            has_any_escape = True
+                            # Check if the opponent's escape destination is safe from the player
+                            try:
+                                board.push(opp_escape_move)
+                                escape_dest_safe = not board.is_attacked_by(current_player_color, opp_escape_move.to_square)
+                                board.pop() # Pop opponent escape simulation
+                                if escape_dest_safe:
+                                    is_trapped = False
+                                    break # Found a safe escape for this opponent piece
+                            except Exception:
+                                if board.move_stack and board.peek() == opp_escape_move: board.pop()
+                                # If simulation fails, assume escape might be possible (conservative)
+                                is_trapped = False 
+                                break 
+                        
+                        # Also trapped if it had no legal moves at all
+                        if not has_any_escape: 
+                            is_trapped = True
 
-            if is_trapped:
-                # Find our good moves that capture this trapped piece
-                for my_attack_move in moves_to_consider: # Use filtered list
-                    if my_attack_move.to_square == opp_sq: # If this move captures the piece
-                        # Check if this attack is safe or profitable for us
-                        capturing_piece = board.piece_at(my_attack_move.from_square)
-                        trapped_piece_value = get_piece_value(opponent_piece)
-                        if is_safe_after_move(board, my_attack_move, opponent_color) or (trapped_piece_value > get_piece_value(capturing_piece)):
-                             good_attacks_on_trapped.append((my_attack_move, trapped_piece_value))
-        
-        # Select the best attack among those found
-        if good_attacks_on_trapped:
-            best_trapped_attacks = []
+                        # If this opponent piece IS trapped by my_move...
+                        if is_trapped:
+                            current_opp_piece_value = get_piece_value(opponent_piece)
+                            # Keep track of the highest value piece trapped by this specific my_move
+                            highest_value_trapped_by_this_move = max(highest_value_trapped_by_this_move, current_opp_piece_value)
+                
+                # Finished checking all opponent pieces for this my_move
+                board.pop() # Pop my_move simulation
+
+                # If this move resulted in trapping *some* piece, record it
+                if highest_value_trapped_by_this_move > 0:
+                    candidate_trapping_moves.append((my_move, highest_value_trapped_by_this_move))
+
+            except Exception:
+                # Ensure board state is clean if simulation of my_move fails
+                if board.move_stack and board.peek() == my_move: board.pop()
+                continue # Skip this move if simulation failed
+
+        # --- Selection after checking all trapping moves ---
+        if candidate_trapping_moves:
+            best_trapping_moves = []
             max_trapped_val = -1
-            for move, value in good_attacks_on_trapped:
-                if value > max_trapped_val: max_trapped_val = value; best_trapped_attacks = [move]
-                elif value == max_trapped_val: best_trapped_attacks.append(move)
+            # Find the move(s) that trap the highest value piece
+            for move, value in candidate_trapping_moves:
+                if value > max_trapped_val:
+                    max_trapped_val = value
+                    best_trapping_moves = [move]
+                elif value == max_trapped_val:
+                    best_trapping_moves.append(move)
             
-            if best_trapped_attacks:
-                heuristic_chosen_move = random.choice(best_trapped_attacks)
-                policy_id = 4
-                return action_space._move_to_action(heuristic_chosen_move), policy_id, POLICY_TITLES[policy_id]
+            if best_trapping_moves:
+                heuristic_chosen_move = random.choice(best_trapping_moves)
+                policy_id = 4 # Still Policy 4, but with revised logic
+                return action_space._move_to_action(heuristic_chosen_move, return_id=return_id), policy_id, POLICY_TITLES[policy_id]
 
     # --- 5. Avoid Attacks Logic ---    
     if not heuristic_chosen_move and avoid_attacks: 
@@ -276,7 +312,7 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
                 chosen_move = random.choice(list(set(candidate_safe_evasions)))
                 heuristic_chosen_move = chosen_move 
                 policy_id = 5
-                return action_space._move_to_action(heuristic_chosen_move), policy_id, POLICY_TITLES[policy_id]
+                return action_space._move_to_action(heuristic_chosen_move, return_id=return_id), policy_id, POLICY_TITLES[policy_id]
             elif candidate_attacker_captures:
                 best_captures = []
                 max_val = -1
@@ -287,7 +323,7 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
                     chosen_move = random.choice(best_captures)
                     heuristic_chosen_move = chosen_move 
                     policy_id = 5
-                    return action_space._move_to_action(heuristic_chosen_move), policy_id, POLICY_TITLES[policy_id]
+                    return action_space._move_to_action(heuristic_chosen_move, return_id=return_id), policy_id, POLICY_TITLES[policy_id]
 
     # --- 6. Conditional Attack --- 
     if not heuristic_chosen_move:
@@ -340,7 +376,7 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
             if best_conditional_attacks:
                 heuristic_chosen_move = random.choice(best_conditional_attacks)
                 policy_id = 6
-                return action_space._move_to_action(heuristic_chosen_move), policy_id, POLICY_TITLES[policy_id]
+                return action_space._move_to_action(heuristic_chosen_move, return_id=return_id), policy_id, POLICY_TITLES[policy_id]
 
     # --- 7. Maximize Min(Mobility) ---    
     # This is the final heuristic before fallback, no need to check heuristic_chosen_move
@@ -384,7 +420,7 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
         if mating_moves: chosen_move = random.choice(mating_moves)
         else: chosen_move = random.choice(best_moves)
         policy_id = 7 # Policy 7
-        return action_space._move_to_action(chosen_move), policy_id, POLICY_TITLES[policy_id]
+        return action_space._move_to_action(chosen_move, return_id=return_id), policy_id, POLICY_TITLES[policy_id]
     else:
         # --- 8. Fallback ---        
         policy_id = 8 # Fallback Policy 8
@@ -395,7 +431,7 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True) ->
             chosen_move = random.choice(initial_legal_moves)
         
         if chosen_move:
-            return action_space._move_to_action(chosen_move), policy_id, POLICY_TITLES[policy_id]
+            return action_space._move_to_action(chosen_move, return_id=return_id), policy_id, POLICY_TITLES[policy_id]
         else: 
             # Final fallback if absolutely no moves are left (should be caught earlier)
             policy_id = 0

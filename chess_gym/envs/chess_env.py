@@ -9,14 +9,13 @@ import pygame
 from io import BytesIO
 import cairosvg
 from PIL import Image
+from typing import Union
 
 from chess_gym.chess_custom import FullyTrackedBoard
 from utils.visualize import draw_possible_action_ids_on_board
-from utils.analyze import get_legal_moves_with_action_ids
-import time
 
 class MoveSpace(spaces.Space):
-    def __init__(self, board):
+    def __init__(self, board: FullyTrackedBoard):
         super().__init__(dtype=np.int32)
         self.board = board
         self._shape = (6,)  # [from_square, to_square, promotion, drop, promotion_color, drop_color]
@@ -25,42 +24,75 @@ class MoveSpace(spaces.Space):
     def shape(self):
         return self._shape
 
-    def sample(self):
+    def sample(self, return_id: bool = False) -> Union[np.ndarray, int]:
         legal_moves = list(self.board.legal_moves)
         if not legal_moves:
             return np.zeros(self.shape, dtype=self.dtype)
         move = np.random.choice(legal_moves)
-        return self._move_to_action(move)
+        return self._move_to_action(move, return_id=return_id)
     
-    def contains(self, x):
+    def contains(self, action: Union[int, np.ndarray, list]) -> bool:
         try:
-            move = self._action_to_move(x)
+            move = self._action_to_move(action)
             return move in self.board.legal_moves
         except:
             return False
 
-    def _action_to_move(self, action):
-        from_square = chess.Square(action[0])
-        to_square = chess.Square(action[1])
+    def _action_to_move(self, action: Union[int, np.ndarray, list]) -> chess.Move:
+        # Check if action is an integer ID
+        if isinstance(action, (int, np.integer)):
+            if not self.board.is_theoretically_possible_state:
+                raise ValueError("Cannot convert action ID to move for a theoretically impossible board state.")
+            # Convert from integer ID using the imported function
+            # Pass self.board as the first argument
+            return self.board.action_id_to_move(action)
         
-        # Handle promotion
-        if action[2] != 0:  # If there's a promotion
-            promotion = chess.PieceType(action[2])
-        else:
-            promotion = None
+        # Check if action is a list or numpy array (legacy format)
+        elif isinstance(action, (list, np.ndarray)):
+            # Ensure legacy format has the correct shape if it's a numpy array
+            if isinstance(action, np.ndarray) and action.shape != self._shape:
+                 raise ValueError(f"Invalid action shape for legacy format: expected {self._shape}, got {action.shape}")
+            # Ensure legacy format has the correct length if it's a list
+            if isinstance(action, list) and len(action) != self._shape[0]:
+                 raise ValueError(f"Invalid action length for legacy format: expected {self._shape[0]}, got {len(action)}")
             
-        # Handle drop
-        if action[3] != 0:  # If there's a drop
-            drop_piece_type = chess.PieceType(action[3])
-            drop_color = chess.WHITE if action[5] == 1 else chess.BLACK
-            drop = chess.Piece(drop_piece_type, drop_color)
-        else:
-            drop = None
+            # Convert from legacy 6-element array
+            from_square = chess.Square(action[0])
+            to_square = chess.Square(action[1])
             
-        move = chess.Move(from_square, to_square, promotion, drop)
-        return move
+            # Handle promotion
+            if action[2] != 0:  # If there's a promotion
+                promotion = chess.PieceType(action[2])
+            else:
+                promotion = None
+                
+            # Handle drop
+            if action[3] != 0:  # If there's a drop
+                drop_piece_type = chess.PieceType(action[3])
+                drop_color = chess.WHITE if action[5] == 1 else chess.BLACK
+                drop = chess.Piece(drop_piece_type, drop_color)
+            else:
+                drop = None
+                
+            move = chess.Move(from_square, to_square, promotion, drop)
+            return move
+        else:
+            # Raise error for unsupported action type
+            raise TypeError(f"Unsupported action type: {type(action)}")
 
-    def _move_to_action(self, move):
+    def _move_to_action(self, move: chess.Move, return_id: bool = False) -> Union[np.ndarray, int]:
+        # Check if we should return the integer ID
+        is_possible = hasattr(self.board, 'is_theoretically_possible_state') and self.board.is_theoretically_possible_state
+
+        if return_id:
+            if is_possible:
+                # Assuming FullyTrackedBoard has is_theoretically_possible_state method
+                return self.board.move_to_action_id(move)
+            else:
+                # Raise error if ID requested for impossible state
+                raise ValueError("Cannot return action ID for a theoretically impossible board state.")
+        
+        # Otherwise, return the legacy 6-element array
         from_square = move.from_square
         to_square = move.to_square
         
@@ -75,7 +107,9 @@ class MoveSpace(spaces.Space):
             
         # Handle drop
         if move.drop is not None:
-            drop = move.drop
+            # Note: python-chess Move objects don't store the *color* of the dropped piece directly,
+            # only its type. The color is inferred from the turn. We need the PieceType.
+            drop = move.drop # This gives the PieceType for drops
             # For drops, the color is determined by the current turn
             drop_color = 1 if self.board.turn else 0
         else:

@@ -6,7 +6,7 @@ import io
 from typing import Optional
 from IPython.display import SVG, HTML, display
 
-from utils.analyze import get_legal_moves_with_action_ids
+from chess_gym.chess_custom import FullyTrackedBoard
 
 
 def draw_numbers_on_board(
@@ -135,7 +135,7 @@ def display_svgs_horizontally(svg_list: list[str]):
     display(HTML(html_content))
 
 
-def draw_possible_action_ids_on_board(board: chess.Board, size: int = 400) -> Optional[Image.Image]:
+def draw_possible_action_ids_on_board(board: FullyTrackedBoard, size: int = 400) -> Optional[Image.Image]:
     """
     Generates an image of a chess board with action IDs drawn on destination squares.
 
@@ -148,7 +148,7 @@ def draw_possible_action_ids_on_board(board: chess.Board, size: int = 400) -> Op
         if the board state is incompatible with the action space.
     """
     # Calculate the action ID map internally
-    squares_to_action_ids = get_legal_moves_with_action_ids(board, return_squares_to_ids=True)
+    squares_to_action_ids = board.get_legal_moves_with_action_ids(return_squares_to_ids=True)
 
     # Handle case where action IDs couldn't be generated
     if squares_to_action_ids is None:
