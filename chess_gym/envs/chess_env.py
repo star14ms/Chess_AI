@@ -10,6 +10,8 @@ from io import BytesIO
 import cairosvg
 from PIL import Image
 
+from chess_gym.chess_custom import FullyTrackedBoard
+
 class MoveSpace(spaces.Space):
     def __init__(self, board):
         super().__init__(dtype=np.int32)
@@ -109,7 +111,7 @@ class ChessEnv(gym.Env):
 
         self.observation_mode = observation_mode
         self.chess960 = kwargs.get('chess960', False)
-        self.board = chess.Board(chess960=self.chess960)
+        self.board = FullyTrackedBoard(chess960=self.chess960)
 
         if self.chess960:
             self.board.set_chess960_pos(np.random.randint(0, 960))
