@@ -122,12 +122,14 @@ class ChessEnv(gym.Env):
     """Chess Environment"""
     metadata = {
         'render_modes': ['rgb_array', 'human'],
-        'observation_modes': ['rgb_array', 'piece_map', 'board_vector'],
+        'observation_modes': ['rgb_array', 'piece_map', 'vector'],
         'render_fps': 4
     }
 
-    def __init__(self, render_size=512, observation_mode='board_vector', claim_draw=True, render_mode=None, show_possible_action_ids=False, **kwargs):
+    def __init__(self, render_size=512, observation_mode='vector', claim_draw=True, render_mode=None, show_possible_action_ids=False, **kwargs):
         super(ChessEnv, self).__init__()
+
+        self.observation_mode = observation_mode
 
         if observation_mode == 'rgb_array':
             self.observation_space = spaces.Box(
@@ -143,17 +145,16 @@ class ChessEnv(gym.Env):
                 shape=(8, 8),
                 dtype=np.int8
             )
-        elif observation_mode == 'board_vector':
+        elif observation_mode == 'vector':
             self.observation_space = spaces.Box(
-                low=0,
+                low=-1,
                 high=1,
-                shape=(13, 8, 8),
-                dtype=np.float32
+                shape=(8, 8, 13),
+                dtype=np.int8
             )
         else:
-            raise Exception("observation_mode must be either rgb_array or piece_map")
+            raise ValueError(f"Invalid observation_mode: {observation_mode}. Must be one of {self.metadata['observation_modes']}")
 
-        self.observation_mode = observation_mode
         self.chess960 = kwargs.get('chess960', False)
         self.board = FullyTrackedBoard(chess960=self.chess960)
 
@@ -184,12 +185,17 @@ class ChessEnv(gym.Env):
         return piece_map
 
     def _observe(self):
-        if self.observation_mode == 'board_vector':
-            observation = self._get_board_vector()
-        elif self.observation_mode == 'rgb_array':
+        if self.observation_mode == 'rgb_array':
             observation = self._get_image()
-        else:  # piece_map
+        elif self.observation_mode == 'piece_map':
             observation = self._get_piece_configuration()
+        elif self.observation_mode == 'vector':
+            if hasattr(self.board, 'get_board_vector'):
+                observation = self.board.get_board_vector()
+            else:
+                raise AttributeError("Board object does not have method 'get_board_vector'. Required for observation_mode='vector'.")
+        else:
+            raise RuntimeError(f"Invalid internal state: observation_mode='{self.observation_mode}'")
         return observation
 
     def step(self, action):

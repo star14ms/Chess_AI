@@ -34,3 +34,36 @@ When discussing or implementing the chess action space for this project, adhere 
 *   Ensure `uci_to_*_action_id` functions and base ID calculations align with the 82 relative pawn actions and the 1700 total space.
 *   **Note on Editing .ipynb:** When proposing code changes for `.ipynb` files, present the code directly in the chat instead of using file editing tools, as these can cause issues with notebook structure.
 *   **Note on Editing Snippets:** If editing reference code provided by the user (e.g., via selection) that lacks necessary import statements, provide only the modified function or code block itself; do not add or guess imports unless specifically requested.
+
+## Observation Vector Format (`get_board_vector` method in `chess_gym/chess_custom.py`)
+
+The observation vector represents the state of the chessboard as an 8x8x13 NumPy array (`dtype=np.int8`).
+Each 13-element feature vector corresponds to a square on the board.
+
+**Shape:** `(8, 8, 13)` (Rank, File, Features)
+
+**Features per Square (13 dimensions):**
+
+*   **Dimension 0:** `Color`
+    *   `-1`: Black piece
+    *   `0`: Empty square
+    *   `1`: White piece
+*   **Dimensions 1-6:** `Piece Type` (One-hot encoded)
+    *   Index 1: Pawn (`chess.PAWN`)
+    *   Index 2: Knight (`chess.KNIGHT`)
+    *   Index 3: Bishop (`chess.BISHOP`)
+    *   Index 4: Rook (`chess.ROOK`)
+    *   Index 5: Queen (`chess.QUEEN`)
+    *   Index 6: King (`chess.KING`)
+*   **Dimension 7:** `Moved Flag`
+    *   `1`: The piece (King, Rook, or Pawn) has moved from its starting position or lost relevant castling rights.
+    *   `0`: The piece has not moved, or is not K/R/P.
+*   **Dimensions 8-12:** `Behavior Type` (One-hot encoded, relevant only if the piece *was originally* a Pawn)
+    *   Index 8: Is currently a Pawn (original Pawn, not yet promoted).
+    *   Index 9: Promoted to Knight.
+    *   Index 10: Promoted to Bishop.
+    *   Index 11: Promoted to Rook.
+    *   Index 12: Promoted to Queen.
+    *   *(All zero if the piece was not originally a Pawn)*
+
+**Example Usage:** `observation = board.get_board_vector()`
