@@ -11,6 +11,9 @@ import cairosvg
 from PIL import Image
 
 from chess_gym.chess_custom import FullyTrackedBoard
+from utils.visualize import draw_possible_action_ids_on_board
+from utils.analyze import get_legal_moves_with_action_ids
+import time
 
 class MoveSpace(spaces.Space):
     def __init__(self, board):
@@ -89,7 +92,7 @@ class ChessEnv(gym.Env):
         'render_fps': 4
     }
 
-    def __init__(self, render_size=512, observation_mode='rgb_array', claim_draw=True, render_mode=None, **kwargs):
+    def __init__(self, render_size=512, observation_mode='rgb_array', claim_draw=True, render_mode=None, show_possible_action_ids=False, **kwargs):
         super(ChessEnv, self).__init__()
 
         if observation_mode == 'rgb_array':
@@ -119,6 +122,7 @@ class ChessEnv(gym.Env):
         self.render_size = render_size
         self.claim_draw = claim_draw
         self.render_mode = render_mode
+        self.show_possible_action_ids = show_possible_action_ids
         self.window = None
         self.clock = None
         self.action_space = MoveSpace(self.board)
@@ -190,6 +194,9 @@ class ChessEnv(gym.Env):
     def render(self):
         if self.render_mode == "human":
             return self._render_frame()
+        elif self.render_mode == "rgb_array":
+            # For rgb_array mode, just return the image numpy array
+            return self._get_image()
 
     def _render_frame(self):
         if self.window is None and self.render_mode == "human":
@@ -197,33 +204,61 @@ class ChessEnv(gym.Env):
             pygame.display.init()
             self.window = pygame.display.set_mode((self.render_size, self.render_size))
             pygame.display.set_caption('Chess Environment')
-            
         if self.clock is None and self.render_mode == "human":
             self.clock = pygame.time.Clock()
 
-        # Convert the SVG to a Pygame surface
-        out = BytesIO()
-        bytestring = chess.svg.board(self.board, size=self.render_size).encode('utf-8')
-        cairosvg.svg2png(bytestring=bytestring, write_to=out)
-        image = Image.open(out)
-        image = image.convert('RGBA')
-        image_data = image.tobytes()
-        image_size = image.size
-        canvas = pygame.image.fromstring(image_data, image_size, 'RGBA')
-
-        if self.render_mode == "human":
-            # The following line copies our drawings from `canvas` to the visible window
-            self.window.blit(canvas, canvas.get_rect())
-            pygame.event.pump()
+        # --- Logic to show possible actions (if enabled) ---
+        if self.render_mode == "human" and self.show_possible_action_ids:
+            # --- 1. Display standard board FIRST ---
+            std_board_image_pil = Image.fromarray(self._get_image())
+            std_board_image_pygame = pygame.image.fromstring(
+                std_board_image_pil.tobytes(), std_board_image_pil.size, std_board_image_pil.mode
+            ).convert()
+            self.window.blit(std_board_image_pygame, (0, 0))
             pygame.display.update()
+            pygame.time.wait(300) # <-- Pause 1
+            # --- End step 1 ---
 
-            # We need to ensure that human-rendering occurs at the predefined framerate.
-            # The following line will automatically add a delay to keep the framerate stable.
+            # --- 2. Display action IDs SECOND ---
+            vis_image_pil = draw_possible_action_ids_on_board(self.board, size=self.render_size)
+            if vis_image_pil is not None:
+                vis_image_pygame = pygame.image.fromstring(
+                    vis_image_pil.tobytes(), vis_image_pil.size, vis_image_pil.mode
+                ).convert()
+                self.window.blit(vis_image_pygame, (0, 0))
+                pygame.display.update()
+                pygame.time.wait(1000) # <-- Pause 2
+                # --- End step 2 ---
+
+                # --- 3. Display standard board THIRD (remove IDs) ---
+                # Reuse std_board_image_pygame from step 1
+                self.window.blit(std_board_image_pygame, (0, 0))
+                pygame.display.update()
+                pygame.time.wait(300) # <-- Pause 3
+                # --- End step 3 ---
+            else:
+                # Handle case where action IDs couldn't be generated
+                print("Board state incompatible with action space, skipping action visualization.")
+                # If action IDs failed, the standard board was shown (step 1) and paused.
+                # We just proceed to the final render after the initial pause.
+                pass 
+            # --- End Action ID Display Logic ---
+
+        # --- Original rendering logic (display the final current board state) ---
+        # This ensures the *final* state is shown before the game potentially steps again,
+        # respecting the render_fps.
+        canvas = pygame.Surface((self.render_size, self.render_size))
+        canvas.fill((255, 255, 255))
+        final_board_image_pil = Image.fromarray(self._get_image())
+        final_board_image_pygame = pygame.image.fromstring(
+            final_board_image_pil.tobytes(), final_board_image_pil.size, final_board_image_pil.mode
+        ).convert()
+        self.window.blit(final_board_image_pygame, (0, 0))
+        pygame.display.update()
+
+        # Frame rate control
+        if self.render_mode == "human":
             self.clock.tick(self.metadata["render_fps"])
-        else:  # rgb_array
-            return np.transpose(
-                np.array(pygame.surfarray.pixels3d(canvas)), axes=(1, 0, 2)
-            )
 
     def close(self):
         if self.window is not None:

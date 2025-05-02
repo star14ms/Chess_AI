@@ -1,6 +1,11 @@
-from typing import Dict, Tuple, List, Iterator, Optional
+from typing import Dict, Tuple, List, Iterator, Optional, Union
 import chess
 from collections import defaultdict
+from chess_gym.chess_custom import FullyTrackedBoard
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Universal Chess Interface (UCI) to Local Action ID (1-based)
 def uci_to_relative_rook_action_id(uci_move: str) -> Optional[int]:
@@ -223,8 +228,20 @@ def uci_to_relative_pawn_action_id(uci_move: str, color: chess.Color) -> Optiona
     return relative_id if relative_id is not None and 1 <= relative_id <= 18 else None
 
 
-def get_base_action_id(color: chess.Color, piece_type: chess.PieceType, instance_index: int) -> Optional[int]:
-    """Calculates the base action ID for a specific piece instance (1-based start)."""
+def get_base_action_id(color: chess.Color, piece_type: chess.PieceType, instance_index: int, combine_color_ranges: bool = True) -> Optional[int]:
+    """Calculates the base action ID for a specific piece instance (1-based start).
+
+    Args:
+        color: The color of the piece.
+        piece_type: The type of the piece.
+        instance_index: The 0-based index of the piece instance (e.g., 0 for the first rook, 1 for the second).
+        combine_color_ranges: If True (default), Black's action IDs start after all of White's ranges.
+                             If False, both White's and Black's ranges effectively start from 1,
+                             considering only the pieces of their own color.
+
+    Returns:
+        The 1-based starting action ID for the piece's action range, or None if invalid input.
+    """
     # instance_index is 0-based
     if not (0 <= instance_index < 8): return None # Basic check for pawn index validity
 
@@ -245,8 +262,9 @@ def get_base_action_id(color: chess.Color, piece_type: chess.PieceType, instance
         chess.ROOK: 1, chess.KNIGHT: 1, chess.BISHOP: 1,
         chess.QUEEN: 0, chess.KING: 0, chess.PAWN: 7
     }
-    if instance_index > max_instance_map.get(piece_type, -1): # Check against max allowed index
-         print(f"Warning: Invalid instance index {instance_index} for {piece_type}")
+    max_expected_index = max_instance_map.get(piece_type, -1)
+    if instance_index > max_expected_index:
+         logging.warning(f"Invalid instance index {instance_index} for piece type {piece_type}. Max expected: {max_expected_index}")
          return None
 
     base_id = 1  # Action IDs are 1-based
@@ -256,24 +274,25 @@ def get_base_action_id(color: chess.Color, piece_type: chess.PieceType, instance
         (chess.QUEEN, 1), (chess.KING, 1), (chess.PAWN, 8)
     ]
 
-    if color == chess.BLACK:
-        # Add all white piece ranges first
+    # --- Conditional Offset for Black Pieces ---
+    if color == chess.BLACK and combine_color_ranges:
+        # If combining ranges, add all white piece ranges first for black pieces
         for p_type, count in current_piece_order:
              base_id += count * rel_counts[p_type]
+    # --- End Conditional Offset ---
 
-    # Add ranges for preceding pieces of the target color
+    # Add ranges for preceding pieces of the *target color*
     for p_type, count in current_piece_order:
         if p_type == piece_type:
             # Add ranges for preceding instances of the same piece type
-            # instance_index is 0-based, rel_counts is the size of the range
             base_id += instance_index * rel_counts[p_type]
             return base_id
         else:
-            # Add full range for this piece type
+            # Add full range for this preceding piece type of the same color
              base_id += count * rel_counts[p_type]
 
     # Should not be reached if piece_type is valid
-    print(f"Error: Piece type {piece_type} not found in order.")
+    logging.error(f"Error: Piece type {piece_type} not found in order.") # Use logging
     return None
 
 def get_absolute_action_id(
@@ -426,184 +445,285 @@ def get_action_id_for_piece_abs(
 
     return final_absolute_id
 
-
-def moves_to_action_ids_abs(
-    moves: Iterator[chess.Move],
-    piece_instance_map: Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]],
-    target_piece_type: chess.PieceType
-) -> Dict[chess.Square, int]:
-    """
-    Generates a map from destination squares to ABSOLUTE action IDs for legal moves
-    of a specific piece type, using a piece instance map.
-
-    Args:
-        moves: An iterator of legal chess.Move objects.
-        piece_instance_map: A dictionary mapping the FROM square of a potential move
-                            to a tuple: (color, piece_type, instance_index).
-                            This map must be maintained externally based on game state.
-        target_piece_type: The chess.PieceType to filter moves for.
-
-    Returns:
-        A dictionary mapping the destination square (chess.Square) of each valid move
-        by the target piece type to its calculated absolute action ID (int).
-    """
-    dest_square_to_action_id: Dict[chess.Square, int] = {}
-
-    for move in moves:
-        # Look up piece details from the *starting* square using the map
-        instance_details = piece_instance_map.get(move.from_square)
-
-        if instance_details:
-            color, piece_type, instance_index = instance_details
-
-            # Check if the piece type matches the target type
-            if piece_type == target_piece_type:
-                # Get the absolute action ID using the correct function
-                action_id = get_action_id_for_piece_abs(
-                    move.uci(), color, piece_type, instance_index
-                )
-
-                if action_id is not None:
-                    # Map the destination square to the action ID
-                    dest_square_to_action_id[move.to_square] = action_id
-        # else: Move starts from a square not in the instance map (shouldn't happen for legal moves)
-
-    return dest_square_to_action_id
-
-def action_id_to_move(action_id: int, board: chess.Board) -> Optional[chess.Move]:
-    """
-    Finds the legal chess.Move corresponding to a given absolute action ID
-    for the current board state.
-
-    This function works by iterating through all legal moves, calculating their
-    action IDs, and returning the move that matches the input ID.
-
-    Args:
-        action_id: The absolute action ID (1-based, e.g., 1-1700) to find the move for.
-        board: The current chess.Board state.
-
-    Returns:
-        The chess.Move object corresponding to the action_id if it represents
-        a legal move in the current position, otherwise None.
-    """
-    # Optional: Validate the input action ID range
-    if not (1 <= action_id <= 1700): # Adjust max ID if needed
-        print(f"Warning: action_id {action_id} is outside the expected range (1-1700).")
-        return None
-
-    # Generate the mapping from squares to piece instance details for the current board
-    piece_instance_map: Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]] = {}
-    create_piece_instance_map(board, piece_instance_map)
-
-    # Iterate through all legal moves for the current player
-    for move in board.legal_moves:
-        # Find the details of the piece making the move
-        instance_details = piece_instance_map.get(move.from_square)
-
-        if instance_details:
-            color, piece_type, instance_index = instance_details
-
-            # Calculate the absolute action ID for this specific legal move
-            calculated_id = get_absolute_action_id(
-                move.uci(), color, piece_type, instance_index
-            )
-
-            # Check if the calculated ID matches the target ID
-            if calculated_id == action_id:
-                return move # Found the corresponding legal move
-        else:
-            # This should ideally not happen for a legal move
-            print(f"Warning: Could not find instance details for from_square {chess.square_name(move.from_square)} "
-                  f"of legal move {move.uci()}")
-
-    # If the loop completes without finding a match, the action ID is not legal
-    # in the current position (or potentially invalid).
-    return None
-
 def create_piece_instance_map(
     board: chess.Board,
     instance_map: Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]
 ) -> Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]:
     """
     Populates a given map from square to (color, piece_type, instance_index)
-    for the current board state.
+    for the current board state, assigning indices based on a fixed iteration order.
+    This provides an arbitrary but consistent mapping for boards without tracking.
 
     Args:
         board: The current chess.Board object.
-        instance_map: The dictionary to populate. It will be cleared first
-                      if you want to ensure it only contains current board state.
-                      Or you can pass a pre-populated dictionary if needed.
+        instance_map: The dictionary to populate. It will be cleared first.
 
     Returns:
-        The populated (or updated) instance_map dictionary.
+        The populated instance_map dictionary.
     """
-    # Clear the provided map to ensure it only reflects the current board state?
-    # Or assume the user wants to add/update? For now, let's assume it should
-    # represent ONLY the current board, so we clear it.
-    # If you want to update/merge, remove the line below.
     instance_map.clear()
-
-    # Use counters indexed by (color, piece_type)
     counters: Dict[Tuple[chess.Color, chess.PieceType], int] = {}
-
-    # Iterate through squares in a fixed order (0-63) to ensure consistent indexing
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece:
             color = piece.color
-            piece_type = piece.piece_type
+            piece_type = piece.piece_type # Note: This is the CURRENT piece type
             key = (color, piece_type)
-
-            # Get the current count for this piece type/color, default to 0 if not seen yet
             current_count = counters.get(key, 0)
-            instance_index = current_count # 0-based index
-
-            # Store the details in the map *passed as argument*
+            instance_index = current_count
             instance_map[square] = (color, piece_type, instance_index)
-
-            # Increment the counter for the next instance of this type/color
             counters[key] = current_count + 1
-
-    # Return the modified dictionary (optional, as it's modified in-place, but good practice)
     return instance_map
 
-def get_legal_moves_with_action_ids(board: chess.Board) -> Dict[chess.Square, List[str]]: # <-- Returns Dict[Square, List[str]]
+
+def get_move_action_id(move: chess.Move, board: Union[chess.Board, FullyTrackedBoard]) -> Optional[int]:
     """
-    Calculates a map from destination squares to a LIST of string representations
-    of absolute action IDs for all legal moves on the current board state.
+    Calculates the absolute action ID for a move, robustly handling both standard
+    chess.Board and FullyTrackedBoard, including its theoretically impossible state.
+
+    - If FullyTrackedBoard and possible state: Uses tracker for original piece ID.
+    - If FullyTrackedBoard and impossible state: Logs warning, uses positional mapping.
+    - If standard chess.Board: Uses positional mapping.
 
     Args:
-        board: The current chess.Board object.
+        move: The chess.Move object.
+        board: The chess.Board or FullyTrackedBoard object before the move.
 
     Returns:
-        A dictionary mapping the destination square (chess.Square) of each
-        legal move to a list of its calculated absolute action IDs (as strings).
+        The absolute action ID (1-based) or None.
     """
-    # Use defaultdict(list) to easily append to lists
-    dest_square_to_action_ids: Dict[chess.Square, List[int]] = defaultdict(list) # <-- Store ints temporarily
-    final_map: Dict[chess.Square, List[str]] = {} # <-- Final map with strings
+    piece_details: Optional[Tuple[chess.Color, chess.PieceType, int]] = None
+    use_tracker = False
 
-    piece_instance_map = {} # Create map locally
-    create_piece_instance_map(board, piece_instance_map) # Populate it
+    if isinstance(board, FullyTrackedBoard):
+        if board.is_theoretically_possible_state:
+            # Use tracker for original piece identity
+            piece_id = board.get_piece_instance_id_at(move.from_square)
+            if piece_id:
+                piece_details = piece_id # (color, original_type, original_index)
+                use_tracker = True
+            else:
+                 logging.warning(f"Robust Get ID: Tracker failed for possible state! Square: {chess.square_name(move.from_square)}, Move: {move.uci()}. Falling back to mapping.")
+                 # Fall through to mapping logic below
+        else:
+            logging.warning("Robust Get ID: Board state theoretically impossible. Using positional mapping, not tracker.")
+            # Fall through to mapping logic below
+
+    # Fallback/Default: Use positional mapping (create_piece_instance_map)
+    if piece_details is None: # If not using tracker or tracker failed
+        instance_map = create_piece_instance_map(board, {}) # Pass board directly
+        instance_details_from_map = instance_map.get(move.from_square)
+        if instance_details_from_map:
+             # Note: piece_type here is the CURRENT type on the board
+            piece_details = instance_details_from_map # (color, current_type, mapped_index)
+        else:
+            # If mapping also fails (e.g., no piece at source sq, though move implies one)
+             logging.error(f"Robust Get ID: Positional mapping failed for move {move.uci()} from {chess.square_name(move.from_square)}. Board FEN: {board.fen()}")
+             return None
+
+    # We should have piece_details now, either from tracker or map
+    color, piece_type_to_use, instance_index_to_use = piece_details
+
+    # Calculate action ID using the determined details
+    # get_action_id_for_piece_abs uses the piece_type to decide pawn logic,
+    # so passing original_type (from tracker) or current_type (from map) is correct.
+    action_id = get_action_id_for_piece_abs(
+        move.uci(), color, piece_type_to_use, instance_index_to_use
+    )
+
+    if action_id is None:
+         logging.warning(f"Robust Get ID: get_action_id_for_piece_abs returned None. Move: {move.uci()}, Details: {piece_details}, Used Tracker: {use_tracker}")
+
+    return action_id
+
+def action_id_to_move(action_id: int, board: Union[chess.Board, FullyTrackedBoard]) -> Optional[chess.Move]:
+    """
+    Finds the legal chess.Move for an action ID, robustly handling both board types
+    and the theoretically impossible state flag of FullyTrackedBoard.
+
+    - If FullyTrackedBoard and possible state: Uses tracker for original piece ID.
+    - If FullyTrackedBoard and impossible state: Logs warning, uses positional mapping.
+    - If standard chess.Board: Uses positional mapping.
+
+    Args:
+        action_id: The absolute action ID (1-based).
+        board: The current chess.Board or FullyTrackedBoard state.
+
+    Returns:
+        The corresponding chess.Move if legal and found, otherwise None.
+    """
+    if not (1 <= action_id <= 1700): # Adjust max ID if needed
+        logging.warning(f"Robust ID to Move: action_id {action_id} is outside expected range (1-1700).")
+        return None
+
+    # Decide which method to use based on board type and state
+    use_tracker = False
+    positional_instance_map: Optional[Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]] = None
+
+    if isinstance(board, FullyTrackedBoard):
+        if board.is_theoretically_possible_state:
+            use_tracker = True
+        else:
+            logging.warning("Robust ID to Move: Board state theoretically impossible. Using positional mapping, not tracker.")
+            positional_instance_map = create_piece_instance_map(board, {})
+    else:
+        # Standard chess.Board, must use positional mapping
+        positional_instance_map = create_piece_instance_map(board, {})
+
+    # Iterate through legal moves and calculate their ID using the chosen method
+    for move in board.legal_moves:
+        piece_details: Optional[Tuple[chess.Color, chess.PieceType, int]] = None
+
+        if use_tracker:
+            piece_id = board.get_piece_instance_id_at(move.from_square)
+            if piece_id:
+                piece_details = piece_id # (color, original_type, original_index)
+            else:
+                logging.warning(f"Robust ID to Move: Tracker failed for move {move.uci()} in possible state. Skipping move.")
+                continue # Skip this move if tracker fails unexpectedly
+        else:
+            # Use pre-calculated positional map
+            if positional_instance_map is not None:
+                instance_details_from_map = positional_instance_map.get(move.from_square)
+                if instance_details_from_map:
+                    piece_details = instance_details_from_map # (color, current_type, mapped_index)
+                else:
+                    logging.warning(f"Robust ID to Move: Positional map lookup failed for move {move.uci()}. Skipping move.")
+                    continue # Skip if mapping failed
+            else:
+                 logging.error("Robust ID to Move: Positional map was expected but not created.")
+                 return None # Should not happen
+
+        # If we got piece details (either way)
+        if piece_details:
+            color, piece_type_to_use, instance_index_to_use = piece_details
+            calculated_id = get_action_id_for_piece_abs(
+                move.uci(), color, piece_type_to_use, instance_index_to_use
+            )
+
+            if calculated_id == action_id:
+                return move # Found the match
+
+    # If loop finishes without finding the action_id
+    return None
+
+def get_legal_moves_with_action_ids(
+    board: Union[chess.Board, FullyTrackedBoard],
+    return_squares_to_ids: bool = False
+) -> Union[Optional[Dict[chess.Square, List[str]]], Optional[List[str]]]:
+    """
+    Calculates representations of absolute action IDs for all legal moves.
+
+    Returns None if the board contains piece instances that are incompatible
+    with the standard action space definition (e.g., more queens than expected).
+
+    Args:
+        board: The current chess.Board or FullyTrackedBoard object.
+        return_squares_to_ids: If True, returns a dictionary mapping destination
+            squares to sorted lists of action IDs. If False (default), returns a
+            single sorted list containing all unique valid action IDs.
+
+    Returns:
+        - If return_squares_to_ids is True: Optional[Dict[chess.Square, List[str]]]
+        - If return_squares_to_ids is False: Optional[List[str]]]
+        Returns None if an incompatible piece instance is found.
+    """
+    dest_square_to_action_ids: Dict[chess.Square, List[int]] = defaultdict(list)
+    # final_map: Dict[chess.Square, List[str]] = {} # Only needed if returning dict
+
+    # Decide which method to use based on board type and state
+    use_tracker = False
+    positional_instance_map: Optional[Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]] = None
+    log_warning_issued = False # To avoid spamming logs for impossible state
+    log_action_id_fail_issued = False # To avoid spamming logs for action_id failures
+
+    # Define max instances expected by the action space (0-based index)
+    max_instance_map = {
+        chess.ROOK: 1, chess.KNIGHT: 1, chess.BISHOP: 1,
+        chess.QUEEN: 0, chess.KING: 0, chess.PAWN: 7
+    }
+
+    if isinstance(board, FullyTrackedBoard):
+        if board.is_theoretically_possible_state:
+            use_tracker = True
+        else:
+            # Impossible state, use positional mapping
+            positional_instance_map = create_piece_instance_map(board, {})
+            if not log_warning_issued:
+                logging.warning("Get Legal Moves w/ IDs: Board state theoretically impossible. Using positional mapping for all moves.")
+                log_warning_issued = True
+    else:
+        # Standard chess.Board, must use positional mapping
+        positional_instance_map = create_piece_instance_map(board, {})
 
     for move in board.legal_moves:
-        instance_details = piece_instance_map.get(move.from_square)
+        piece_details: Optional[Tuple[chess.Color, chess.PieceType, int]] = None
 
-        if instance_details:
-            color, piece_type, instance_index = instance_details
+        if use_tracker:
+            # Use tracker for original piece identity
+            piece_id = board.get_piece_instance_id_at(move.from_square)
+            if piece_id:
+                piece_details = piece_id # (color, original_type, original_index)
+            else:
+                # This case might indicate an issue with the tracker itself
+                logging.error(f"Get Legal Moves w/ IDs: Tracker failed for move {move.uci()} in a theoretically possible state. Returning None.")
+                return None # Treat tracker failure in possible state as critical
+        else:
+            # Use pre-calculated positional map
+            if positional_instance_map is not None:
+                instance_details_from_map = positional_instance_map.get(move.from_square)
+                if instance_details_from_map:
+                    piece_details = instance_details_from_map # (color, current_type, mapped_index)
+                else:
+                    # Should not happen for a legal move's source square
+                    logging.error(f"Get Legal Moves w/ IDs: Positional map lookup failed unexpectedly for move {move.uci()}. Returning None.")
+                    return None # Treat map failure as critical
+            else:
+                logging.error("Get Legal Moves w/ IDs: Positional map logic error. Map not available when expected. Returning None.")
+                return None # Critical internal error
+
+        # If we successfully got piece details
+        if piece_details:
+            color, piece_type_to_use, instance_index_to_use = piece_details
+
+            # --- Check: Validate instance index against action space limits ---            
+            max_expected_index = max_instance_map.get(piece_type_to_use, -1)
+            if instance_index_to_use > max_expected_index:
+                logging.warning(f"Get Legal Moves w/ IDs: Found invalid instance index {instance_index_to_use} (max: {max_expected_index}) for piece type {piece_type_to_use} (Move: {move.uci()}). Board state incompatible with standard action space. Returning None.")
+                return None # Return None from the outer function
+            # --- End Check ---
+
+            # --- Proceed with action_id calculation only if instance index is valid ---            
             action_id = get_action_id_for_piece_abs(
-                move.uci(), color, piece_type, instance_index
+                move.uci(), color, piece_type_to_use, instance_index_to_use
             )
 
             if action_id is not None:
-                # Append the integer action ID to the list for the destination square
-                dest_square_to_action_ids[move.to_square].append(action_id) # <-- Append, don't overwrite
+                dest_square_to_action_ids[move.to_square].append(action_id)
             else:
-                    print(f"Warning: Could not get action ID for legal move {move.uci()} "
-                        f"with details: {instance_details}")
+                # Log if the specific action ID calculation failed, but only once per call
+                if not log_action_id_fail_issued:
+                    logging.warning(f"Get Legal Moves w/ IDs: get_action_id_for_piece_abs returned None for at least one valid move. Example Move: {move.uci()}, Details: {piece_details}, Used Tracker: {use_tracker}. (Further failures for this call will not be logged)")
+                    log_action_id_fail_issued = True
+        else:
+            # This case should ideally not be reached if the logic above is sound
+            logging.error(f"Get Legal Moves w/ IDs: Failed to determine piece details for move {move.uci()}. Returning None.")
+            return None
 
-    # Convert the lists of integers to lists of strings
-    for square, id_list in dest_square_to_action_ids.items():
-        final_map[square] = [str(action_id) for action_id in sorted(id_list)] # Sort for consistency
+    # If loop completes without returning None (i.e., all pieces compatible)
 
-    return final_map # <-- Return the map with lists of strings
+    if return_squares_to_ids:
+        # Return the dictionary mapping squares to action ID lists
+        final_map: Dict[chess.Square, List[str]] = {}
+        for square, id_list in dest_square_to_action_ids.items():
+            final_map[square] = [str(action_id) for action_id in sorted(id_list)]
+        return final_map
+    else:
+        # Return a flat list of all unique action IDs
+        all_action_ids_int: List[int] = []
+        for id_list in dest_square_to_action_ids.values():
+            all_action_ids_int.extend(id_list)
+        # Sort and convert to string - ensure uniqueness if necessary (using set)
+        # Using set ensures uniqueness, sorting happens after conversion to list
+        unique_sorted_ids_str = [str(aid) for aid in sorted(list(set(all_action_ids_int)))]
+        return unique_sorted_ids_str

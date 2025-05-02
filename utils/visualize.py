@@ -1,7 +1,12 @@
 import chess
-from utils.analyze import get_legal_moves_with_action_ids
-from IPython.display import SVG, HTML, display
 import chess.svg
+import cairosvg
+from PIL import Image
+import io
+from typing import Optional
+from IPython.display import SVG, HTML, display
+
+from utils.analyze import get_legal_moves_with_action_ids
 
 
 def draw_numbers_on_board(
@@ -12,7 +17,7 @@ def draw_numbers_on_board(
     line_height: str = "1.2em", # <-- Vertical distance between lines (adjust as needed)
     board_size: int = 400,
     **kwargs
-) -> str:
+) -> SVG:
     """
     Generates an SVG representation of a chess board with numbers/text drawn on
     specified squares. Displays multiple numbers on separate lines using <tspan>.
@@ -29,7 +34,7 @@ def draw_numbers_on_board(
                   (e.g., squares, arrows, orientation).
 
     Returns:
-        An SVG string representing the board with the numbers drawn on it.
+        An IPython.display.SVG object representing the board with the numbers drawn on it.
     """
     if board is None:
         board = chess.Board()
@@ -39,6 +44,7 @@ def draw_numbers_on_board(
     square_size = chess.svg.SQUARE_SIZE
 
     all_text_elements = ""
+    font_size_initial = font_size
 
     for square, numbers_to_draw_list in square_to_numbers_map.items():
         if not numbers_to_draw_list:
@@ -51,9 +57,9 @@ def draw_numbers_on_board(
         x_coord = file_index * square_size + square_size / 2 - 7 + square_size * 0.5
         # Adjust initial Y based on expected number of lines & font size (heuristic)
         num_lines = len(numbers_to_draw_list)
-        font_size = font_size or 20 if num_lines <= 2 else 13 if num_lines <= 3 else 10
+        font_size = font_size_initial or 20 if num_lines <= 2 else 13 if num_lines == 3 else 10
         initial_y_offset = (font_size * (num_lines -1) * 0.6) # Approximate adjustment based on line height factor
-        y_coord = rank_index * square_size + square_size / 2 - 8 + square_size * 0.5 - initial_y_offset # Start near top
+        y_coord = rank_index * square_size + square_size / 2 - 6 + square_size * 0.5 - initial_y_offset # Start near top
 
         tspan_elements = ""
         for i, number_str in enumerate(numbers_to_draw_list):
@@ -77,6 +83,7 @@ def draw_numbers_on_board(
     else:
         modified_svg = svg_string + all_text_elements
 
+    # Return the SVG object directly
     return SVG(modified_svg)
 
 
@@ -128,26 +135,42 @@ def display_svgs_horizontally(svg_list: list[str]):
     display(HTML(html_content))
 
 
-def draw_possible_action_ids_on_board(board: chess.Board) -> str:
+def draw_possible_action_ids_on_board(board: chess.Board, size: int = 400) -> Optional[Image.Image]:
     """
-    Draws action IDs on a chess board.
+    Generates an image of a chess board with action IDs drawn on destination squares.
 
     Args:
         board: The current chess.Board object.
+        size: The desired size of the output image in pixels.
 
     Returns:
-        A string representation of the board with action IDs.
+        A PIL.Image.Image object representing the board with action IDs, or None
+        if the board state is incompatible with the action space.
     """
-    # Get the legal moves with action IDs
-    dest_square_to_action_ids = get_legal_moves_with_action_ids(board)
+    # Calculate the action ID map internally
+    squares_to_action_ids = get_legal_moves_with_action_ids(board, return_squares_to_ids=True)
 
-    # Create a new board with the same FEN
+    # Handle case where action IDs couldn't be generated
+    if squares_to_action_ids is None:
+        return None
+
+    # Create a new board with the same FEN (optional)
     new_board = chess.Board(board.fen())
-    
-    # Draw the action IDs on the board
-    svg = draw_numbers_on_board(dest_square_to_action_ids, new_board)
 
-    return svg
+    # Draw the action IDs on the board, getting the SVG object
+    svg_object = draw_numbers_on_board(squares_to_action_ids, new_board, board_size=size)
+
+    # Extract the SVG string data
+    svg_string_data = svg_object.data
+
+    # Convert SVG string data to PNG bytes in memory
+    png_bytes = cairosvg.svg2png(bytestring=svg_string_data.encode('utf-8'))
+
+    # Load PNG bytes into a PIL Image
+    image_stream = io.BytesIO(png_bytes)
+    pil_image = Image.open(image_stream)
+
+    return pil_image
 
 
 def board_to_svg(board: chess.Board, size: int = 390) -> str:
