@@ -122,11 +122,11 @@ class ChessEnv(gym.Env):
     """Chess Environment"""
     metadata = {
         'render_modes': ['rgb_array', 'human'],
-        'observation_modes': ['rgb_array', 'piece_map'],
+        'observation_modes': ['rgb_array', 'piece_map', 'board_vector'],
         'render_fps': 4
     }
 
-    def __init__(self, render_size=512, observation_mode='rgb_array', claim_draw=True, render_mode=None, show_possible_action_ids=False, **kwargs):
+    def __init__(self, render_size=512, observation_mode='board_vector', claim_draw=True, render_mode=None, show_possible_action_ids=False, **kwargs):
         super(ChessEnv, self).__init__()
 
         if observation_mode == 'rgb_array':
@@ -142,6 +142,13 @@ class ChessEnv(gym.Env):
                 high=6,
                 shape=(8, 8),
                 dtype=np.int8
+            )
+        elif observation_mode == 'board_vector':
+            self.observation_space = spaces.Box(
+                low=0,
+                high=1,
+                shape=(13, 8, 8),
+                dtype=np.float32
             )
         else:
             raise Exception("observation_mode must be either rgb_array or piece_map")
@@ -177,7 +184,9 @@ class ChessEnv(gym.Env):
         return piece_map
 
     def _observe(self):
-        if self.observation_mode == 'rgb_array':
+        if self.observation_mode == 'board_vector':
+            observation = self._get_board_vector()
+        elif self.observation_mode == 'rgb_array':
             observation = self._get_image()
         else:  # piece_map
             observation = self._get_piece_configuration()
@@ -298,3 +307,6 @@ class ChessEnv(gym.Env):
         if self.window is not None:
             pygame.display.quit()
             pygame.quit()
+    
+    def _get_board_vector(self):
+        return self.board.get_board_vector()

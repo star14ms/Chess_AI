@@ -4,6 +4,7 @@ import logging # Added import
 from typing import Dict, Tuple, Optional, Union, List, Any, ClassVar, Mapping
 from collections import Counter # Import Counter
 from collections import defaultdict # Added import
+import numpy as np
 
 from utils.analyze import create_piece_instance_map, get_action_id_for_piece_abs
 
@@ -538,6 +539,89 @@ class FullyTrackedBoard(chess.Board):
             # Using set ensures uniqueness, sorting happens after conversion to list
             unique_sorted_ids_str = [str(aid) for aid in sorted(list(set(all_action_ids_int)))]
             return unique_sorted_ids_str
+
+    def get_board_vector(self) -> np.ndarray:
+        """
+        Generates an 8x8x13 numpy array representing the board state based on
+        the format described in instructions/observation_human.md.
+
+        Features per square (13 dimensions):
+        0: Color (-1 Black, 0 Empty, 1 White)
+        1-6: Piece Type (One-hot: Pawn, N, B, R, Q, K)
+        7: Moved Flag (0/1, based on castling rights for K/R, rank for P)
+        8-12: Behavior Type (One-hot: Pawn, N, B, R, Q - reflecting promotions)
+        """
+        board_vector = np.zeros((8, 8, 13), dtype=np.int8)
+        cleaned_castling_rights = self.clean_castling_rights() # Get potentially filtered rights
+
+        # Define initial rook squares for standard chess castling checks
+        INITIAL_ROOK_SQUARES = {chess.A1, chess.H1, chess.A8, chess.H8}
+
+        for sq in chess.SQUARES:
+            rank = chess.square_rank(sq)
+            file = chess.square_file(sq)
+            piece = self.piece_at(sq)
+            piece_id = self.get_piece_instance_id_at(sq)
+
+            if piece:
+                # Dimension 0: Color
+                color_val = 1 if piece.color == chess.WHITE else -1
+                board_vector[rank, file, 0] = color_val
+
+                # Dimensions 1-6: Piece Type (One-hot)
+                piece_type_idx = piece.piece_type - 1 # 0-5 for Pawn-King
+                board_vector[rank, file, 1 + piece_type_idx] = 1
+
+                # Dimension 7: Moved Flag
+                moved_flag = 0
+                if piece.piece_type == chess.KING:
+                    # King moved if it has lost *all* castling rights for its color
+                    backrank_rights = cleaned_castling_rights & (chess.BB_RANK_1 if piece.color == chess.WHITE else chess.BB_RANK_8)
+                    if not backrank_rights: # No bits set for this color's backrank
+                        moved_flag = 1
+                elif piece.piece_type == chess.ROOK:
+                    # Rook on an initial castling square moved if that right is lost
+                    if sq in INITIAL_ROOK_SQUARES:
+                        if not (cleaned_castling_rights & chess.BB_SQUARES[sq]):
+                            moved_flag = 1
+                    else:
+                        # Rook not on an initial castling square must have moved
+                        moved_flag = 1
+                elif piece.piece_type == chess.PAWN:
+                    # Pawn moved if not on starting rank (rank 1 for white, rank 6 for black)
+                    start_rank = 1 if piece.color == chess.WHITE else 6
+                    if rank != start_rank:
+                        moved_flag = 1
+                board_vector[rank, file, 7] = moved_flag
+
+                # Dimensions 8-12: Behavior Type (reflecting promotion)
+                if piece_id and piece_id in self.piece_tracker:
+                    original_type = piece_id[1] # Get the original piece type from the ID
+                    if original_type == chess.PAWN:
+                        promoted_type = self.piece_tracker[piece_id].get('promoted_to')
+
+                        if promoted_type is None:
+                            # Original pawn, not promoted yet -> set Pawn behavior type
+                            board_vector[rank, file, 8] = 1
+                        else:
+                            # Original pawn, has been promoted -> set promoted type
+                            if promoted_type == chess.KNIGHT:
+                                board_vector[rank, file, 9] = 1
+                            elif promoted_type == chess.BISHOP:
+                                board_vector[rank, file, 10] = 1
+                            elif promoted_type == chess.ROOK:
+                                board_vector[rank, file, 11] = 1
+                            elif promoted_type == chess.QUEEN:
+                                board_vector[rank, file, 12] = 1
+                            # No need to handle promoted_type == chess.PAWN here
+                # If not an original pawn (or tracker failed), dims 8-12 remain 0
+
+            else:
+                # Empty Square
+                board_vector[rank, file, 0] = 0 # Color 0
+                # All other features (1-12) remain 0
+
+        return board_vector
 
     # --- Express Move in Notation ---
     def san(self, move_or_action_id: Union[chess.Move, int]) -> str:
