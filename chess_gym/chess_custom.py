@@ -542,16 +542,18 @@ class FullyTrackedBoard(chess.Board):
 
     def get_board_vector(self) -> np.ndarray:
         """
-        Generates an 8x8x13 numpy array representing the board state based on
-        the format described in instructions/observation_human.md.
+        Generates a 13x8x8 numpy array representing the board state.
 
-        Features per square (13 dimensions):
+        Features per channel (13 dimensions):
         0: Color (-1 Black, 0 Empty, 1 White)
         1-6: Piece Type (One-hot: Pawn, N, B, R, Q, K)
         7: Moved Flag (0/1, based on castling rights for K/R, rank for P)
         8-12: Behavior Type (One-hot: Pawn, N, B, R, Q - reflecting promotions)
+
+        Output shape: (13, 8, 8) -> (Channels, Rank, File)
         """
-        board_vector = np.zeros((8, 8, 13), dtype=np.int8)
+        # Initialize with shape (Channels, Height, Width)
+        board_vector = np.zeros((13, 8, 8), dtype=np.int8)
         cleaned_castling_rights = self.clean_castling_rights() # Get potentially filtered rights
 
         # Define initial rook squares for standard chess castling checks
@@ -566,11 +568,11 @@ class FullyTrackedBoard(chess.Board):
             if piece:
                 # Dimension 0: Color
                 color_val = 1 if piece.color == chess.WHITE else -1
-                board_vector[rank, file, 0] = color_val
+                board_vector[0, rank, file] = color_val
 
                 # Dimensions 1-6: Piece Type (One-hot)
                 piece_type_idx = piece.piece_type - 1 # 0-5 for Pawn-King
-                board_vector[rank, file, 1 + piece_type_idx] = 1
+                board_vector[1 + piece_type_idx, rank, file] = 1
 
                 # Dimension 7: Moved Flag
                 moved_flag = 0
@@ -592,7 +594,7 @@ class FullyTrackedBoard(chess.Board):
                     start_rank = 1 if piece.color == chess.WHITE else 6
                     if rank != start_rank:
                         moved_flag = 1
-                board_vector[rank, file, 7] = moved_flag
+                board_vector[7, rank, file] = moved_flag
 
                 # Dimensions 8-12: Behavior Type (reflecting promotion)
                 if piece_id and piece_id in self.piece_tracker:
@@ -602,23 +604,23 @@ class FullyTrackedBoard(chess.Board):
 
                         if promoted_type is None:
                             # Original pawn, not promoted yet -> set Pawn behavior type
-                            board_vector[rank, file, 8] = 1
+                            board_vector[8, rank, file] = 1
                         else:
                             # Original pawn, has been promoted -> set promoted type
                             if promoted_type == chess.KNIGHT:
-                                board_vector[rank, file, 9] = 1
+                                board_vector[9, rank, file] = 1
                             elif promoted_type == chess.BISHOP:
-                                board_vector[rank, file, 10] = 1
+                                board_vector[10, rank, file] = 1
                             elif promoted_type == chess.ROOK:
-                                board_vector[rank, file, 11] = 1
+                                board_vector[11, rank, file] = 1
                             elif promoted_type == chess.QUEEN:
-                                board_vector[rank, file, 12] = 1
+                                board_vector[12, rank, file] = 1
                             # No need to handle promoted_type == chess.PAWN here
                 # If not an original pawn (or tracker failed), dims 8-12 remain 0
 
             else:
                 # Empty Square
-                board_vector[rank, file, 0] = 0 # Color 0
+                board_vector[0, rank, file] = 0 # Color 0
                 # All other features (1-12) remain 0
 
         return board_vector
