@@ -143,3 +143,17 @@ class ChessNetwork(nn.Module):
 
         return policy_logits, value
 
+
+if __name__ == "__main__":
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from torchview_custom.torchview import draw_graphs
+    from utils.profile import profile_model
+
+    network = ChessNetwork()
+    inputs = torch.zeros(1, 13, 8, 8)
+    profile_model(network, inputs)
+
+    # Input size should now be (Batch, Channels, Height, Width) -> (1, 13, 8, 8)
+    draw_graphs(network, (torch.zeros(1, 13, 8, 8),), min_depth=1, max_depth=5, output_names=['Policy', 'Value'], input_names=['Input'], directory='./model_viz/', hide_module_functions=True, print_code_path=False)

@@ -183,3 +183,5 @@ output/task_visualization/*
 
 # Other repository
 repo/
+torchview_custom/
+model_viz/
