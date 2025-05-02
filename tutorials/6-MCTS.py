@@ -11,34 +11,36 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from collections import defaultdict # Re-add if needed elsewhere, maybe not
 
 # Assuming gymnasium and chess_gym are correctly installed/imported
 import gymnasium as gym
 import chess_gym
 import chess
+from utils.policy_human import sample_action # Import the heuristic policy
 
 # --- Placeholder Neural Network ---
 # This network takes the board vector and outputs policy probabilities for legal moves and a value estimate.
 class PlaceholderNetwork(nn.Module):
-    def __init__(self, board_vector_size=8*8*13, hidden_size=64):
+    def __init__(self, board_vector_size=8*8*13, hidden_size=64, action_space_size=1700):
         super().__init__()
         # Simple network architecture
         self.fc1 = nn.Linear(board_vector_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
-        # Policy head: Outputs logits for actions. Size determined dynamically later.
-        self.policy_head = nn.Linear(hidden_size, 1) # Placeholder size, will be ignored
+        # Policy head: Outputs logits for the full action space
+        self.policy_head = nn.Linear(hidden_size, action_space_size)
         # Value head: Outputs a single value estimate
         self.value_head = nn.Linear(hidden_size, 1)
+        self.action_space_size = action_space_size
 
-    def forward(self, board_vector, legal_moves):
+    def forward(self, board_vector):
         """
         Args:
             board_vector (np.ndarray): The flattened board state vector.
-            legal_moves (list[chess.Move]): List of legal moves in the current state.
 
         Returns:
-            tuple[dict[chess.Move, float], float]:
-                - Policy probabilities mapping legal moves to their probabilities.
+            tuple[torch.Tensor, float]:
+                - Policy logits tensor (shape [action_space_size]).
                 - Value estimate for the current state (-1 to 1).
         """
         if isinstance(board_vector, np.ndarray):
@@ -61,19 +63,11 @@ class PlaceholderNetwork(nn.Module):
         # --- Value Head ---
         value = torch.tanh(self.value_head(x)) # Squash value to [-1, 1]
 
-        # --- Policy Head (Simplified Placeholder) ---
-        # For this basic example, just output uniform probabilities over legal moves.
-        # A real network would use its learned policy.
-        num_legal_moves = len(legal_moves)
-        if num_legal_moves > 0:
-            # Even if network produced logits, we'd softmax them.
-            # Here, we just assign uniform probability.
-            uniform_prob = 1.0 / num_legal_moves
-            policy_probs = {move: uniform_prob for move in legal_moves}
-        else:
-            policy_probs = {} # No legal moves
+        # --- Policy Head --- 
+        # Output raw logits for the entire action space
+        policy_logits = self.policy_head(x).squeeze(0) # Remove batch dimension
 
-        return policy_probs, value.item() # Return dict and scalar value
+        return policy_logits, value.item() # Return logits tensor and scalar value
 
 # --- MCTS Node ---
 class MCTSNode:
@@ -133,8 +127,9 @@ class MCTSNode:
 
 # --- MCTS Algorithm ---
 class MCTS:
-    def __init__(self, network: PlaceholderNetwork, C_puct=1.41):
+    def __init__(self, network: PlaceholderNetwork, player_color: chess.Color = chess.WHITE, C_puct=1.41):
         self.network = network
+        self.player_color = player_color
         self.C_puct = C_puct
 
     def _simulate_random_playout(self, board: chess.Board) -> float:
@@ -164,66 +159,165 @@ class MCTS:
             search_path = [node] # Keep track of path for backpropagation
 
             # 1. Selection: Traverse the tree until a leaf node is found
-            while node.is_fully_expanded() and not node.is_terminal():
-                node = node.select_child_uct(self.C_puct)
-                search_path.append(node)
+            while not node.is_terminal():
+                # --- Opponent Move Selection --- 
+                if node.state.turn != self.player_color:
+                    # Use heuristic policy for the opponent
+                    # sample_action returns (action_array, policy_id, policy_title)
+                    # We need the move object. Assume env.action_space exists and has the board.
+                    # If MCTS is used outside env context, need direct access to action_space/board.
+                    # For now, assume root_node.state gives us access indirectly or directly.
+                    # We need the MoveSpace to convert array back to move if necessary, 
+                    # but sample_action ideally works with the board directly. Re-check sample_action.
+                    # Let's assume sample_action can take the board directly and return a move.
+                    # Need to instantiate action space temporarily if needed by sample_action? 
+                    # A cleaner way: modify sample_action to optionally return the move object.
+                    # For now, use the current sample_action which returns array, ID, title.
+                    # We need to get the move object. Let's call _move_to_action on the root action space? Risky.
+                    # *** TEMPORARY WORKAROUND: Find the move from legal_moves that matches the heuristic choice ***
+                    # *** A cleaner solution would involve modifying sample_action or having it use IDs ***
+                    opponent_move = None
+                    try: 
+                         # We need an action space associated with the current node state
+                         temp_action_space = chess_gym.MoveSpace(node.state)
+                         # Get the heuristic action array, using return_id=False (the default)
+                         # avoid_attacks=True is the default and likely desired opponent behavior
+                         action_np, policy_id, policy_title = sample_action(temp_action_space)
+                         # Convert numpy array back to move (using the node's MoveSpace helper)
+                         # This relies on MoveSpace._action_to_move handling the array format
+                         opponent_move = temp_action_space._action_to_move(action_np)
+                         if opponent_move not in node.state.legal_moves:
+                             # print(f"Warning: Heuristic opponent move {opponent_move} not legal in state {node.state.fen()}. Falling back.")
+                             opponent_move = None # Fallback if heuristic fails
+                    except Exception as e:
+                        # print(f"Warning: Error getting opponent heuristic move: {e}. Falling back.")
+                        opponent_move = None
+                        
+                    if opponent_move is None:
+                        # Fallback: if heuristic failed or produced illegal move, pick random
+                        if not node.state.legal_moves:
+                             break # Terminal if no legal moves
+                        opponent_move = random.choice(list(node.state.legal_moves))
 
-            # 2. Expansion: If the node is not terminal, expand one child
-            if not node.is_terminal():
-                # Get policy and value from network (even if expanding)
-                # Need the board vector representation
-                board_vector = node.state.get_board_vector() # Assuming FullyTrackedBoard method exists
-                legal_moves = list(node.state.legal_moves) # Get fresh list
-                policy_probs, leaf_value = self.network(board_vector, legal_moves)
-
-                # Expand one untried action
-                if node.untried_actions: # Should be true if not terminal and not fully expanded
-                    move = node.untried_actions.pop(random.randrange(len(node.untried_actions)))
-                    next_state = node.state.copy()
-                    next_state.push(move)
-                    prior_p = policy_probs.get(move, 0.0) # Get prior from network output
-                    # Handle case where policy_probs might be empty if no legal moves
-                    if not legal_moves and not policy_probs:
-                        prior_p = 0.0
-                    elif not policy_probs and legal_moves: # Should not happen with current placeholder
-                        print("Warning: Policy probs empty but legal moves exist.")
-                        prior_p = 1.0 / len(legal_moves) if legal_moves else 0.0
-
-
-                    child_node = MCTSNode(next_state, parent=node, prior_p=prior_p, move_leading_here=move)
-                    node.children[move] = child_node
-                    node = child_node # Move down to the new node
+                    # Find or create the child node for the opponent's chosen move
+                    if opponent_move in node.children:
+                        node = node.children[opponent_move]
+                    else:
+                        # Create child node for opponent move (no network eval needed here)
+                        next_state = node.state.copy()
+                        next_state.push(opponent_move)
+                        # Assign a dummy prior? Or average? For now, 0. Maybe 1/N? Let's use 0.
+                        child_node = MCTSNode(next_state, parent=node, prior_p=0.0, move_leading_here=opponent_move)
+                        node.children[opponent_move] = child_node
+                        node = child_node
                     search_path.append(node)
+                    # After opponent moves, it should be player's turn or game over
+                    if node.is_terminal(): break # Stop if game ended after opponent move
+                    # Now it must be the player's turn, continue selection logic below
+                # --- End Opponent Move Selection ---
 
-                    # The value used for backpropagation is the network's evaluation of the expanded node
-                    value = leaf_value
+                # --- Player Move Selection / Expansion Decision ---
+                if node.is_fully_expanded():
+                     node = node.select_child_uct(self.C_puct)
+                     search_path.append(node)
                 else:
-                     # This case means node is not terminal but has no untried actions,
-                     # which contradicts the while loop condition unless legal_moves is empty.
-                     # If legal_moves is empty, it should be terminal.
-                     # If it was fully expanded, the loop condition failed.
-                     # If somehow reached here, use the network's value directly.
-                     # print(f"Warning: Reached expansion phase but node has no untried actions. State: {node.state.fen()}")
-                     value = leaf_value # Use the network's prediction for this leaf
+                    # Reached a leaf node for the player's turn, break selection to expand
+                    break
 
-            else: # Node is terminal
-                # For terminal node, the value is the actual game result
+            # --- Expansion & Value Assignment --- 
+            value = 0.0 # Default value
+            if not node.is_terminal():
+                # Expand only if it's the controlled player's turn
+                if node.state.turn == self.player_color:
+                    board_vector = node.state.get_board_vector()
+                    policy_logits, leaf_value = self.network(board_vector)
+                    value = leaf_value # Use network's value for player's turn leaf
+
+                    # Apply mask for legal moves
+                    legal_action_ids = []
+                    legal_moves_map = {}
+                    # Use the board's method to get action IDs for legal moves
+                    # Assumes FullyTrackedBoard and its methods
+                    for move in node.state.legal_moves:
+                        action_id = node.state.move_to_action_id(move)
+                        if action_id is not None: # Ensure ID calculation is valid
+                            # Action IDs are 1-based in analysis, adjust to 0-based for tensor indexing
+                            action_id_0based = action_id - 1
+                            if 0 <= action_id_0based < self.network.action_space_size:
+                                legal_action_ids.append(action_id_0based)
+                                legal_moves_map[action_id_0based] = move
+                        # else: logging within move_to_action_id handles warnings
+
+                    if not legal_action_ids:
+                        # print("Warning: No legal action IDs found during expansion.")
+                        # If no legal moves/IDs, treat as terminal? Or assign default low value? 
+                        # For now, value remains leaf_value but expansion won't happen.
+                        pass # Cannot expand
+                    else:
+                        masked_logits = policy_logits[legal_action_ids]
+                        # Boltzmann distribution (Softmax with temperature)
+                        temperature = 1.0 # Adjust temperature as needed
+                        if temperature == 0:
+                             probs = torch.zeros_like(masked_logits)
+                             probs[torch.argmax(masked_logits)] = 1.0
+                        else:
+                            probs = F.softmax(masked_logits / temperature, dim=0)
+                        
+                        # Ensure probs sum to 1 (handle potential NaN issues if logits were extreme)
+                        if torch.isnan(probs).any():
+                            # Fallback to uniform if softmax results in NaN
+                            # print("Warning: Softmax resulted in NaN, falling back to uniform distribution.")
+                            probs = torch.ones_like(masked_logits) / len(masked_logits)
+
+                        # Sample action ID based on Boltzmann probabilities
+                        # Need to handle potential empty probs tensor if legal_action_ids was empty
+                        if probs.numel() > 0:
+                             sampled_index = torch.multinomial(probs, 1).item()
+                             sampled_action_id_0based = legal_action_ids[sampled_index]
+                             sampled_move = legal_moves_map[sampled_action_id_0based]
+
+                            # Expand the sampled move
+                             if sampled_move in node.children:
+                                 # print(f"Warning: Sampled move {sampled_move} already in children during expansion.")
+                                 node = node.children[sampled_move] # Move to existing child
+                             else:
+                                 # Get the prior probability for the chosen action
+                                 prior_p = probs[sampled_index].item()
+                                 
+                                 next_state = node.state.copy()
+                                 next_state.push(sampled_move)
+                                 
+                                 child_node = MCTSNode(next_state, parent=node, prior_p=prior_p, move_leading_here=sampled_move)
+                                 node.children[sampled_move] = child_node
+                                 node = child_node # Move down to the new node
+                                 
+                            # Mark original node's corresponding action as 'tried' (conceptually)
+                            # The untried_actions logic isn't strictly needed with network policy sampling
+                            # if sampled_move in node.parent.untried_actions: # Update parent? No, update node
+                            #    node.parent.untried_actions.remove(sampled_move) # This node was the parent before expansion
+                            # Instead of managing untried_actions, we rely on sampling from legal moves
+
+                             search_path.append(node)
+                             # Value for backpropagation is the value estimated for the *expanded* node
+                             # (leaf_value was estimate of the node *before* expansion)
+                             # Let's stick with leaf_value for simplicity, as in AlphaZero
+                             # value = leaf_value # Already set above
+                        else:
+                            # print("Warning: No valid probabilities to sample from during expansion.")
+                            pass # Cannot expand if probs tensor is empty
+
+                # else: If it's opponent's turn at the leaf, value determined by terminal state check below
+
+            # --- Terminal Node Value --- 
+            if node.is_terminal():
                 result_str = node.state.result()
                 if result_str == "1-0": value = 1.0
                 elif result_str == "0-1": value = -1.0
                 else: value = 0.0
-                 # Value needs to be from the perspective of the player *whose turn it was* at the parent
-                 # Since this is the terminal node, the game ended *before* the current player (at this node) could move.
-                 # So the result is directly applicable to the player who just moved (the parent).
 
-            # 3. Simulation (Optional with Network):
-            # In AlphaZero-style MCTS, the network's value estimate often replaces the random rollout.
-            # We already got `value` from the network (or terminal state).
-            # If you wanted a classic MCTS, you'd uncomment the simulation:
-            # value = self._simulate_random_playout(node.state)
+            # 3. Simulation (Skipped - using network value 'leaf_value')
 
-            # 4. Backpropagation: Update visit counts and values along the path
-            # The value should be relative to the player whose turn it is *at the parent* node.
+            # 4. Backpropagation
             for node_in_path in reversed(search_path):
                 node_in_path.N += 1
                 # If the player at node_in_path.parent is the one whose turn it is at node_in_path,
@@ -310,7 +404,7 @@ if __name__ == "__main__":
 
     # Initialize network and MCTS
     network = PlaceholderNetwork()
-    mcts = MCTS(network, C_puct=1.41)
+    mcts = MCTS(network, player_color=chess.WHITE, C_puct=1.41)
 
     # Create root node
     root_node = MCTSNode(board.copy()) # Use a copy for the root's state
