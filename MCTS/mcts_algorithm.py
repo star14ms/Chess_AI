@@ -134,49 +134,38 @@ class MCTS:
                 # Expand Children using env.step
                 for move in leaf_board.legal_moves:
                     if move not in leaf_node.children:
-                        try:
-                            # Reset the shared env to the parent node's state
-                            # Using leaf_node.fen and leaf_node.piece_tracker ensures consistency
-                            self.env.action_space.board.set_fen(leaf_node.fen, leaf_node.board.piece_tracker)
-                            action_id = leaf_board.move_to_action_id(move)
-                            if action_id is None: continue
-                            
-                            # Step 1: Apply White's move (action_id)
-                            _, _, _, _, _ = self.env.step(action_id)
-                            
-                            # Step 2: Sample and apply Black's immediate response
-                            opponent_board = self.env.action_space.board
-                            if not opponent_board.is_game_over(claim_draw=True):
-                                opponent_action_id = sample_action(self.env.action_space, return_id=True)
-                                if opponent_action_id is not None:
-                                     _, _, _, _, _ = self.env.step(opponent_action_id)
-                            
-                            # State after opponent's move
-                            child_fen = self.env.action_space.board.fen()
-                            child_tracker = copy.deepcopy(self.env.action_space.board.piece_tracker)
+                        # Reset the shared env to the parent node's state
+                        # Using leaf_node.fen and leaf_node.piece_tracker ensures consistency
+                        self.env.board.set_fen(leaf_node.board.fen(), leaf_node.board.piece_tracker)
+                        action_id = leaf_board.move_to_action_id(move)
+                        if action_id is None: continue
+                        
+                        # Step 1: Apply White's move (action_id)
+                        _, _, _, _, _ = self.env.step(action_id)
+                        
+                        # Step 2: Sample and apply Black's immediate response
+                        opponent_board = self.env.board
+                        if not opponent_board.is_game_over(claim_draw=True):
+                            opponent_action_id = sample_action(self.env.action_space, return_id=True)
+                            if opponent_action_id is not None:
+                                    _, _, _, _, _ = self.env.step(opponent_action_id)
 
-                            # Prior probability is based on White's initial move choice
-                            prior_p = 0.0
-                            # Recalculate 0-based for safety
-                            action_id_0based = action_id - 1 
-                            if 0 <= action_id_0based < probs_to_use.shape[0]:
-                                prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
-                            # else: prior_p remains 0.0
-                            
-                            child_node = MCTSNode(
-                                fen=child_fen,
-                                piece_tracker=child_tracker,
-                                parent=leaf_node,
-                                prior_p=prior_p,
-                                move_leading_here=move
-                            )
-                            leaf_node.children[move] = child_node
-                        except Exception as e:
-                            print(f"Error during expansion simulation using env.step for move {move.uci()}: {e}")
-                            # Decide how to handle - skip move? Stop expansion?
-                            # Skip this move on error for now
-                            continue
-                
+                        # Prior probability is based on White's initial move choice
+                        prior_p = 0.0
+                        # Recalculate 0-based for safety
+                        action_id_0based = action_id - 1 
+                        if 0 <= action_id_0based < probs_to_use.shape[0]:
+                            prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
+                        # else: prior_p remains 0.0
+                        
+                        child_node = MCTSNode(
+                            board=self.env.board,
+                            parent=leaf_node,
+                            prior_p=prior_p,
+                            move_leading_here=move
+                        )
+                        leaf_node.children[move] = child_node
+
                 leaf_node.is_expanded = True
         
         # The backpropagation step needs *a* value from the leaf of the simulation path.

@@ -10,25 +10,23 @@ import random
 import sys
 import os
 sys.path.append('.')
-from chess_gym.chess_custom import FullyTrackedBoard, PieceTracker
+from chess_gym.chess_custom import FullyTrackedBoard
 
 # --- MCTS Node ---
 class MCTSNode:
     """Node in the MCTS tree. Stores state via FEN string."""
-    def __init__(self, fen: str, 
-                 piece_tracker: Optional[PieceTracker] = None,
+    def __init__(self, board: FullyTrackedBoard,
                  parent: Optional['MCTSNode'] = None, 
                  prior_p: float = 0.0, 
                  move_leading_here: Optional[chess.Move] = None
                 ): # Default to standard board
-        self.fen = fen
         self.parent = parent
         self.move_leading_here = move_leading_here # Move that led to this node from parent
         self.children: Dict[chess.Move, MCTSNode] = {}
         self.N = 0  # Visit count
         self.W = 0.0  # Total action value
         self.prior_p = prior_p
-        self.board = FullyTrackedBoard(fen=fen, piece_tracker_override=piece_tracker)
+        self.board = board.copy()
 
         # Lazy evaluation for terminal state if needed (calculated on demand)
         self._is_terminal = None 
@@ -76,16 +74,16 @@ class MCTSNode:
             # else: If move not in children, it hasn't been expanded/created yet
 
         if best_child is None:
-             # This can happen if no children are expanded or if all legal moves were pruned
-             # Fallback: Maybe return self? Or raise error? 
-             # Let's handle potential lack of children in the calling MCTS search logic.
-             # For now, return self indicates selection cannot proceed down.
-             # Or, if we *know* children exist but selection failed, randomly choose? Requires care.
-             print(f"Warning: No best child found via UCT for node {self.fen}. Moves considered: {list(current_board.legal_moves)}. Children keys: {list(self.children.keys())}")
-             # Fallback: choose random legal move's child if available? Risky if not all children created.
-             legal_children = [self.children.get(m) for m in current_board.legal_moves if m in self.children]
-             if legal_children: return random.choice(legal_children) # Random choice among existing children
-             return self # Cannot select further
+            # This can happen if no children are expanded or if all legal moves were pruned
+            # Fallback: Maybe return self? Or raise error? 
+            # Let's handle potential lack of children in the calling MCTS search logic.
+            # For now, return self indicates selection cannot proceed down.
+            # Or, if we *know* children exist but selection failed, randomly choose? Requires care.
+            print(f"Warning: No best child found via UCT for node {self.board.fen()}. Moves considered: {list(current_board.legal_moves)}. Children keys: {list(self.children.keys())}")
+            # Fallback: choose random legal move's child if available? Risky if not all children created.
+            legal_children = [self.children.get(m) for m in current_board.legal_moves if m in self.children]
+            if legal_children: return random.choice(legal_children) # Random choice among existing children
+            return self # Cannot select further
              
         return best_child
 
@@ -95,10 +93,10 @@ class MCTSNode:
         # Ensure the env doesn't require complex state beyond the board FEN
         temp_env = env_cls(observation_mode=observation_mode, render_mode=None)
         temp_env.board = self.get_board() # Set the board state
-        obs, _ = temp_env.reset(fen=self.fen) # Use reset with FEN if available, otherwise relies on board set
+        obs, _ = temp_env.reset(fen=self.board.fen()) # Use reset with FEN if available, otherwise relies on board set
         temp_env.close() # Optional, depending on env implementation
         return obs
 
     # Maybe add __repr__ for debugging
     def __repr__(self):
-        return f"MCTSNode(fen='{self.fen}', N={self.N}, W={self.W:.2f}, Q={self.Q():.2f}, P={self.prior_p:.3f})" 
+        return f"MCTSNode(fen='{self.board.fen()}', N={self.N}, W={self.W:.2f}, Q={self.Q():.2f}, P={self.prior_p:.3f})" 

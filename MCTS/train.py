@@ -77,8 +77,7 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board
     while not terminated and not truncated and move_count < max_moves:
         # --- Create MCTS root node with FEN and board_cls --- 
         # Need board_cls from the env instance
-        current_fen = env.board.fen()
-        root_node = MCTSNode(fen=current_fen)
+        root_node = MCTSNode(env.board)
 
         # --- Create MCTS instance --- 
         # Need to pass env_cls and observation_mode to MCTS
