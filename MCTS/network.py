@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 import sys, os
-import copy # Added import
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.analyze import interpret_tile
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+# from utils.analyze import interpret_tile
 from chess_gym.chess_custom import FullyTrackedBoard
 
 # Default values based on common AlphaZero implementations for chess

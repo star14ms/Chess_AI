@@ -100,7 +100,7 @@ dependencies:
   - ncurses=6.5=h5e97a16_3
   - nest-asyncio=1.6.0=pyhd8ed1ab_1
   - openjpeg=2.5.3=h8a3d83b_0
-  - openssl=3.5.0=h81ee809_0
+  - openssl=3.5.0=h81ee809_1
   - opusfile=0.12=h5643135_2
   - packaging=25.0=pyh29332c3_1
   - parso=0.8.4=pyhd8ed1ab_1
@@ -149,7 +149,6 @@ dependencies:
   - zeromq=4.3.5=hc1bb282_7
   - zipp=3.21.0=pyhd8ed1ab_1
   - zstd=1.5.7=h6491c7d_2
-  - graphviz
   - pip:
       - antlr4-python3-runtime==4.9.3
       - cairocffi==1.7.1
@@ -173,6 +172,7 @@ dependencies:
       - pillow==11.2.1
       - pycparser==2.22
       - python-chess==1.999
+      - graphviz==0.20.3
       - pyyaml==6.0.2
       - rich==14.0.0
       - sympy==1.14.0

@@ -1,7 +1,6 @@
 import math
 import chess
 from typing import Optional, Dict, Type
-import copy # Import copy for deepcopy
 import numpy as np
 import random
 
@@ -9,7 +8,9 @@ import random
 # Replace this with the actual import path if different
 import sys
 import os
-sys.path.append('.')
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.append(project_root)
 from chess_gym.chess_custom import FullyTrackedBoard
 
 # --- MCTS Node ---

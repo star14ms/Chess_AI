@@ -4,8 +4,7 @@ import torch
 import torch.nn.functional as F
 from rich.progress import Progress
 import numpy as np
-import copy
-from typing import Tuple, List, Type
+from typing import Tuple, List
 
 import chess
 
@@ -22,7 +21,6 @@ from chess_gym.envs import ChessEnv
 from utils.policy_human import sample_action
 from network import ChessNetwork
 from mcts_node import MCTSNode
-from chess_gym.chess_custom import FullyTrackedBoard, PieceTracker
 
 # --- MCTS Algorithm ---
 class MCTS:
