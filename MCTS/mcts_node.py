@@ -1,82 +1,103 @@
 import math
 import chess
-from typing import Optional, Dict
+from typing import Optional, Dict, Type
 import copy # Import copy for deepcopy
+import numpy as np
+import random
 
 # Assuming the environment class is available
 # Replace this with the actual import path if different
 import sys
 import os
 sys.path.append('.')
-from chess_gym.envs import ChessEnv
+from chess_gym.chess_custom import FullyTrackedBoard
 
 # --- MCTS Node ---
 class MCTSNode:
-    def __init__(self, env: ChessEnv, parent=None, prior_p=0.0, move_leading_here=None):
-        self.env = env # Store the environment instance
+    """Node in the MCTS tree. Stores state via FEN string."""
+    def __init__(self, fen: str, 
+                 parent: Optional['MCTSNode'] = None, 
+                 prior_p: float = 0.0, 
+                 move_leading_here: Optional[chess.Move] = None
+                ): # Default to standard board
+        self.fen = fen
         self.parent = parent
-        self.move_leading_here = move_leading_here # Move taken by parent to reach this node
-        self.children: Dict[chess.Move, 'MCTSNode'] = {}  # map from move to MCTSNode
-        # self.untried_actions = list(state.legal_moves) # No longer needed with policy sampling
-        self.N = 0  # visit count
-        self.W = 0  # total value of this node (sum of simulation results)
-        self.P = prior_p # Prior probability of selecting the move leading to this node
+        self.move_leading_here = move_leading_here # Move that led to this node from parent
+        self.children: Dict[chess.Move, MCTSNode] = {}
+        self.N = 0  # Visit count
+        self.W = 0.0  # Total action value
+        self.prior_p = prior_p
+        self.board = FullyTrackedBoard(fen=fen)
 
-    @property
-    def board(self) -> chess.Board:
-        """Convenience property to access the board within the environment."""
-        return self.env.board # Assuming env has a .board attribute
+        # Lazy evaluation for terminal state if needed (calculated on demand)
+        self._is_terminal = None 
+        self.is_expanded = False # Tracks if children have been added
 
-    @property
-    def observation(self):
-        """Convenience property to get the current observation from the environment."""
-        # Assumes env has a way to get the current observation (e.g., internal state or method)
-        # If env follows gymnasium standard, observation is usually returned by step/reset
-        # We might need to store the last observation if env doesn't provide it on demand.
-        # Let's assume env._observe() exists based on chess_env.py provided earlier
-        return self.env._observe()
-
-    def is_fully_expanded(self) -> bool:
-        # With policy sampling, a node is considered fully expanded if all legal moves have children
-        # For simplicity here, especially with opponent heuristic, we check if children dict covers legal moves
-        # This might not be perfectly accurate if opponent heuristic doesn't explore all moves
-        # A better check might be if N > 0, implying it has been visited and potentially expanded
-        # return len(self.children) >= len(list(self.state.legal_moves))
-        return self.N > 0 # Consider expanded if visited (as expansion happens on first visit of player node)
+    def get_board(self) -> chess.Board:
+        """Creates and returns a board object from the stored FEN string."""
+        return self.board
 
     def is_terminal(self) -> bool:
-        # Use the board within the environment
-        return self.board.is_game_over()
+        """Checks if the node represents a terminal state."""
+        if self._is_terminal is None:
+            # Calculate on demand and cache
+            board = self.get_board()
+            self._is_terminal = board.is_game_over(claim_draw=True)
+        return self._is_terminal
 
-    def get_value(self) -> float:
-        """Average value W/N."""
-        if self.N == 0:
-            return 0
-        # The value W is stored from the perspective of the player *who arrived* at this node.
-        return self.W / self.N
+    def Q(self) -> float:
+        """Calculates the mean action value (Q) for this node."""
+        return self.W / self.N if self.N > 0 else 0.0
+
+    def U(self, C_puct: float) -> float:
+        """Calculates the Upper Confidence Bound (U) term."""
+        # Ensure parent visit count is at least 1 for stability in log
+        parent_N = self.parent.N if self.parent else 1
+        return C_puct * self.prior_p * (math.sqrt(parent_N) / (1 + self.N))
 
     def select_child_uct(self, C_puct: float) -> 'MCTSNode':
-        """Selects child node using the UCT formula."""
+        """Selects the child with the highest UCT score."""
         best_score = -float('inf')
         best_child = None
+        best_move = None
 
-        for move, child in self.children.items():
-            # UCT = Q(s,a) + C * P(s,a) * sqrt(N(s)) / (1 + N(s,a))
-            # Q(s,a) is the value from the child's perspective (-W/N of child, as W is stored for parent's arrival)
-            q_value = -child.get_value() # Negate because child.W is relative to the player *at* the child node
-            uct_score = q_value + C_puct * child.P * (math.sqrt(self.N) / (1 + child.N))
-
-            if uct_score > best_score:
-                best_score = uct_score
-                best_child = child
+        # Need a temporary board to get legal moves for selection
+        current_board = self.get_board()
+        
+        for move in current_board.legal_moves:
+            child = self.children.get(move)
+            if child: # Only consider expanded children
+                score = child.Q() + child.U(C_puct)
+                if score > best_score:
+                    best_score = score
+                    best_child = child
+                    best_move = move # Keep track of best move too if needed
+            # else: If move not in children, it hasn't been expanded/created yet
 
         if best_child is None:
-            if self.children:
-                return list(self.children.values())[0]
-            else:
-                # Avoid raising error if called on a leaf during selection
-                # Return self or handle upstream? MCTS search loop should stop before this.
-                # Let's keep the error for now, it indicates a logic flaw in search if it hits this.
-                raise RuntimeError("Cannot select child from a node with no children.")
+             # This can happen if no children are expanded or if all legal moves were pruned
+             # Fallback: Maybe return self? Or raise error? 
+             # Let's handle potential lack of children in the calling MCTS search logic.
+             # For now, return self indicates selection cannot proceed down.
+             # Or, if we *know* children exist but selection failed, randomly choose? Requires care.
+             print(f"Warning: No best child found via UCT for node {self.fen}. Moves considered: {list(current_board.legal_moves)}. Children keys: {list(self.children.keys())}")
+             # Fallback: choose random legal move's child if available? Risky if not all children created.
+             legal_children = [self.children.get(m) for m in current_board.legal_moves if m in self.children]
+             if legal_children: return random.choice(legal_children) # Random choice among existing children
+             return self # Cannot select further
+             
+        return best_child
 
-        return best_child 
+    def get_observation(self, env_cls: Type, observation_mode: str) -> np.ndarray:
+        """Generates the network observation for this node's state."""
+        # Instantiate a temporary environment to get the observation
+        # Ensure the env doesn't require complex state beyond the board FEN
+        temp_env = env_cls(observation_mode=observation_mode, render_mode=None)
+        temp_env.board = self.get_board() # Set the board state
+        obs, _ = temp_env.reset(fen=self.fen) # Use reset with FEN if available, otherwise relies on board set
+        temp_env.close() # Optional, depending on env implementation
+        return obs
+
+    # Maybe add __repr__ for debugging
+    def __repr__(self):
+        return f"MCTSNode(fen='{self.fen}', N={self.N}, W={self.W:.2f}, Q={self.Q():.2f}, P={self.prior_p:.3f})" 

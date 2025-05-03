@@ -12,20 +12,22 @@ import sys
 import os
 sys.path.append(os.path.abspath('.'))
 
-import chess_gym # For MoveSpace
+import chess_gym
+from chess_gym.envs import ChessEnv
 from utils.policy_human import sample_action
 
 # Import from sibling modules
 from network import ChessNetwork
-from mcts_node import MCTSNode, ChessEnv # Import ChessEnv here if needed by MCTSNode
+from mcts_node import MCTSNode
 
 # --- MCTS Algorithm ---
 class MCTS:
-    def __init__(self, network: ChessNetwork, device: torch.device | str, player_color: chess.Color = chess.WHITE, C_puct=1.41):
+    def __init__(self, network: ChessNetwork, device: torch.device | str, env: ChessEnv, player_color: chess.Color = chess.WHITE, C_puct=1.41): # Add env params
         self.network = network
         self.device = torch.device(device) # Ensure it's a torch.device object
         self.player_color = player_color
         self.C_puct = C_puct
+        self.env = env
 
     def search(self, root_node: MCTSNode, iterations: int,
                progress: Progress | None = None, parent_task_id = None):
@@ -47,6 +49,7 @@ class MCTS:
             mcts_task_id = progress.add_task("  ├─ MCTS Sims", total=iterations, transient=True, start=False)
             # Start the task explicitly if needed
             progress.start_task(mcts_task_id)
+            print(f"Starting MCTS search with {iterations} iterations...")
 
         for i in range(iterations):
             # =================================
@@ -102,41 +105,44 @@ class MCTS:
             # And if it's the player's turn (we only expand nodes where player needs to move)
             if not leaf_node.is_terminal() and leaf_node.board.turn == self.player_color:
                 # Get observation from the node's environment state
-                obs_vector = leaf_node.observation # Use the property
+                obs_vector = leaf_node.board.get_board_vector() # Use the property
                 obs_tensor = torch.tensor(obs_vector, dtype=torch.float32).to(self.device)
                 
                 # Get network prediction
-                policy_logits, leaf_value = self.network(obs_tensor)
-                value = leaf_value # Use network's value estimate for backprop
+                with torch.no_grad():
+                    policy_logits, value = self.network(obs_tensor)
+                
+                policy_logits = policy_logits.squeeze(0) # <-- Add this line to remove batch dimension
+                value = value.item() # Get scalar value
 
                 # --- Calculate probabilities over FULL action space ---
-                full_probs = F.softmax(policy_logits, dim=1)
+                full_probs = F.softmax(policy_logits, dim=0)
                 use_uniform_fallback = False
                 if torch.isnan(full_probs).any():
                     num_legal_moves = len(list(leaf_node.board.legal_moves))
                     uniform_prob = 1.0 / num_legal_moves if num_legal_moves > 0 else 0.0
                     use_uniform_fallback = True
                     # print("Warning: Softmax resulted in NaN, falling back to uniform priors for legal moves and assuming network value is 0.")
-                    leaf_value = 0.0 # If probs are NaN, network value is likely unreliable
+                    value = 0.0 # If probs are NaN, network value is likely unreliable
 
                 # --- Check if network's top choice is legal ---
                 if not use_uniform_fallback:
-                    top_prob, top_action_id_0based = torch.max(full_probs, dim=1)
+                    top_prob, top_action_id_0based = torch.max(full_probs, dim=0)
                     top_action_id = top_action_id_0based.item() + 1 # Convert back to 1-based ID
                     try:
                         # Attempt to convert the top action ID back to a move
                         top_move = leaf_node.board.action_id_to_move(top_action_id)
                         # Check if the move is actually legal in the current state
                         if top_move in leaf_node.board.legal_moves:
-                            value = leaf_value # Top choice is legal, use network's value
+                            value = value # Top choice is legal, use network's value
                         else:
                             value = -1.0 # Top choice is ILLEGAL, penalize heavily
                     except ValueError:
                          # If action_id_to_move fails (e.g., ID out of range for current board state)
                          value = -1.0 # Treat invalid action ID as illegal suggestion, penalize
                 else:
-                    # If using uniform fallback due to NaN, use the (potentially reset) leaf_value
-                    value = leaf_value
+                    # If using uniform fallback due to NaN, use the (potentially reset) value
+                    value = value
 
                 # --- Expand children for legal moves --- 
                 # No need for legality check using network top choice here, 
@@ -156,29 +162,41 @@ class MCTS:
                              if use_uniform_fallback:
                                  prior_p = uniform_prob
                              else:
-                                 prior_p = full_probs[action_id_0based].item()
-                         # else: Action ID out of range
-                    # else: Move cannot be mapped
-                    
+                                 prior_p = full_probs[action_id_0based].item() # Now indexing 1D tensor
+                         else:
+                             # Handle case where action_id is out of bounds for the network output
+                             # This might happen if env and network action spaces differ
+                             if not use_uniform_fallback:
+                                  print(f"Warning: Action ID {action_id_0based} from move {move.uci()} is out of bounds for network output size {full_probs.shape[0]}. Assigning prior 0.0.")
+                             # prior_p remains 0.0 or uniform_prob if fallback is active
+                    else:
+                        # Handle case where move couldn't be converted to action ID
+                        if not use_uniform_fallback:
+                             print(f"Warning: Could not get action ID for move {move.uci()}. Assigning prior 0.0.")
+                        # prior_p remains 0.0 or uniform_prob if fallback is active
+
                     # Create child node if it doesn't exist
                     if move not in leaf_node.children:
                         # *** Crucial Step: Create independent env state for child ***
                         try:
-                            child_env = copy.deepcopy(leaf_node.env)
-                            
+                            self.env.board.set_fen(leaf_node.fen)
+
                             # --- Convert move to action for env.step --- 
-                            action_to_take = child_env.board.move_to_action_id(move)
+                            action_to_take = self.env.board.move_to_action_id(move)
                             if action_to_take is None:
                                 print(f"Warning (MCTS Expansion): Could not convert move {move.uci()} to action ID. Trying legacy format.")
-                                # Fallback to legacy format if ID fails (using the child_env's action space)
-                                action_to_take = child_env.action_space._move_to_action(move, return_id=False)
+                                # Fallback to legacy format if ID fails (using the env's action space)
+                                action_to_take = self.env.action_space._move_to_action(move, return_id=False)
                             # --- End Conversion --- 
                             
                             # Step the copied environment with the converted action
                             # We don't strictly need the return values here
-                            _, _, _, _, _ = child_env.step(action_to_take) # Apply action to the *copy*
-                            
-                            child_node = MCTSNode(child_env, parent=leaf_node, prior_p=prior_p, move_leading_here=move)
+                            _, _, _, _, _ = self.env.step(action_to_take) # Apply action to the *copy*
+                            # Step opponent agent
+                            self.env.step(sample_action(self.env.action_space, return_id=True))
+                            fen = self.env.action_space.board.fen()
+
+                            child_node = MCTSNode(fen, parent=leaf_node, prior_p=prior_p, move_leading_here=move)
                             leaf_node.children[move] = child_node
                         except Exception as e:
                              # Handle cases where deepcopy or step fails

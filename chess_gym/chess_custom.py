@@ -136,12 +136,12 @@ class FullyTrackedBoard(chess.Board):
                     instance_idx = -1 # Sentinel value
 
                     if piece_type == chess.PAWN:
-                        instance_idx = chess.square_file(square) # Use file index for pawns
+                        instance_idx = current_found_count - 1
                     elif piece_type == chess.KING:
                         instance_idx = 0
                     elif piece_type == chess.QUEEN:
                          instance_idx = 0 # Standard initial queen is instance 0
-                    elif piece_type in [chess.ROOK, chess.KNIGHT, chess.BISHOP]:
+                    elif piece_type in [chess.ROOK, chess.KNIGHT, chess.BISHOP, chess.PAWN]:
                         # Assign index 0 for the first found, 1 for the second
                         instance_idx = current_found_count - 1 # 0-based index
 

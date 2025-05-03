@@ -39,34 +39,59 @@ class PieceVectorExtractor(nn.Module):
     def __init__(self, num_pieces=DEFAULT_NUM_PIECES, input_channels=DEFAULT_INPUT_CHANNELS, output_channels=DEFAULT_FILTERS):
         super().__init__()
         self.num_pieces = num_pieces
-        # Add the projection layer internally
         self.projection = nn.Linear(input_channels, output_channels)
 
     def forward(self, full_board_vector, piece_ids):
         """Creates the initial (N, P, C) piece vector and projects it to (N, P, F)."""
         batch_size, num_channels, height, width = full_board_vector.shape
-        full_board_vector = full_board_vector.view(batch_size, num_channels, -1).transpose(1, 2)
-        piece_ids = piece_ids.view(batch_size, -1)
-        # Initial vector with input channels
-        indices = []
-        
+        device = full_board_vector.device
+
+        # Initialize with zeros
+        raw_piece_vector = torch.zeros(batch_size, self.num_pieces, num_channels, device=device)
+
+        # Loop through batch and pieces
         for b in range(batch_size):
             for piece_idx in range(self.num_pieces):
                 target_piece_id = piece_idx + 1
+                # Find location(s) for this piece in this batch
                 locations = torch.where(piece_ids[b] == target_piece_id)
-                indices.append(locations)
+                if locations[0].numel() > 0:
+                    # Take the first location found
+                    rank_idx, file_idx = locations[0][0], locations[1][0]
+                    # Extract features for this piece
+                    features = full_board_vector[b, :, rank_idx, file_idx] # Shape (C,)
+                    # Assign features to the correct slot
+                    raw_piece_vector[b, piece_idx, :] = features
 
-            # Extract values directly from full_board_vector using advanced indexing
-            raw_piece_vector = full_board_vector[b, indices]
-        
-        # Apply projection before returning
-        projected_piece_vector = self.projection(raw_piece_vector.transpose(0, 1)) # Shape (N, P, F)
-
-        # for b in range(batch_size):
-        #     for p in range(self.num_pieces):
-        #         print(interpret_tile(raw_piece_vector[p, b, :]))
-        #     print()
+        # Apply projection after collecting all features
+        projected_piece_vector = self.projection(raw_piece_vector) # Shape (B, P, F)
         return projected_piece_vector
+    
+    # def forward(self, full_board_vector, piece_ids):
+    #     """Creates the initial (N, P, C) piece vector and projects it to (N, P, F)."""
+    #     batch_size, num_channels, height, width = full_board_vector.shape
+    #     full_board_vector = full_board_vector.view(batch_size, num_channels, -1).transpose(1, 2)
+    #     piece_ids = piece_ids.view(batch_size, -1)
+    #     # Initial vector with input channels
+    #     indices = []
+        
+    #     for b in range(batch_size):
+    #         for piece_idx in range(self.num_pieces):
+    #             target_piece_id = piece_idx + 1
+    #             locations = torch.where(piece_ids[b] == target_piece_id)
+    #             indices.append(locations)
+
+    #         # Extract values directly from full_board_vector using advanced indexing
+    #         raw_piece_vector = full_board_vector[b, indices]
+        
+    #     # Apply projection before returning
+    #     projected_piece_vector = self.projection(raw_piece_vector.transpose(0, 1)) # Shape (N, P, F)
+
+    #     # for b in range(batch_size):
+    #     #     for p in range(self.num_pieces):
+    #     #         print(interpret_tile(raw_piece_vector[p, b, :]))
+    #     #     print()
+    #     return projected_piece_vector
 
 # --- New Interaction Block --- 
 class BiDirectionalInteractionBlock(nn.Module):
