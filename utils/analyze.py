@@ -1,4 +1,6 @@
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Union
+import numpy as np
+import torch
 import chess
 import logging
 
@@ -472,3 +474,180 @@ def create_piece_instance_map(
             instance_map[square] = (color, piece_type, instance_index)
             counters[key] = current_count + 1
     return instance_map
+
+
+def interpret_tile(
+    tile_input: Union[np.ndarray, str, torch.Tensor],
+    observation_array: Optional[Union[np.ndarray, torch.Tensor]] = None,
+) -> str:
+    """
+    Interprets a 10-element observation tile vector (numpy, tensor, or square string)
+    and returns a descriptive sentence. Determines start square from numeric ID.
+
+    Args:
+        tile_input: A 1D numpy array (length 10), a 1D torch.Tensor (length 10),
+                    OR a string with algebraic notation (e.g., "a1", "h8").
+        observation_array: The full 10x8x8 observation array (numpy or tensor).
+                           REQUIRED if tile_input is a string. Should have shape (10, 8, 8).
+
+    Returns:
+        A string describing the piece and state on the tile.
+
+    Raises:
+        ValueError: If tile_input is a string but observation_array is None or has wrong shape/type.
+        ValueError: If tile_input is an invalid string square notation.
+        TypeError: If tile_input is not a string, numpy array, or torch.Tensor.
+    """
+    tile: np.ndarray
+    square_index: Optional[chess.Square] = None
+    # start_square_name will be determined from numeric ID later
+
+    if isinstance(tile_input, str):
+        if observation_array is None:
+            raise ValueError("observation_array must be provided when tile_input is a string.")
+
+        # --- Handle observation_array being numpy or tensor ---
+        obs_array_np: np.ndarray
+        if isinstance(observation_array, torch.Tensor):
+            if observation_array.shape != (10, 8, 8):
+                raise ValueError(f"observation_array tensor must have shape (10, 8, 8), got {observation_array.shape}")
+            obs_array_np = observation_array.detach().cpu().numpy()
+        elif isinstance(observation_array, np.ndarray):
+            if observation_array.shape != (10, 8, 8):
+                raise ValueError(f"observation_array numpy array must have shape (10, 8, 8), got {observation_array.shape}")
+            obs_array_np = observation_array
+        else:
+             raise TypeError(f"observation_array must be a numpy array or torch.Tensor, got {type(observation_array)}")
+        # --- End observation_array handling ---
+            
+        try:
+            square_index = chess.parse_square(tile_input.lower())
+            rank = chess.square_rank(square_index)
+            file = chess.square_file(square_index)
+            if not (0 <= rank < 8 and 0 <= file < 8):
+                 raise ValueError
+            # Use the converted numpy array for indexing
+            tile = obs_array_np[:, rank, file]
+
+        except ValueError:
+            raise ValueError(f"Invalid square notation: '{tile_input}'")
+        except IndexError:
+             raise IndexError(f"Could not access observation_array[:, {rank}, {file}] for input '{tile_input}'.")
+
+    # --- Handle Tensor or Numpy Array Input for tile_input ---
+    elif isinstance(tile_input, torch.Tensor):
+        # Convert tensor to numpy array
+        if tile_input.ndim != 1 or tile_input.shape[0] != 10:
+            raise ValueError(f"Input torch.Tensor must have shape (10,), got {tile_input.shape}")
+        # Ensure it's on CPU and detached from graph before converting
+        tile = tile_input.detach().cpu().numpy()
+    
+    elif isinstance(tile_input, np.ndarray):
+        if tile_input.shape != (10,):
+             raise ValueError(f"Input numpy array must have shape (10,), got {tile_input.shape}")
+        tile = tile_input
+    else:
+        raise TypeError(f"tile_input must be a string, numpy array, or torch.Tensor, got {type(tile_input)}")
+
+
+    # --- Interpretation Logic (Updated for 10 channels + Start Square from ID) ---
+
+    description_parts = []
+    start_square_name: Optional[str] = None # Initialize here
+
+    # 1. Piece and Color (Channels 0-6)
+    if tile[0] == 0:
+        description_parts.append("Empty square")
+    else:
+        color = "White" if tile[0] == 1 else "Black"
+        piece_type_names = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"]
+        try:
+            piece_type_index = np.argmax(tile[1:7])
+            if tile[1 + piece_type_index] == 1:
+                piece_type_name = piece_type_names[piece_type_index]
+                description_parts.append(f"{color} {piece_type_name}")
+            else:
+                 description_parts.append(f"{color} piece (Unknown type)")
+        except (ValueError, IndexError):
+             description_parts.append(f"{color} piece (Error reading type)")
+
+        # Piece ID (Channel 9) and Determining Start Square
+        piece_id_numeric = int(tile[9])
+        id_string = f"(ID: {piece_id_numeric}"
+
+        # --- Determine Start Square from Numeric ID (1-32) ---
+        if 1 <= piece_id_numeric <= 32:
+            start_sq_idx: Optional[chess.Square] = None
+            nid_color = chess.WHITE if piece_id_numeric <= 16 else chess.BLACK
+            offset_id = piece_id_numeric if nid_color == chess.WHITE else piece_id_numeric - 16
+
+            # Map offset_id (1-16 for each color) to original square
+            if offset_id == 1:   start_sq_idx = chess.A1 if nid_color == chess.WHITE else chess.A8 # R0
+            elif offset_id == 2: start_sq_idx = chess.H1 if nid_color == chess.WHITE else chess.H8 # R1
+            elif offset_id == 3: start_sq_idx = chess.B1 if nid_color == chess.WHITE else chess.B8 # N0
+            elif offset_id == 4: start_sq_idx = chess.G1 if nid_color == chess.WHITE else chess.G8 # N1
+            elif offset_id == 5: start_sq_idx = chess.C1 if nid_color == chess.WHITE else chess.C8 # B0
+            elif offset_id == 6: start_sq_idx = chess.F1 if nid_color == chess.WHITE else chess.F8 # B1
+            elif offset_id == 7: start_sq_idx = chess.D1 if nid_color == chess.WHITE else chess.D8 # Q
+            elif offset_id == 8: start_sq_idx = chess.E1 if nid_color == chess.WHITE else chess.E8 # K
+            elif 9 <= offset_id <= 16: # Pawns P0-P7 -> IDs 9-16 / 25-32
+                pawn_file_index = offset_id - 9 # 0-7 maps to file a-h
+                start_rank = 1 if nid_color == chess.WHITE else 6 # Rank 2 or 7 (0-indexed)
+                start_sq_idx = chess.square(pawn_file_index, start_rank)
+
+            if start_sq_idx is not None:
+                start_square_name = chess.square_name(start_sq_idx)
+        # --- End Determine Start Square ---
+
+        if start_square_name:
+            id_string += f", Start: {start_square_name})"
+        else:
+            id_string += ")" # Close parenthesis if no start square found
+
+        if piece_id_numeric == 0: # Handle case where ID in vector is 0
+             if id_string.endswith(')'):
+                 id_string = id_string[:-1] + " - Untracked)"
+             else: # Should not happen
+                 id_string += " (Untracked)"
+
+        description_parts.append(id_string)
+
+
+    # 2. Square Status (Channels 7-8)
+    ep_can_be_captured = int(tile[7]) # Flag is now on the pawn itself
+    castling_target = int(tile[8])
+
+    # Update interpretation for channel 7
+    if ep_can_be_captured == 1:
+        description_parts.append("Can be captured EP.") # Changed text slightly
+
+    if castling_target == 1:
+        description_parts.append("King can land here via castling.")
+
+
+    # 3. Construct Final Sentence
+    if not description_parts:
+        return "Error: Could not interpret tile." # Fallback
+
+    final_description = description_parts[0] # Start with piece/empty description
+    if len(description_parts) > 1:
+        # Join remaining parts, handling piece ID placement
+        piece_id_part = ""
+        other_parts = []
+        for part in description_parts[1:]:
+            # Check if it's the specific ID string we constructed
+            if part.startswith("(ID: "):
+                piece_id_part = " " + part
+            else:
+                other_parts.append(part)
+
+        final_description += piece_id_part # Add ID right after piece name
+        if other_parts:
+            final_description += ". " + " ".join(other_parts) # Add status parts
+
+
+    # Ensure final sentence ends with a period if not already there.
+    if not final_description.endswith('.'):
+        final_description += '.'
+
+    return final_description

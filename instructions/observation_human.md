@@ -1,31 +1,29 @@
-# Observation: 
+# Observation Vector (8 x 8 Grid)
 
-> How to represent the state with less memory? 
-
-
-## Piece Information (32 Pieces in Total on the Board)
-
-
-### Basic Information (Vector Shape: ```32 x 9```)
+> Vector Shape: ```8 X 8 X 10```
 
 - ```Color```: ```1 Dim```
     - Range: -1 or 0 or 1 (0 for Empty Tile)
-- ```PieceType```: ```6 Dims``` 
+
+- ```BehaviorType```: ```6 Dims``` 
     - Range: 0 or 1
+    - (Each flag refers to Pawn, Knight, Bishop, Rook, Queen, and King)
+
+- ```EnPassantTarget```: ```1 Dim```
+    - Range: 0 or 1 (1 if this square is the target for an en passant capture on the next move, 0 otherwise)
+
+- ```CastliingTarget```: ```1 Dim```
+    - Range: 0 or 1 (1 if this square is the target that can involve in castling in next move, 0 otherwise)
+
+- ```Piece ID```: ```1 Dim```
+    - Range: 1 to 32
+
+# Reference Vector in Network
+- Each pieces will be bound to specific actions in the action space
+
+- ```Feature Vector```: ```V Dims```
+    - Range: All Real Numbers
+    - will store the feature of the vector of observation passing through the convolution layers.
+
 - ```Position```: ```2 Dims``` 
-    - Range(1 to 8)
-
-### King, Rook, Pawn Specific Information (Vector Shape ```(1+2+8) X 1)```
-- ```Moved```: ```1 Dim```
-    - Range: 0 or 1
-    - Used for Castling and Two-Space Forward Move of Pawn, En Passant Availability
-
-### Pawn Specific Information (Vector Shape ```8 X 5```
-- ```BehaviorType```: ```5 Dims ```
-    - Range: 0 or 1
-    - Five Roles that can be changed: Pawn, Knight, Rook, Bishop, and Queen
-
-
-## Board Information (8 X 8 Grid)
-> Vector Shape: ```8 X 8 X 13``` 
-- ```Width X Height X (Color + 6 PieceTypes + Moved + 5 BehaviorTypes)```
+    - Range: 1 to 8 for each dimension (Static vector used for integrating with Board Vector)

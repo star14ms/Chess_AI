@@ -1,9 +1,8 @@
 import chess
 import copy
-import logging # Added import
-from typing import Dict, Tuple, Optional, Union, List, Any, ClassVar, Mapping
-from collections import Counter # Import Counter
-from collections import defaultdict # Added import
+import logging
+from typing import Dict, Tuple, Optional, Union, List, ClassVar, Mapping
+from collections import Counter, defaultdict
 import numpy as np
 
 from utils.analyze import create_piece_instance_map, get_action_id_for_piece_abs
@@ -542,86 +541,127 @@ class FullyTrackedBoard(chess.Board):
 
     def get_board_vector(self) -> np.ndarray:
         """
-        Generates a 13x8x8 numpy array representing the board state.
+        Generates an 10x8x8 numpy array representing the board state based on
+        instructions/observation_human.md.
 
-        Features per channel (13 dimensions):
-        0: Color (-1 Black, 0 Empty, 1 White)
-        1-6: Piece Type (One-hot: Pawn, N, B, R, Q, K)
-        7: Moved Flag (0/1, based on castling rights for K/R, rank for P)
-        8-12: Behavior Type (One-hot: Pawn, N, B, R, Q - reflecting promotions)
+        Output shape: (10, 8, 8) -> (Channels, Rank, File)
 
-        Output shape: (13, 8, 8) -> (Channels, Rank, File)
+        Channels (10 dimensions):
+        0:   Color (-1 Black, 0 Empty, 1 White)
+        1-6: Piece Type / BehaviorType (One-hot: P, N, B, R, Q, K for piece on square)
+        7:   En Passant Target (1 if this square is the EP target, 0 otherwise)
+        8:   Castling Target (1 if King could land here via castling this turn, 0 otherwise)
+        9:   Piece ID (0 for empty, 1-32 for pieces - requires mapping logic)
         """
-        # Initialize with shape (Channels, Height, Width)
-        board_vector = np.zeros((13, 8, 8), dtype=np.int8)
-        cleaned_castling_rights = self.clean_castling_rights() # Get potentially filtered rights
+        # Initialize with shape (Channels, Height, Width) -> (Channels, Rank, File)
+        board_vector = np.zeros((10, 8, 8), dtype=np.int8)
 
-        # Define initial rook squares for standard chess castling checks
-        INITIAL_ROOK_SQUARES = {chess.A1, chess.H1, chess.A8, chess.H8}
+        # Global states needed
+        ep_square = self.ep_square
+        current_turn = self.turn
+        castling_rights = self.castling_rights # Use full rights mask
+
+        # Potential castling destination squares for the current player
+        castling_target_squares = set()
+        if current_turn == chess.WHITE:
+            if castling_rights & chess.BB_A1: # White Queenside (Rook on a1)
+                 # Check if King can castle Queenside (requires King on e1, clear path b1-d1)
+                 # Note: python-chess has helper functions, but implementing logic directly:
+                 if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
+                    self.piece_at(chess.B1) is None and self.piece_at(chess.C1) is None and self.piece_at(chess.D1) is None:
+                    # Check if squares are attacked - python-chess board.has_castling_rights covers this implicitly if used
+                    # Simplified check based *only* on rights mask for this example:
+                     if self.has_queenside_castling_rights(chess.WHITE):
+                         castling_target_squares.add(chess.C1) # King lands on c1
+            if castling_rights & chess.BB_H1: # White Kingside (Rook on h1)
+                 if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
+                    self.piece_at(chess.F1) is None and self.piece_at(chess.G1) is None:
+                     # Simplified check based *only* on rights mask for this example:
+                      if self.has_kingside_castling_rights(chess.WHITE):
+                          castling_target_squares.add(chess.G1) # King lands on g1
+        else: # BLACK's turn
+            if castling_rights & chess.BB_A8: # Black Queenside (Rook on a8)
+                 if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
+                    self.piece_at(chess.B8) is None and self.piece_at(chess.C8) is None and self.piece_at(chess.D8) is None:
+                     if self.has_queenside_castling_rights(chess.BLACK):
+                        castling_target_squares.add(chess.C8) # King lands on c8
+            if castling_rights & chess.BB_H8: # Black Kingside (Rook on h8)
+                 if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
+                    self.piece_at(chess.F8) is None and self.piece_at(chess.G8) is None:
+                     if self.has_kingside_castling_rights(chess.BLACK):
+                        castling_target_squares.add(chess.G8) # King lands on g8
+
+        # Determine the square of the pawn that moved two steps, if any
+        pawn_advanced_two_sq: Optional[chess.Square] = None
+        if ep_square is not None:
+            # If the ep_square is on rank 2 (0-indexed), a White pawn just moved 2 squares.
+            if chess.square_rank(ep_square) == 2: # White pawn moved (e.g., e2-e4), ep_square is rank 2 (e.g., e3)
+                pawn_advanced_two_sq = ep_square + 8 # Pawn landed on rank 3 (e.g., e4)
+            # If the ep_square is on rank 5 (0-indexed), a Black pawn just moved 2 squares.
+            elif chess.square_rank(ep_square) == 5: # Black pawn moved (e.g., e7-e5), ep_square is rank 5 (e.g., e6)
+                pawn_advanced_two_sq = ep_square - 8 # Pawn landed on rank 4 (e.g., e5)
 
         for sq in chess.SQUARES:
-            rank = chess.square_rank(sq)
-            file = chess.square_file(sq)
+            rank = chess.square_rank(sq) # 0-7
+            file = chess.square_file(sq) # 0-7
             piece = self.piece_at(sq)
-            piece_id = self.get_piece_instance_id_at(sq)
+
+            # Channel 7: Pawn Advanced Two Squares (New Meaning)
+            # Set flag on the PAWN's square, not the target square
+            if pawn_advanced_two_sq == sq:
+                board_vector[7, rank, file] = 1
+            # else: remains 0
+
+            # Channel 8: Castling Target
+            if sq in castling_target_squares:
+                board_vector[8, rank, file] = 1
 
             if piece:
-                # Dimension 0: Color
+                # Channel 0: Color
                 color_val = 1 if piece.color == chess.WHITE else -1
                 board_vector[0, rank, file] = color_val
 
-                # Dimensions 1-6: Piece Type (One-hot)
-                piece_type_idx = piece.piece_type - 1 # 0-5 for Pawn-King
+                # Channels 1-6: Piece Type / BehaviorType (One-hot)
+                piece_type_idx = piece.piece_type - 1 # 0-5 for P,N,B,R,Q,K
                 board_vector[1 + piece_type_idx, rank, file] = 1
 
-                # Dimension 7: Moved Flag
-                moved_flag = 0
-                if piece.piece_type == chess.KING:
-                    # King moved if it has lost *all* castling rights for its color
-                    backrank_rights = cleaned_castling_rights & (chess.BB_RANK_1 if piece.color == chess.WHITE else chess.BB_RANK_8)
-                    if not backrank_rights: # No bits set for this color's backrank
-                        moved_flag = 1
-                elif piece.piece_type == chess.ROOK:
-                    # Rook on an initial castling square moved if that right is lost
-                    if sq in INITIAL_ROOK_SQUARES:
-                        if not (cleaned_castling_rights & chess.BB_SQUARES[sq]):
-                            moved_flag = 1
-                    else:
-                        # Rook not on an initial castling square must have moved
-                        moved_flag = 1
-                elif piece.piece_type == chess.PAWN:
-                    # Pawn moved if not on starting rank (rank 1 for white, rank 6 for black)
-                    start_rank = 1 if piece.color == chess.WHITE else 6
-                    if rank != start_rank:
-                        moved_flag = 1
-                board_vector[7, rank, file] = moved_flag
+                # Channel 9: Piece ID
+                piece_instance_id_tuple = self.get_piece_instance_id_at(sq)
+                if piece_instance_id_tuple:
+                    # --- Implement consistent mapping logic --- 
+                    color, original_type, original_index = piece_instance_id_tuple
+                    mapped_id = 0 # Default invalid ID
+                    offset = 0 if color == chess.WHITE else 16 # White: 0-15, Black: 16-31 -> Add 1 later
 
-                # Dimensions 8-12: Behavior Type (reflecting promotion)
-                if piece_id and piece_id in self.piece_tracker:
-                    original_type = piece_id[1] # Get the original piece type from the ID
-                    if original_type == chess.PAWN:
-                        promoted_type = self.piece_tracker[piece_id].get('promoted_to')
-
-                        if promoted_type is None:
-                            # Original pawn, not promoted yet -> set Pawn behavior type
-                            board_vector[8, rank, file] = 1
-                        else:
-                            # Original pawn, has been promoted -> set promoted type
-                            if promoted_type == chess.KNIGHT:
-                                board_vector[9, rank, file] = 1
-                            elif promoted_type == chess.BISHOP:
-                                board_vector[10, rank, file] = 1
-                            elif promoted_type == chess.ROOK:
-                                board_vector[11, rank, file] = 1
-                            elif promoted_type == chess.QUEEN:
-                                board_vector[12, rank, file] = 1
-                            # No need to handle promoted_type == chess.PAWN here
-                # If not an original pawn (or tracker failed), dims 8-12 remain 0
+                    if original_type == chess.ROOK:         # IDs 1,2 / 17,18
+                        mapped_id = offset + 1 + original_index
+                    elif original_type == chess.KNIGHT:       # IDs 3,4 / 19,20
+                        mapped_id = offset + 3 + original_index
+                    elif original_type == chess.BISHOP:       # IDs 5,6 / 21,22
+                        mapped_id = offset + 5 + original_index
+                    elif original_type == chess.QUEEN:        # IDs 7 / 23
+                        mapped_id = offset + 7 + original_index
+                    elif original_type == chess.KING:         # IDs 8 / 24
+                        mapped_id = offset + 8 + original_index
+                    elif original_type == chess.PAWN:         # IDs 9-16 / 25-32
+                        mapped_id = offset + 9 + original_index
+                    
+                    if not (1 <= mapped_id <= 32):
+                        # Handle error case: Calculated ID is out of bounds
+                        # This might happen if original_index is unexpected
+                        print(f"Warning: Calculated invalid piece ID {mapped_id} for {piece_instance_id_tuple} at {chess.square_name(sq)}. Setting to 0.")
+                        mapped_id = 0 # Assign 0 if mapping failed
+                    # --- End mapping logic ---
+                    
+                    board_vector[9, rank, file] = mapped_id
+                else:
+                    board_vector[9, rank, file] = 0 # 0 if no specific instance ID tracked
 
             else:
-                # Empty Square
-                board_vector[0, rank, file] = 0 # Color 0
-                # All other features (1-12) remain 0
+                # Empty Square Defaults
+                board_vector[0, rank, file] = 0 # Color
+                # Channels 1-6 (Piece Type) remain 0
+                board_vector[9, rank, file] = 0 # Piece ID
 
         return board_vector
 
@@ -649,3 +689,105 @@ class FullyTrackedBoard(chess.Board):
         else:
             move = move_or_action_id
         return super().uci(move)
+
+    def get_numeric_id_to_instance_id_map(self) -> Dict[int, PieceInstanceId]:
+        """Creates a mapping from numeric ID (1-32) back to PieceInstanceId tuple."""
+        mapping = {}
+        for num_id in range(1, 33):
+            color = chess.WHITE if num_id <= 16 else chess.BLACK
+            offset_id = num_id if color == chess.WHITE else num_id - 16
+
+            if offset_id <= 2:    # Rooks (1, 2)
+                original_type = chess.ROOK
+                original_index = offset_id - 1
+            elif offset_id <= 4:  # Knights (3, 4)
+                original_type = chess.KNIGHT
+                original_index = offset_id - 3
+            elif offset_id <= 6:  # Bishops (5, 6)
+                original_type = chess.BISHOP
+                original_index = offset_id - 5
+            elif offset_id == 7:  # Queen (7)
+                original_type = chess.QUEEN
+                original_index = 0
+            elif offset_id == 8:  # King (8)
+                original_type = chess.KING
+                original_index = 0
+            elif offset_id <= 16: # Pawns (9-16)
+                original_type = chess.PAWN
+                original_index = offset_id - 9
+            else:
+                continue # Should not happen for 1-32
+            
+            instance_id: PieceInstanceId = (color, original_type, original_index)
+            mapping[num_id] = instance_id
+        return mapping
+    
+    def get_instance_id_to_numeric_id_map(self) -> Dict[PieceInstanceId, int]:
+        """Creates a mapping from PieceInstanceId tuple to numeric ID (1-32)."""
+        mapping = {}
+        for piece_id_tuple, info in self.piece_tracker.items():
+            color, original_type, original_index = piece_id_tuple
+            offset = 0 if color == chess.WHITE else 16
+            num_id = 0
+
+            if original_type == chess.ROOK:      num_id = offset + 1 + original_index
+            elif original_type == chess.KNIGHT:  num_id = offset + 3 + original_index
+            elif original_type == chess.BISHOP:  num_id = offset + 5 + original_index
+            elif original_type == chess.QUEEN:   num_id = offset + 7 + original_index
+            elif original_type == chess.KING:    num_id = offset + 8 + original_index
+            elif original_type == chess.PAWN:    num_id = offset + 9 + original_index
+
+            if 1 <= num_id <= 32:
+                mapping[piece_id_tuple] = num_id
+            else:
+                 print(f"Warning: Failed to map {piece_id_tuple} to a valid numeric ID (1-32).")
+        return mapping
+
+    def get_start_square_from_numeric_id(self, numeric_id: int) -> Optional[chess.Square]:
+        """Finds the starting square for a given numeric piece ID (1-32)."""
+        if not (1 <= numeric_id <= 32):
+            logging.warning(f"get_start_square_from_numeric_id: Invalid numeric_id {numeric_id}. Must be 1-32.")
+            return None
+
+        # Reverse the mapping from numeric ID to PieceInstanceId tuple
+        color = chess.WHITE if numeric_id <= 16 else chess.BLACK
+        offset_id = numeric_id if color == chess.WHITE else numeric_id - 16 # Value relative to start of color range (1-16)
+        instance_id: Optional[PieceInstanceId] = None
+
+        if offset_id <= 2:    # Rooks (1, 2)
+            original_type = chess.ROOK
+            original_index = offset_id - 1
+            instance_id = (color, original_type, original_index)
+        elif offset_id <= 4:  # Knights (3, 4)
+            original_type = chess.KNIGHT
+            original_index = offset_id - 3
+            instance_id = (color, original_type, original_index)
+        elif offset_id <= 6:  # Bishops (5, 6)
+            original_type = chess.BISHOP
+            original_index = offset_id - 5
+            instance_id = (color, original_type, original_index)
+        elif offset_id == 7:  # Queen (7)
+            original_type = chess.QUEEN
+            original_index = 0
+            instance_id = (color, original_type, original_index)
+        elif offset_id == 8:  # King (8)
+            original_type = chess.KING
+            original_index = 0
+            instance_id = (color, original_type, original_index)
+        elif offset_id <= 16: # Pawns (9-16)
+            original_type = chess.PAWN
+            original_index = offset_id - 9
+            instance_id = (color, original_type, original_index)
+        else:
+            logging.error(f"get_start_square_from_numeric_id: Logic error reconstructing PieceInstanceId for numeric_id {numeric_id}.")
+            return None # Should not happen for valid numeric_id
+
+        # Look up the reconstructed instance_id in the tracker
+        if instance_id in self.piece_tracker:
+            start_square = self.piece_tracker[instance_id].get('start_sq')
+            if start_square is None:
+                logging.warning(f"get_start_square_from_numeric_id: Piece ID {instance_id} found in tracker, but 'start_sq' is None.")
+            return start_square # Return square index (or None if not set)
+        else:
+            logging.warning(f"get_start_square_from_numeric_id: Reconstructed Piece ID {instance_id} (from numeric {numeric_id}) not found in piece_tracker.")
+            return None
