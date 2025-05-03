@@ -46,15 +46,35 @@ class FullyTrackedBoard(chess.Board):
         chess.PAWN: 8, chess.ROOK: 2, chess.KNIGHT: 2, chess.BISHOP: 2, chess.QUEEN: 1, chess.KING: 1
     }
 
-    def __init__(self, fen: Optional[str] = chess.STARTING_FEN, *, chess960: bool = False):
-        """Initializes the board and the piece tracker."""
+    def __init__(self, 
+                 fen: Optional[str] = chess.STARTING_FEN, 
+                 *, 
+                 chess960: bool = False, 
+                 piece_tracker_override: Optional[PieceTracker] = None):
+        """Initializes the board and the piece tracker. 
+        
+        Args:
+            fen: The FEN string to initialize from. Defaults to STARTING_FEN.
+            chess960: Whether the board is in Chess960 mode.
+            piece_tracker_override: If provided, use this tracker state instead
+                                     of populating from the FEN. Assumes the
+                                     provided tracker is consistent with the FEN.
+        """
         self.piece_tracker: PieceTracker = {}
         self._piece_tracker_stack: List[Tuple[PieceTracker, bool]] = [] # Store flag state too
         self.is_theoretically_possible_state: bool = True # Assume possible initially
-        self._pre_initialize_tracker_keys()
-        super().__init__(fen, chess960=chess960)
-        # Populate tracker based on the board state set by super().__init__
-        self._post_init_populate_tracker(fen)
+        
+        if piece_tracker_override is not None:
+            self.piece_tracker = copy.deepcopy(piece_tracker_override)
+            # Assume the override is valid, no need to check possibility flag here
+            # Set the board state *after* setting the tracker
+            super().__init__(fen, chess960=chess960)
+        else:
+            # Original logic: Pre-initialize, set board, then populate/check
+            self._pre_initialize_tracker_keys()
+            super().__init__(fen, chess960=chess960)
+            # Populate tracker based on the board state set by super().__init__
+            self._post_init_populate_tracker(fen) # This sets is_theoretically_possible_state
 
 
     def _post_init_populate_tracker(self, initial_fen: Optional[str]):
@@ -180,26 +200,65 @@ class FullyTrackedBoard(chess.Board):
         super().reset()
         self._populate_tracker_from_standard_start()
 
-    def set_fen(self, fen: str):
-        """Sets the board from FEN and populates the tracker based on the FEN state."""
-        self.is_theoretically_possible_state = True # Reset flag before check
-        self._pre_initialize_tracker_keys()
-        super().set_fen(fen)
-        self._populate_tracker_from_current_state() # This method will set flag if needed
+    def set_fen(self, fen: str, piece_tracker_override: Optional[PieceTracker] = None):
+        """Sets the board from FEN and populates the tracker based on the FEN state
+           or uses the provided tracker override.
+           
+        Args:
+            fen: The FEN string.
+            piece_tracker_override: If provided, use this tracker state instead
+                                     of populating from the FEN.
+        """
+        if piece_tracker_override is not None:
+            self.piece_tracker = copy.deepcopy(piece_tracker_override)
+            self.is_theoretically_possible_state = True # Assume override is valid
+            super().set_fen(fen)
+        else:
+            # Original logic
+            self.is_theoretically_possible_state = True # Reset flag before check
+            self._pre_initialize_tracker_keys()
+            super().set_fen(fen)
+            self._populate_tracker_from_current_state() # This method will set flag if needed
 
-    def set_board_fen(self, fen: str):
-        """Sets the board part from FEN and populates the tracker based on the FEN state."""
-        self.is_theoretically_possible_state = True # Reset flag
-        self._pre_initialize_tracker_keys()
-        super().set_board_fen(fen)
-        self._populate_tracker_from_current_state()
+    def set_board_fen(self, fen: str, piece_tracker_override: Optional[PieceTracker] = None):
+        """Sets the board part from FEN and populates the tracker based on the FEN state
+           or uses the provided tracker override.
 
-    def set_piece_map(self, pieces: Mapping[chess.Square, chess.Piece]):
-        """Sets the board from a piece map and populates the tracker based on the map state."""
-        self.is_theoretically_possible_state = True # Reset flag
-        self._pre_initialize_tracker_keys()
-        super().set_piece_map(pieces)
-        self._populate_tracker_from_current_state()
+        Args:
+            fen: The board part of the FEN string.
+            piece_tracker_override: If provided, use this tracker state instead
+                                     of populating from the FEN.
+        """
+        if piece_tracker_override is not None:
+            self.piece_tracker = copy.deepcopy(piece_tracker_override)
+            self.is_theoretically_possible_state = True # Assume override is valid
+            super().set_board_fen(fen)
+        else:
+            # Original logic
+            self.is_theoretically_possible_state = True # Reset flag
+            self._pre_initialize_tracker_keys()
+            super().set_board_fen(fen)
+            self._populate_tracker_from_current_state()
+
+    def set_piece_map(self, pieces: Mapping[chess.Square, chess.Piece], piece_tracker_override: Optional[PieceTracker] = None):
+        """Sets the board from a piece map and populates the tracker based on the map state
+           or uses the provided tracker override.
+
+        Args:
+            pieces: The piece map.
+            piece_tracker_override: If provided, use this tracker state instead
+                                     of populating from the FEN.
+        """
+        if piece_tracker_override is not None:
+            self.piece_tracker = copy.deepcopy(piece_tracker_override)
+            self.is_theoretically_possible_state = True # Assume override is valid
+            super().set_piece_map(pieces)
+        else:
+            # Original logic
+            self.is_theoretically_possible_state = True # Reset flag
+            self._pre_initialize_tracker_keys()
+            super().set_piece_map(pieces)
+            self._populate_tracker_from_current_state()
 
     # Override push to store the flag state
     def push(self, move: chess.Move):

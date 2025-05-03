@@ -10,12 +10,13 @@ import random
 import sys
 import os
 sys.path.append('.')
-from chess_gym.chess_custom import FullyTrackedBoard
+from chess_gym.chess_custom import FullyTrackedBoard, PieceTracker
 
 # --- MCTS Node ---
 class MCTSNode:
     """Node in the MCTS tree. Stores state via FEN string."""
     def __init__(self, fen: str, 
+                 piece_tracker: Optional[PieceTracker] = None,
                  parent: Optional['MCTSNode'] = None, 
                  prior_p: float = 0.0, 
                  move_leading_here: Optional[chess.Move] = None
@@ -27,7 +28,7 @@ class MCTSNode:
         self.N = 0  # Visit count
         self.W = 0.0  # Total action value
         self.prior_p = prior_p
-        self.board = FullyTrackedBoard(fen=fen)
+        self.board = FullyTrackedBoard(fen=fen, piece_tracker_override=piece_tracker)
 
         # Lazy evaluation for terminal state if needed (calculated on demand)
         self._is_terminal = None 

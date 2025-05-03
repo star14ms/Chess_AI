@@ -179,7 +179,7 @@ class MCTS:
                     if move not in leaf_node.children:
                         # *** Crucial Step: Create independent env state for child ***
                         try:
-                            self.env.board.set_fen(leaf_node.fen)
+                            self.env.board.set_fen(leaf_node.fen, leaf_node.board.piece_tracker)
 
                             # --- Convert move to action for env.step --- 
                             action_to_take = self.env.board.move_to_action_id(move)
@@ -196,7 +196,7 @@ class MCTS:
                             self.env.step(sample_action(self.env.action_space, return_id=True))
                             fen = self.env.action_space.board.fen()
 
-                            child_node = MCTSNode(fen, parent=leaf_node, prior_p=prior_p, move_leading_here=move)
+                            child_node = MCTSNode(fen, piece_tracker=self.env.board.piece_tracker, parent=leaf_node, prior_p=prior_p, move_leading_here=move)
                             leaf_node.children[move] = child_node
                         except Exception as e:
                              # Handle cases where deepcopy or step fails
