@@ -110,7 +110,7 @@ class MCTS:
                 value = leaf_value # Use network's value estimate for backprop
 
                 # --- Calculate probabilities over FULL action space ---
-                full_probs = F.softmax(policy_logits, dim=0)
+                full_probs = F.softmax(policy_logits, dim=1)
                 use_uniform_fallback = False
                 if torch.isnan(full_probs).any():
                     num_legal_moves = len(list(leaf_node.board.legal_moves))
@@ -121,7 +121,7 @@ class MCTS:
 
                 # --- Check if network's top choice is legal ---
                 if not use_uniform_fallback:
-                    top_prob, top_action_id_0based = torch.max(full_probs, dim=0)
+                    top_prob, top_action_id_0based = torch.max(full_probs, dim=1)
                     top_action_id = top_action_id_0based.item() + 1 # Convert back to 1-based ID
                     try:
                         # Attempt to convert the top action ID back to a move
