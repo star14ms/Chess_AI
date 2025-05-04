@@ -50,6 +50,7 @@ class TrainingConfig:
     max_game_moves: int = 200
     board_cls_str: str = "chess_gym.chess_custom.FullyTrackedBoard"
     action_spce_size: int = 850 # Define action space size needed by Network
+    self_play_workers: int = 0 # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
     # Removed env parameters
 
 @dataclass

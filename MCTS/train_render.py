@@ -10,69 +10,16 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import get_class # Use instantiate later if needed
 import sys
-import multiprocessing # Added import
 
 # Assuming files are in the MCTS directory relative to the project root
 from network import ChessNetwork
 from mcts_node import MCTSNode
-from mcts_algorithm import MCTS
+from mcts_algorithm_render import MCTS
 from utils.policy_human import sample_action
 from chess_gym.envs import ChessEnv
 
 sys.path.append('.')
 # Dynamically import board class later using get_class
-
-# Helper function for parallel execution
-# NOTE: Passing large network objects might be slow or problematic.
-# Consider loading the network state_dict in the worker if issues arise.
-def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: str):
-    """Worker function to run a single self-play game."""
-    # Determine device for this worker
-    device = torch.device(device_str)
-
-    # Re-initialize Network in the worker process
-    # (Ensure parameters match your network's __init__)
-    network = ChessNetwork(
-        input_channels=cfg.network.input_channels,
-        board_size=cfg.network.board_size,
-        num_conv_layers=cfg.network.num_conv_layers,
-        num_filters=cfg.network.num_filters,
-        action_space_size=cfg.network.action_space_size,
-        num_attention_heads=cfg.network.num_attention_heads,
-        decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
-        # Add other required params based on network.py definition
-    ).to(device)
-    network.load_state_dict(network_state_dict)
-    network.eval() # Ensure it's in eval mode
-
-    # Re-initialize Environment in the worker process
-    # Assumes env config is part of the main cfg
-    env = ChessEnv(
-        observation_mode=cfg.env.observation_mode,
-        render_mode=None, # Avoid rendering in workers
-        save_video_folder=None
-    )
-
-    # Progress is tricky with multiprocessing pools directly updating Rich progress.
-    # Usually, you track completion externally or use shared state (more complex).
-    # For simplicity, we'll omit the fine-grained progress updates from within the worker.
-    game_data = run_self_play_game(
-        network,
-        cfg.mcts,
-        cfg.training,
-        env,
-        progress=None, # Pass None for progress within worker
-        device=device
-    )
-    env.close() # Close env instance in worker
-    return game_data
-
-# Wrapper for imap_unordered
-def worker_wrapper(args):
-    """Unpacks arguments for self_play_worker when using imap."""
-    game_id, network_state_dict, cfg, device_str = args
-    # Call the original worker function with unpacked args
-    return self_play_worker(game_id, network_state_dict, cfg, device_str)
 
 # --- Removed CONFIG dictionary --- 
 
@@ -122,10 +69,9 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
     temp_end = mcts_cfg.temperature_end
     temp_decay_moves = mcts_cfg.temperature_decay_moves
     max_moves = train_cfg.max_game_moves
-
-    if progress is not None:
-        task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
-        progress.start_task(task_id_game)
+    
+    task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
+    progress.start_task(task_id_game)
 
     while not terminated and not truncated and move_count < max_moves:
         # --- Create MCTS root node with FEN and board_cls --- 
@@ -151,28 +97,25 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
 
         if chosen_move is None:
             print(f"Warning: MCTS returned None move. Ending game.")
-            if progress is not None:
-                progress.update(task_id_game, visible=False)
+            progress.update(task_id_game, visible=False)
             break
 
         action_to_take = env.board.move_to_action_id(chosen_move)
         if action_to_take is None:
             print(f"Warning: Could not convert move {chosen_move.uci()} to action ID.")
-            if progress is not None:
-                progress.update(task_id_game, visible=False)
+            progress.update(task_id_game, visible=False)
             break
 
         try:
             # Step the *main* environment
             obs, reward, terminated, truncated, info = env.step(action_to_take)
             # Step opponent agent
-            env.step(sample_action(env.board, return_id=True))
+            env.step(sample_action(env.action_space, return_id=True))
         except Exception as e:
             print(f"Error during env.step: {e}. Ending game.")
             terminated = True
             
-        if progress is not None:
-            progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
+        progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
 
         move_count += 1
 
@@ -190,9 +133,7 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         value_target = final_value if is_white_turn_at_state else -final_value
         full_game_data.append((state_obs, policy_target, value_target))
     
-    if progress is not None:
-        progress.update(task_id_game, visible=False)
-
+    progress.update(task_id_game, visible=False)
     return full_game_data
 
 # --- Training Loop Function --- 
@@ -202,8 +143,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # --- Setup ---
     if cfg.training.device == "auto":
-        device = torch.device("cpu")
-        # device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     else:
         device = torch.device(cfg.training.device)
     print(f"Using device: {device}")
@@ -282,71 +222,32 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Use num_training_iterations from cfg
     for iteration in range(start_iter, cfg.training.num_training_iterations):
         iteration_start_time = time.time()
-        print(f"\n--- Training Iteration {iteration+1}/{cfg.training.num_training_iterations} ---")
+        print(f"\n--- Training Iteration {iteration+1}/{cfg.training.num_training_iterations} --- ")
 
-        # --- Self-Play Phase (Parallelized) ---
-        print("Starting self-play phase (parallel)...")
-        network.eval() # Keep main network in eval mode if needed elsewhere
-        games_data_collected = []
-        iteration_start_time_selfplay = time.time() # Time this phase
-
-        # Determine number of workers
-        # Ensure cfg.training.self_play_workers exists in your config!
-        try:
-            num_workers_config = cfg.training.self_play_workers
-        except Exception:
-            print("Warning: cfg.training.self_play_workers not found. Defaulting workers.")
-            num_workers_config = 0 # Indicate to use default
-
-        if num_workers_config > 0:
-            num_workers = min(num_workers_config, os.cpu_count())
-        else:
-            # Default heuristic if 0 or not specified: use half the CPUs, minimum 1
-            num_workers = max(1, os.cpu_count() // 2)
-        print(f"Using {num_workers} workers for self-play.")
-
-        # Prepare arguments for workers
-        # Pass network state_dict instead of the full object for better pickling
-        network_state_dict = network.state_dict()
-        device_str = str(device) # Pass device as string
-        # Pack arguments into tuples for the wrapper function
-        worker_args_packed = [
-            (game_num, network_state_dict, cfg, device_str)
-            for game_num in range(cfg.training.self_play_games_per_epoch)
-        ]
-
-        results = []
-        try:
-            # Use 'spawn' context for better compatibility across platforms, especially with CUDA/PyTorch
-            pool = multiprocessing.get_context("spawn").Pool(processes=num_workers)
-            print(f"Submitting {len(worker_args_packed)} games to pool...")
-
-            # Use imap_unordered to get results as they complete
-            results_iterator = pool.imap_unordered(worker_wrapper, worker_args_packed)
-
-            # Process results with a progress bar
-            with Progress(*progress_columns_selfplay, transient=False) as progress:
-                task_id_selfplay = progress.add_task(
-                    "Collecting Self-Play Results",
-                    total=len(worker_args_packed)
+        # --- Self-Play Phase ---
+        print("Starting self-play phase...")
+        network.eval()
+        games_data = []
+        with Progress(*progress_columns_selfplay, transient=False) as progress:
+            task_id_selfplay = progress.add_task("Self-Play Games", total=cfg.training.self_play_games_per_epoch)
+            # Use values from cfg
+            for game_num in range(cfg.training.self_play_games_per_epoch):
+                progress.update(task_id_selfplay, description=f"Self-Play Game ({game_num+1}/{cfg.training.self_play_games_per_epoch})")
+                game_data = run_self_play_game(
+                    network,
+                    cfg.mcts,       # Pass MCTS config section
+                    cfg.training,   # Pass Training config section
+                    env,
+                    progress=progress,
+                    device=device
                 )
-                # Iterate over results as they become available
-                for game_data in results_iterator:
-                    if game_data: # Check if worker returned valid data
-                        games_data_collected.extend(game_data)
-                    # Update progress for each completed game
-                    progress.update(task_id_selfplay, advance=1)
+                games_data.extend(game_data)
+                progress.update(task_id_selfplay, advance=1)
 
-        except Exception as e:
-            print(f"Error during parallel self-play: {e}")
-            # Handle error, maybe skip iteration or exit
-
-        # Add collected data to replay buffer
-        for experience in games_data_collected:
+        for experience in games_data:
             replay_buffer.add(experience)
-
-        self_play_duration = time.time() - iteration_start_time_selfplay
-        print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration:.2f}s. Buffer size: {len(replay_buffer)}")
+        self_play_duration = time.time() - iteration_start_time
+        print(f"Self-play finished ({len(games_data)} steps collected). Duration: {self_play_duration:.2f}s. Buffer size: {len(replay_buffer)}")
 
         # --- Training Phase ---
         if len(replay_buffer) < cfg.training.batch_size:

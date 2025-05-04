@@ -160,12 +160,6 @@ class ChessNetwork(nn.Module):
                  decoder_ff_dim_mult=4):
         super().__init__()
         if input_channels < 2: raise ValueError("Input channels must be >= 2")
-        
-        actual_num_heads = num_attention_heads
-        if num_filters % num_attention_heads != 0:
-            print(f"Warning: num_filters ({num_filters}) not divisible by requested heads ({num_attention_heads}). Defaulting to nhead=1.")
-            actual_num_heads = 1
-        print(f"Using nhead={actual_num_heads} for Interaction Blocks.")
 
         self.board_height = board_size
         self.board_width = board_size
@@ -187,7 +181,7 @@ class ChessNetwork(nn.Module):
         for _ in range(num_conv_layers):
             self.interaction_blocks.append(BiDirectionalInteractionBlock(
                 d_model=num_filters,
-                nhead=actual_num_heads,
+                nhead=num_attention_heads,
                 dim_feedforward=num_filters * decoder_ff_dim_mult,
                 board_height=self.board_height,
                 board_width=self.board_width

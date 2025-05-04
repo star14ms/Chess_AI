@@ -61,35 +61,46 @@ def is_safe_after_move(board: chess.Board, move: chess.Move, opponent_color: che
 
 # Overload signatures for different return types based on return_info
 @overload
-def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True, return_id: bool = False, return_info: Literal[True] = True) -> Tuple[Union[np.ndarray, int], int, str]: ...
+def sample_action(board: chess.Board, avoid_attacks: bool = True, return_id: bool = False, return_move: bool = False, return_info: Literal[True] = True) -> Tuple[Union[np.ndarray, int, chess.Move, None], int, str]: ...
 @overload
-def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True, return_id: bool = False, return_info: Literal[False] = False) -> Union[np.ndarray, int]: ...
+def sample_action(board: chess.Board, avoid_attacks: bool = True, return_id: bool = False, return_move: bool = False, return_info: Literal[False] = False) -> Union[np.ndarray, int, chess.Move, None]: ...
 
-def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True, return_id: bool = False, return_info: bool = False) -> Union[Tuple[Union[np.ndarray, int], int, str], Union[np.ndarray, int]]:
+def sample_action(board: chess.Board, avoid_attacks: bool = True, return_id: bool = False, return_move: bool = False, return_info: bool = False) -> Union[Tuple[Union[np.ndarray, int, chess.Move, None], int, str], Union[np.ndarray, int, chess.Move, None]]:
     """
-    Samples an action using a hierarchy of heuristics.
+    Samples an action using a hierarchy of heuristics, operating directly on a board.
 
-    Conditionally returns just the action or (action, policy_id, policy_title).
-    See previous docstring for heuristic details.
+    Conditionally returns the action (as ID, numpy array, or Move object),
+    or a tuple containing (action, policy_id, policy_title).
 
     Args:
-        action_space: The environment's action space (contains the board).
+        board: The current chess.Board state.
         avoid_attacks: Whether to include the 'Avoid Attack' heuristic (policy 5).
-        return_id: If True, return action as integer ID, else as numpy array.
+        return_id: If True and return_move is False, return action as integer ID.
+                   Requires board to have a 'move_to_action_id' method.
+        return_move: If True, return the chosen chess.Move object directly.
         return_info: If True, return (action, policy_id, policy_title), else return just action.
 
     Returns:
-        Union[Tuple[Union[np.ndarray, int], int, str], Union[np.ndarray, int]]:
+        Union[Tuple[Union[np.ndarray, int, chess.Move, None], int, str], Union[np.ndarray, int, chess.Move, None]]:
             - If return_info is True: (action, policy_id, policy_title)
             - If return_info is False: action
+            The action type depends on return_id and return_move.
+            Returns None for action if no legal moves exist.
     """
-    board = action_space.board
+    # Board is now passed directly
     initial_legal_moves = list(board.legal_moves)
-    
+
     # --- Handle No Legal Moves --- 
     if not initial_legal_moves:
         policy_id = 0
-        action_repr = 0 if return_id else np.zeros(action_space.shape, dtype=action_space.dtype)
+        # Return None for move, 0 for ID, or attempt zeros array if shape available
+        action_repr: Union[np.ndarray, int, chess.Move, None] = None
+        if not return_move:
+             if return_id:
+                 action_repr = 0 # Or None? Convention needed.
+             # Cannot create np.zeros without action space shape. Return None or 0?
+             # Let's return None if not returning move or ID.
+
         if return_info:
             return action_repr, policy_id, POLICY_TITLES[policy_id]
         else:
@@ -332,14 +343,34 @@ def sample_action(action_space: gym.spaces.Space, avoid_attacks: bool = True, re
             policy_id = 8
         else: # Extremely unlikely edge case: no moves left at all
              policy_id = 0 # Revert to no moves
-             action_repr = 0 if return_id else np.zeros(action_space.shape, dtype=action_space.dtype)
+             action_repr = None # No move possible
+             # Handle other return types if needed (e.g., ID 0)
+             if not return_move and return_id: action_repr = 0
+
              if return_info:
                  return action_repr, policy_id, POLICY_TITLES[policy_id]
              else:
                  return action_repr
     
     # --- Final Return Logic --- 
-    action_repr = action_space._move_to_action(chosen_move, return_id=return_id)
+    action_repr: Union[np.ndarray, int, chess.Move, None] = None # Initialize
+    if return_move:
+        action_repr = chosen_move # Return the move object directly
+    elif return_id:
+        # Requires board to have move_to_action_id method
+        try:
+            action_id = board.move_to_action_id(chosen_move)
+            action_repr = action_id if action_id is not None else 0 # Return 0 if conversion fails?
+        except AttributeError:
+             print("Warning: board object lacks 'move_to_action_id' method needed for return_id=True.")
+             action_repr = 0 # Fallback
+    else:
+        # Returning numpy array is problematic without action space shape/dtype.
+        # Returning None as we cannot represent it accurately.
+        # Alternatively, could try returning move UCI string?
+        print("Warning: Returning numpy array action representation is not supported when passing board directly.")
+        action_repr = None
+
     if return_info:
         return action_repr, policy_id, POLICY_TITLES[policy_id]
     else:
