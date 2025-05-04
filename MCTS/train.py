@@ -55,9 +55,13 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board
                        progress: Progress | None = None, game_task_id = None, device: torch.device | None = None):
     """Plays one game of self-play using MCTS and returns the game data."""
 
-    # Initialize the environment
+    # Initialize the environment using config values
     from chess_gym.envs import ChessEnv # Import here
-    env = ChessEnv(observation_mode='vector', render_mode='human')
+    env = ChessEnv(
+        observation_mode=train_cfg.observation_mode,
+        render_mode=train_cfg.render_mode,
+        save_video_folder=train_cfg.save_video_folder
+    )
     obs, info = env.reset()
 
     network.eval()
@@ -102,8 +106,8 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board
 
         action_to_take = env.board.move_to_action_id(chosen_move)
         if action_to_take is None:
-             print(f"Warning: Could not convert move {chosen_move.uci()} to action ID.")
-             break
+            print(f"Warning: Could not convert move {chosen_move.uci()} to action ID.")
+            break
 
         try:
             # Step the *main* environment

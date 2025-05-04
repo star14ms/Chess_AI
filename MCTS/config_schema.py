@@ -43,6 +43,10 @@ class TrainingConfig:
     max_game_moves: int = 200
     board_cls_str: str = "chess_gym.chess_custom.FullyTrackedBoard"
     action_space_size: int = 850 # Define action space size needed by Network
+    # Environment parameters
+    observation_mode: str = "vector"
+    render_mode: Optional[str] = "human" # Can be None
+    save_video_folder: Optional[str] = "./videos" # Can be None
 
 @dataclass
 class Config:

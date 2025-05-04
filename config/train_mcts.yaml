@@ -31,7 +31,7 @@ network:
 
 mcts:
   _target_: MCTS.config_schema.MCTSConfig
-  iterations: 100
+  iterations: 2
   c_puct: 1.41
   temperature_start: 1.0
   temperature_end: 0.1
@@ -49,11 +49,15 @@ training:
   device: auto
   replay_buffer_size: 50000
   batch_size: 128
-  self_play_games_per_epoch: 50
+  self_play_games_per_epoch: 1
   training_epochs: 10
-  num_training_iterations: 1000
+  num_training_iterations: 1
   checkpoint_dir: ${hydra:run.dir}/checkpoints # Relative to hydra output
   save_interval: 10
   max_game_moves: 200
   board_cls_str: chess_gym.chess_custom.FullyTrackedBoard
   action_space_size: 850 # Network needs this 
+  # Environment settings
+  observation_mode: vector
+  render_mode: null # Set to null or remove for no rendering
+  save_video_folder: ./videos # Set to null or remove for no video saving 

@@ -9,7 +9,10 @@ import pygame
 from io import BytesIO
 import cairosvg
 from PIL import Image
-from typing import Union
+from typing import Union, Optional, List
+import os
+
+from gymnasium.utils.save_video import save_video
 
 from chess_gym.chess_custom import FullyTrackedBoard
 from utils.visualize import draw_possible_action_ids_on_board
@@ -123,13 +126,33 @@ class ChessEnv(gym.Env):
     metadata = {
         'render_modes': ['rgb_array', 'human'],
         'observation_modes': ['rgb_array', 'piece_map', 'vector'],
-        'render_fps': 4
+        'render_fps': 10
     }
 
-    def __init__(self, render_size=512, observation_mode='vector', claim_draw=True, render_mode=None, show_possible_action_ids=False, **kwargs):
+    def __init__(self, 
+                 render_size=512, 
+                 observation_mode='vector', 
+                 claim_draw=True, 
+                 render_mode=None, 
+                 show_possible_action_ids=False, 
+                 save_video_folder: Optional[str] = None,
+                 **kwargs):
         super(ChessEnv, self).__init__()
 
+        # --- Video Saving Setup ---
+        self.save_video_folder = save_video_folder
+        self.recorded_frames: List[np.ndarray] = []
+        self.video_episode_index = 0
+        self.video_step_counter = 0 # Total steps across episodes
+        self.current_episode_step_counter = 0 # Steps within the current episode
+
+        if self.save_video_folder is not None:
+            os.makedirs(self.save_video_folder, exist_ok=True)
+            print(f"Video recording enabled. Saving to: {os.path.abspath(self.save_video_folder)}")
+        # --- End Video Saving Setup ---
+
         self.observation_mode = observation_mode
+        self.render_mode = render_mode
 
         if observation_mode == 'rgb_array':
             self.observation_space = spaces.Box(
@@ -163,7 +186,6 @@ class ChessEnv(gym.Env):
 
         self.render_size = render_size
         self.claim_draw = claim_draw
-        self.render_mode = render_mode
         self.show_possible_action_ids = show_possible_action_ids
         self.window = None
         self.clock = None
@@ -218,13 +240,34 @@ class ChessEnv(gym.Env):
             'ep_square': self.board.ep_square
         }
         
-        if self.render_mode == 'human':
-            self.render()
+        # --- Record Frame --- 
+        if self.render_mode is not None or self.save_video_folder is not None:
+            frame = self.render() # Get frame via rgb_array mode
+
+            if self.save_video_folder is not None and frame is not None: # Ensure render returned something
+                self.recorded_frames.append(frame)
+        # --- End Record Frame --- 
+
+        # --- Trigger video save on episode end --- 
+        # NOTE: The save happens in the *next* reset call, triggered by this termination
+        # This ensures the final frame is included before saving.
+        # if self.save_video_folder is not None and (terminated or truncated):
+        #     self._save_recorded_video() # Save is now handled in reset
+        #     self.video_episode_index += 1 # Increment episode index *after* saving
+        # --- End Trigger Save --- 
 
         return observation, reward, terminated, truncated, info
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        
+        # --- Save video from previous episode --- 
+        if self.save_video_folder is not None and self.recorded_frames:
+            self._save_recorded_video()
+            # Don't increment episode index here, do it after saving
+        # --- End Save Video --- 
+        
+        # Reset board and internal state
         self.board.reset()
 
         if options is not None:
@@ -238,26 +281,38 @@ class ChessEnv(gym.Env):
 
         observation = self._observe()
         info = {}
+
+        # --- Start frame recording for new episode --- 
+        if self.save_video_folder is not None:
+            self.recorded_frames = [] # Clear frames for new episode
+            self.current_episode_step_counter = 0 # Reset step counter for *this* episode
+            
+        if self.render_mode is not None or self.save_video_folder is not None:
+            frame = self.render() # Get frame via rgb_array mode
+
+            if self.save_video_folder is not None and frame is not None: # Ensure render returned something
+                self.recorded_frames.append(frame)
+        # --- End Start Recording --- 
+
         return observation, info
 
     def render(self):
-        if self.render_mode == "human":
-            return self._render_frame()
-        elif self.render_mode == "rgb_array":
-            # For rgb_array mode, just return the image numpy array
+        if self.render_mode is not None:
+            return self._render_pygame()
+        else:
             return self._get_image()
 
-    def _render_frame(self):
-        if self.window is None and self.render_mode == "human":
+    def _render_pygame(self):
+        if self.window is None:
             pygame.init()
             pygame.display.init()
             self.window = pygame.display.set_mode((self.render_size, self.render_size))
             pygame.display.set_caption('Chess Environment')
-        if self.clock is None and self.render_mode == "human":
+        if self.clock is None:
             self.clock = pygame.time.Clock()
 
         # --- Logic to show possible actions (if enabled) ---
-        if self.render_mode == "human" and self.show_possible_action_ids:
+        if self.show_possible_action_ids:
             # --- 1. Display standard board FIRST ---
             std_board_image_pil = Image.fromarray(self._get_image())
             std_board_image_pygame = pygame.image.fromstring(
@@ -308,11 +363,58 @@ class ChessEnv(gym.Env):
         # Frame rate control
         if self.render_mode == "human":
             self.clock.tick(self.metadata["render_fps"])
+            
+        return self._get_image()
 
     def close(self):
+        # --- Save video from the final episode --- 
+        if self.save_video_folder is not None and self.recorded_frames:
+            print("Closing environment and saving final video...")
+            self._save_recorded_video()
+        # --- End Save Video --- 
+
         if self.window is not None:
             pygame.display.quit()
             pygame.quit()
     
     def _get_board_vector(self):
         return self.board.get_board_vector()
+
+    # --- Video Saving Helper ---
+    def _save_recorded_video(self):
+        """Internal helper to save the recorded frames to a video file."""
+        if not self.save_video_folder or not self.recorded_frames:
+            return # Nothing to save or saving not enabled
+
+        try:
+            # Calculate the starting step index for the episode just finished
+            # step_starting_index = self.video_step_counter - self.current_episode_step_counter
+            # The Gymnasium example uses 0 for step_starting_index when saving full episodes
+            # Let's stick to that for simplicity, as step_trigger isn't used here.
+            step_starting_index = 0 
+
+            print(f"Saving video for episode {self.video_episode_index} ({len(self.recorded_frames)} frames)...")
+            save_video(
+                frames=self.recorded_frames,
+                video_folder=self.save_video_folder,
+                # --- Important: Pass fps --- 
+                fps=self.metadata.get('render_fps', 10), # Use fps from metadata
+                name_prefix="chess-game", # Customize prefix if desired
+                episode_index=self.video_episode_index,
+                episode_trigger=lambda x: True, # Trigger always true since called conditionally
+                step_starting_index=step_starting_index, 
+                video_length=None, # Record full episode
+                save_logger="bar" # Show progress bar
+            )
+            # Increment episode index *after* successful save
+            self.video_episode_index += 1
+            # Clear frames immediately after saving (also done in reset, but safe here too)
+            self.recorded_frames = [] 
+
+        except ImportError:
+             print("Error: moviepy is required for save_video. Install with: pip install moviepy")
+        except Exception as e:
+            print(f"Error saving video for episode {self.video_episode_index}: {e}")
+            # Optionally clear frames even if save failed to prevent repeated errors
+            self.recorded_frames = [] 
+    # --- End Video Saving Helper ---

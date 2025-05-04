@@ -185,3 +185,4 @@ output/task_visualization/*
 repo/
 torchview_custom/
 model_viz/
+videos/
