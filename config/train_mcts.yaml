@@ -28,6 +28,14 @@ network:
   # interaction_dim: 128   # Add if needed by network
   num_attention_heads: 8 # Example override
   decoder_ff_dim_mult: 4
+  action_space_size: 850 # Network needs this 
+
+# New Env section
+env:
+  _target_: MCTS.config_schema.EnvConfig
+  observation_mode: vector
+  render_mode: null # Set to null or remove for no rendering
+  save_video_folder: null # Set to null or remove for no video saving
 
 mcts:
   _target_: MCTS.config_schema.MCTSConfig
@@ -51,13 +59,8 @@ training:
   batch_size: 128
   self_play_games_per_epoch: 1
   training_epochs: 10
-  num_training_iterations: 1
+  num_training_iterations: 3
   checkpoint_dir: ${hydra:run.dir}/checkpoints # Relative to hydra output
   save_interval: 10
-  max_game_moves: 200
+  max_game_moves: 2
   board_cls_str: chess_gym.chess_custom.FullyTrackedBoard
-  action_space_size: 850 # Network needs this 
-  # Environment settings
-  observation_mode: vector
-  render_mode: null # Set to null or remove for no rendering
-  save_video_folder: ./videos # Set to null or remove for no video saving 

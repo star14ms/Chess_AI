@@ -13,7 +13,7 @@ class NetworkConfig:
     num_attention_heads: int = 4
     decoder_ff_dim_mult: int = 4
     # Add piece_embedding_dim, interaction_dim if the network architecture requires them again
-    # action_space_size: int = 16 # This should likely be derived or set based on env
+    action_space_size: int = 850 # This should likely be derived or set based on env
 
 @dataclass
 class MCTSConfig:
@@ -30,6 +30,13 @@ class OptimizerConfig:
     momentum: Optional[float] = 0.9 # Only used for SGD
     weight_decay: float = 1e-4
 
+# New dataclass for environment settings
+@dataclass
+class EnvConfig:
+    observation_mode: str = "vector"
+    render_mode: Optional[str] = None # Default to None
+    save_video_folder: Optional[str] = None # Default to None
+
 @dataclass
 class TrainingConfig:
     device: str = "auto" # auto, cuda, mps, cpu
@@ -42,11 +49,8 @@ class TrainingConfig:
     save_interval: int = 10
     max_game_moves: int = 200
     board_cls_str: str = "chess_gym.chess_custom.FullyTrackedBoard"
-    action_space_size: int = 850 # Define action space size needed by Network
-    # Environment parameters
-    observation_mode: str = "vector"
-    render_mode: Optional[str] = "human" # Can be None
-    save_video_folder: Optional[str] = "./videos" # Can be None
+    action_spce_size: int = 850 # Define action space size needed by Network
+    # Removed env parameters
 
 @dataclass
 class Config:
@@ -54,4 +58,5 @@ class Config:
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    env: EnvConfig = field(default_factory=EnvConfig) # Add EnvConfig
     # Hydra specific config is usually handled separately in the yaml 

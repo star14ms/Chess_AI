@@ -16,6 +16,7 @@ from network import ChessNetwork
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from utils.policy_human import sample_action
+from chess_gym.envs import ChessEnv
 
 sys.path.append('.')
 # Dynamically import board class later using get_class
@@ -51,19 +52,10 @@ class ReplayBuffer:
 
 
 # --- Self-Play Function (Update args to use config subsections) ---
-def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board_cls,
-                       progress: Progress | None = None, game_task_id = None, device: torch.device | None = None):
+def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: ChessEnv,
+                       progress: Progress | None = None, device: torch.device | None = None):
     """Plays one game of self-play using MCTS and returns the game data."""
-
-    # Initialize the environment using config values
-    from chess_gym.envs import ChessEnv # Import here
-    env = ChessEnv(
-        observation_mode=train_cfg.observation_mode,
-        render_mode=train_cfg.render_mode,
-        save_video_folder=train_cfg.save_video_folder
-    )
-    obs, info = env.reset()
-
+    obs, _ = env.reset()
     network.eval()
 
     game_history = []
@@ -77,6 +69,9 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board
     temp_end = mcts_cfg.temperature_end
     temp_decay_moves = mcts_cfg.temperature_decay_moves
     max_moves = train_cfg.max_game_moves
+    
+    task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
+    progress.start_task(task_id_game)
 
     while not terminated and not truncated and move_count < max_moves:
         # --- Create MCTS root node with FEN and board_cls --- 
@@ -89,7 +84,7 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board
         mcts_player = MCTS(network, device=device, env=env, player_color=env.board.turn, C_puct=c_puct)
 
         # --- Run MCTS Search --- 
-        mcts_player.search(root_node, mcts_iterations, progress=progress, parent_task_id=game_task_id)
+        mcts_player.search(root_node, mcts_iterations, progress=progress)
 
         # --- Get Policy and Store History --- 
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
@@ -102,11 +97,13 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board
 
         if chosen_move is None:
             print(f"Warning: MCTS returned None move. Ending game.")
+            progress.update(task_id_game, visible=False)
             break
 
         action_to_take = env.board.move_to_action_id(chosen_move)
         if action_to_take is None:
             print(f"Warning: Could not convert move {chosen_move.uci()} to action ID.")
+            progress.update(task_id_game, visible=False)
             break
 
         try:
@@ -117,6 +114,8 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board
         except Exception as e:
             print(f"Error during env.step: {e}. Ending game.")
             terminated = True
+            
+        progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
 
         move_count += 1
 
@@ -133,8 +132,8 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, board
         is_white_turn_at_state = (i % 2 == 0)
         value_target = final_value if is_white_turn_at_state else -final_value
         full_game_data.append((state_obs, policy_target, value_target))
-
-    env.close()
+    
+    progress.update(task_id_game, visible=False)
     return full_game_data
 
 # --- Training Loop Function --- 
@@ -164,7 +163,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         board_size=cfg.network.board_size,
         num_conv_layers=cfg.network.num_conv_layers,
         num_filters=cfg.network.num_filters,
-        action_space_size=cfg.training.action_space_size, # Get from training cfg
+        action_space_size=cfg.network.action_space_size, # Get from training cfg
         num_attention_heads=cfg.network.num_attention_heads,
         decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
         # Add other required params based on current network.py
@@ -214,6 +213,12 @@ def run_training_loop(cfg: DictConfig) -> None:
         TimeRemainingColumn(), TimeElapsedColumn(),
     ]
 
+    env = ChessEnv(
+        observation_mode=cfg.env.observation_mode,
+        render_mode=cfg.env.render_mode,
+        save_video_folder=cfg.env.save_video_folder
+    )
+
     # Use num_training_iterations from cfg
     for iteration in range(start_iter, cfg.training.num_training_iterations):
         iteration_start_time = time.time()
@@ -227,14 +232,13 @@ def run_training_loop(cfg: DictConfig) -> None:
             task_id_selfplay = progress.add_task("Self-Play Games", total=cfg.training.self_play_games_per_epoch)
             # Use values from cfg
             for game_num in range(cfg.training.self_play_games_per_epoch):
-                progress.update(task_id_selfplay, description=f"Self-Play Game {game_num+1}/{cfg.training.self_play_games_per_epoch}")
+                progress.update(task_id_selfplay, description=f"Self-Play Game ({game_num+1}/{cfg.training.self_play_games_per_epoch})")
                 game_data = run_self_play_game(
                     network,
                     cfg.mcts,       # Pass MCTS config section
                     cfg.training,   # Pass Training config section
-                    board_cls,      # Pass resolved board class
+                    env,
                     progress=progress,
-                    game_task_id=task_id_selfplay,
                     device=device
                 )
                 games_data.extend(game_data)
@@ -313,7 +317,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         iteration_duration = time.time() - iteration_start_time
         print(f"Iteration {iteration+1} completed in {iteration_duration:.2f}s")
-
+    
+    env.close()
     print("\nTraining loop finished.")
 
 

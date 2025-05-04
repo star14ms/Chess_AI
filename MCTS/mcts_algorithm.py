@@ -1,5 +1,4 @@
 import random
-import time
 import torch
 import torch.nn.functional as F
 from rich.progress import Progress
@@ -61,7 +60,7 @@ class MCTS:
         leaf_node = node
         return leaf_node, search_path
 
-    def _expand_and_evaluate(self, leaf_node: MCTSNode) -> float:
+    def _expand_and_evaluate(self, leaf_node: MCTSNode, progress: Progress | None = None) -> float:
         """Phase 2: Expands leaf node, creates children, returns evaluated value."""
         value = 0.0
         if not leaf_node.is_expanded:
@@ -129,18 +128,25 @@ class MCTS:
                             probs_to_use[indices_t] = combined
                             # Optional: Renormalize probs_to_use if needed
 
-                # Expand Children using env.step
-                for move in leaf_board.legal_moves:
+                # --- Expand Children using env.step ---
+                # Prepare subtask for move expansion if progress bar is active
+                expansion_task_id = None
+                legal_moves_list = list(leaf_board.legal_moves)
+                total_moves = len(legal_moves_list)
+                if progress is not None and total_moves > 0:
+                    expansion_task_id = progress.add_task(f"  ├── Expanding Node (0/{total_moves})", total=total_moves, transient=True)
+
+                for i, move in enumerate(legal_moves_list):
                     if move not in leaf_node.children:
                         # Reset the shared env to the parent node's state
                         # Using leaf_node.fen and leaf_node.piece_tracker ensures consistency
                         self.env.board.set_fen(leaf_node.board.fen(), leaf_node.board.piece_tracker)
                         action_id = leaf_board.move_to_action_id(move)
                         if action_id is None: continue
-                        
+
                         # Step 1: Apply White's move (action_id)
                         _, _, _, _, _ = self.env.step(action_id)
-                        
+
                         # Step 2: Sample and apply Black's immediate response
                         opponent_board = self.env.board
                         if not opponent_board.is_game_over(claim_draw=True):
@@ -151,11 +157,11 @@ class MCTS:
                         # Prior probability is based on White's initial move choice
                         prior_p = 0.0
                         # Recalculate 0-based for safety
-                        action_id_0based = action_id - 1 
+                        action_id_0based = action_id - 1
                         if 0 <= action_id_0based < probs_to_use.shape[0]:
                             prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
                         # else: prior_p remains 0.0
-                        
+
                         child_node = MCTSNode(
                             board=self.env.board,
                             parent=leaf_node,
@@ -163,6 +169,14 @@ class MCTS:
                             move_leading_here=move
                         )
                         leaf_node.children[move] = child_node
+
+                    # Update progress after processing a move
+                    if progress is not None and expansion_task_id is not None:
+                        progress.update(expansion_task_id, advance=1, description=f"  ├── Expanding Node ({i+1}/{total_moves})")
+
+                # Stop the expansion subtask after the loop
+                if progress is not None and expansion_task_id is not None:
+                    progress.update(expansion_task_id, visible=False)
 
                 leaf_node.is_expanded = True
         
@@ -183,21 +197,21 @@ class MCTS:
 
     # --- Main Search Function --- 
     def search(self, root_node: MCTSNode, iterations: int,
-               progress: Progress | None = None, parent_task_id = None):
-
-        start_time = time.time()
+               progress: Progress | None = None):
+        
+        root_fen = self.env.board.fen()
+        root_piece_tracker = self.env.board.piece_tracker
 
         mcts_task_id = None
-        if progress is not None and parent_task_id is not None:
-            mcts_task_id = progress.add_task("  ├─ MCTS Sims", total=iterations, transient=True, start=False)
-            progress.start_task(mcts_task_id)
+        if progress is not None:
+            mcts_task_id = progress.add_task(f"  ├─ MCTS Sims (0/{iterations})", total=iterations, transient=True, start=True)
 
         for i in range(iterations):
             # Phase 1: Selection
             leaf_node, search_path = self._select(root_node)
 
             # Phase 2: Expansion & Evaluation
-            value = self._expand_and_evaluate(leaf_node)
+            value = self._expand_and_evaluate(leaf_node, progress)
             
             # Phase 4: Backpropagation
             # Get turn at the leaf for perspective
@@ -205,13 +219,12 @@ class MCTS:
             self._backpropagate(search_path, value, leaf_node_turn)
 
             if mcts_task_id is not None and progress is not None:
-                progress.update(mcts_task_id, advance=1)
+                progress.update(mcts_task_id, advance=1, description=f"  ├─ MCTS Sims ({i+1}/{iterations})")
 
         if mcts_task_id is not None and progress is not None:
-            progress.stop_task(mcts_task_id)
             progress.update(mcts_task_id, visible=False)
-
-        end_time = time.time()
+            
+        self.env.board.set_fen(root_fen, root_piece_tracker)  
 
     def get_best_move(self, root_node: MCTSNode, temperature=0.0) -> chess.Move | None:
         """

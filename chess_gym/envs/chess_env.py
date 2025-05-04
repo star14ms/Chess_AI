@@ -258,11 +258,11 @@ class ChessEnv(gym.Env):
 
         return observation, reward, terminated, truncated, info
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=None, save_video=False):
         super().reset(seed=seed)
         
         # --- Save video from previous episode --- 
-        if self.save_video_folder is not None and self.recorded_frames:
+        if save_video and self.save_video_folder is not None and self.recorded_frames:
             self._save_recorded_video()
             # Don't increment episode index here, do it after saving
         # --- End Save Video --- 
