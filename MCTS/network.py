@@ -10,7 +10,7 @@ from chess_gym.chess_custom import FullyTrackedBoard
 from models.cross_attn import MultiheadCrossAttentionLayer
 
 # Default values based on common AlphaZero implementations for chess
-DEFAULT_INPUT_CHANNELS = 10
+DEFAULT_INPUT_CHANNELS = 11
 DEFAULT_BOARD_SIZE = 8
 DEFAULT_NUM_CONV_LAYERS = 5 # Number of convolutional stages (now all are ConvBlocks)
 DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[64]*7] * DEFAULT_NUM_CONV_LAYERS

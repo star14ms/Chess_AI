@@ -600,25 +600,30 @@ class FullyTrackedBoard(chess.Board):
 
     def get_board_vector(self) -> np.ndarray:
         """
-        Generates an 10x8x8 numpy array representing the board state based on
+        Generates an 11x8x8 numpy array representing the board state based on
         instructions/observation_human.md.
 
-        Output shape: (10, 8, 8) -> (Channels, Rank, File)
+        Output shape: (11, 8, 8) -> (Channels, Rank, File)
 
-        Channels (10 dimensions):
+        Channels (11 dimensions):
         0:   Color (-1 Black, 0 Empty, 1 White)
         1-6: Piece Type / BehaviorType (One-hot: P, N, B, R, Q, K for piece on square)
         7:   En Passant Target (1 if this square is the EP target, 0 otherwise)
         8:   Castling Target (1 if King could land here via castling this turn, 0 otherwise)
-        9:   Piece ID (0 for empty, 1-32 for pieces - requires mapping logic)
+        9:   Current Player (-1 Black, 1 White - constant across the plane)
+        10:  Piece ID (0 for empty, 1-32 for pieces - requires mapping logic)
         """
         # Initialize with shape (Channels, Height, Width) -> (Channels, Rank, File)
-        board_vector = np.zeros((10, 8, 8), dtype=np.int8)
+        board_vector = np.zeros((11, 8, 8), dtype=np.int8)
 
         # Global states needed
         ep_square = self.ep_square
         current_turn = self.turn
         castling_rights = self.castling_rights # Use full rights mask
+
+        # Channel 9: Current Player (Constant plane)
+        player_val = 1 if current_turn == chess.WHITE else -1
+        board_vector[9, :, :] = player_val
 
         # Potential castling destination squares for the current player
         castling_target_squares = set()
@@ -684,7 +689,7 @@ class FullyTrackedBoard(chess.Board):
                 piece_type_idx = piece.piece_type - 1 # 0-5 for P,N,B,R,Q,K
                 board_vector[1 + piece_type_idx, rank, file] = 1
 
-                # Channel 9: Piece ID
+                # Channel 10: Piece ID
                 piece_instance_id_tuple = self.get_piece_instance_id_at(sq)
                 if piece_instance_id_tuple:
                     # --- Implement consistent mapping logic --- 
@@ -712,15 +717,15 @@ class FullyTrackedBoard(chess.Board):
                         mapped_id = 0 # Assign 0 if mapping failed
                     # --- End mapping logic ---
                     
-                    board_vector[9, rank, file] = mapped_id
+                    board_vector[10, rank, file] = mapped_id
                 else:
-                    board_vector[9, rank, file] = 0 # 0 if no specific instance ID tracked
+                    board_vector[10, rank, file] = 0 # 0 if no specific instance ID tracked
 
             else:
                 # Empty Square Defaults
                 board_vector[0, rank, file] = 0 # Color
                 # Channels 1-6 (Piece Type) remain 0
-                board_vector[9, rank, file] = 0 # Piece ID
+                board_vector[10, rank, file] = 0 # Piece ID
 
         return board_vector
 

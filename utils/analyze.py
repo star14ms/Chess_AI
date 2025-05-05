@@ -481,14 +481,14 @@ def interpret_tile(
     observation_array: Optional[Union[np.ndarray, torch.Tensor]] = None,
 ) -> str:
     """
-    Interprets a 10-element observation tile vector (numpy, tensor, or square string)
+    Interprets an 11-element observation tile vector (numpy, tensor, or square string)
     and returns a descriptive sentence. Determines start square from numeric ID.
 
     Args:
-        tile_input: A 1D numpy array (length 10), a 1D torch.Tensor (length 10),
+        tile_input: A 1D numpy array (length 11), a 1D torch.Tensor (length 11),
                     OR a string with algebraic notation (e.g., "a1", "h8").
-        observation_array: The full 10x8x8 observation array (numpy or tensor).
-                           REQUIRED if tile_input is a string. Should have shape (10, 8, 8).
+        observation_array: The full 11x8x8 observation array (numpy or tensor).
+                           REQUIRED if tile_input is a string. Should have shape (11, 8, 8).
 
     Returns:
         A string describing the piece and state on the tile.
@@ -509,12 +509,12 @@ def interpret_tile(
         # --- Handle observation_array being numpy or tensor ---
         obs_array_np: np.ndarray
         if isinstance(observation_array, torch.Tensor):
-            if observation_array.shape != (10, 8, 8):
-                raise ValueError(f"observation_array tensor must have shape (10, 8, 8), got {observation_array.shape}")
+            if observation_array.shape != (11, 8, 8):
+                raise ValueError(f"observation_array tensor must have shape (11, 8, 8), got {observation_array.shape}")
             obs_array_np = observation_array.detach().cpu().numpy()
         elif isinstance(observation_array, np.ndarray):
-            if observation_array.shape != (10, 8, 8):
-                raise ValueError(f"observation_array numpy array must have shape (10, 8, 8), got {observation_array.shape}")
+            if observation_array.shape != (11, 8, 8):
+                raise ValueError(f"observation_array numpy array must have shape (11, 8, 8), got {observation_array.shape}")
             obs_array_np = observation_array
         else:
              raise TypeError(f"observation_array must be a numpy array or torch.Tensor, got {type(observation_array)}")
@@ -537,20 +537,20 @@ def interpret_tile(
     # --- Handle Tensor or Numpy Array Input for tile_input ---
     elif isinstance(tile_input, torch.Tensor):
         # Convert tensor to numpy array
-        if tile_input.ndim != 1 or tile_input.shape[0] != 10:
-            raise ValueError(f"Input torch.Tensor must have shape (10,), got {tile_input.shape}")
+        if tile_input.ndim != 1 or tile_input.shape[0] != 11:
+            raise ValueError(f"Input torch.Tensor must have shape (11,), got {tile_input.shape}")
         # Ensure it's on CPU and detached from graph before converting
         tile = tile_input.detach().cpu().numpy()
     
     elif isinstance(tile_input, np.ndarray):
-        if tile_input.shape != (10,):
-             raise ValueError(f"Input numpy array must have shape (10,), got {tile_input.shape}")
+        if tile_input.shape != (11,):
+             raise ValueError(f"Input numpy array must have shape (11,), got {tile_input.shape}")
         tile = tile_input
     else:
         raise TypeError(f"tile_input must be a string, numpy array, or torch.Tensor, got {type(tile_input)}")
 
 
-    # --- Interpretation Logic (Updated for 10 channels + Start Square from ID) ---
+    # --- Interpretation Logic (Updated for 11 channels) ---
 
     description_parts = []
     start_square_name: Optional[str] = None # Initialize here
@@ -571,8 +571,8 @@ def interpret_tile(
         except (ValueError, IndexError):
              description_parts.append(f"{color} piece (Error reading type)")
 
-        # Piece ID (Channel 9) and Determining Start Square
-        piece_id_numeric = int(tile[9])
+        # Piece ID (Channel 10) and Determining Start Square (Shifted from 9)
+        piece_id_numeric = int(tile[10])
         id_string = f"(ID: {piece_id_numeric}"
 
         # --- Determine Start Square from Numeric ID (1-32) ---
@@ -614,8 +614,8 @@ def interpret_tile(
 
 
     # 2. Square Status (Channels 7-8)
-    ep_can_be_captured = int(tile[7]) # Flag is now on the pawn itself
-    castling_target = int(tile[8])
+    ep_can_be_captured = int(tile[7]) # Channel 7: En Passant Target (Pawn's square)
+    castling_target = int(tile[8])    # Channel 8: Castling Target (King's landing square)
 
     # Update interpretation for channel 7
     if ep_can_be_captured == 1:
@@ -624,8 +624,13 @@ def interpret_tile(
     if castling_target == 1:
         description_parts.append("King can land here via castling.")
 
+    # 3. Current Player (Channel 9 - New)
+    current_player_val = int(tile[9])
+    player_desc = "(Turn: White)" if current_player_val == 1 else "(Turn: Black)"
+    # Add this separately, perhaps at the end or near the piece description
+    # For now, let's append it as another potential part
 
-    # 3. Construct Final Sentence
+    # 4. Construct Final Sentence
     if not description_parts:
         return "Error: Could not interpret tile." # Fallback
 
@@ -633,18 +638,20 @@ def interpret_tile(
     if len(description_parts) > 1:
         # Join remaining parts, handling piece ID placement
         piece_id_part = ""
-        other_parts = []
+        status_parts = [] # Renamed from other_parts
         for part in description_parts[1:]:
             # Check if it's the specific ID string we constructed
             if part.startswith("(ID: "):
                 piece_id_part = " " + part
             else:
-                other_parts.append(part)
+                status_parts.append(part)
 
         final_description += piece_id_part # Add ID right after piece name
-        if other_parts:
-            final_description += ". " + " ".join(other_parts) # Add status parts
+        if status_parts:
+            final_description += ". " + " ".join(status_parts) # Add status parts
 
+    # Append the Current Player info
+    final_description += " " + player_desc
 
     # Ensure final sentence ends with a period if not already there.
     if not final_description.endswith('.'):

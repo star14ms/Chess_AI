@@ -6,7 +6,7 @@ from typing import Optional
 @dataclass
 class NetworkConfig:
     # Defaults matching network.py where possible
-    input_channels: int = 10
+    input_channels: int = 11
     board_size: int = 8
     num_conv_layers: int = 4
     num_filters: int = 24 # Corresponds to d_model for interaction layers in the current reverted state
