@@ -8,22 +8,25 @@ if project_root not in sys.path:
 # from utils.analyze import interpret_tile
 from chess_gym.chess_custom import FullyTrackedBoard
 from models.cross_attn import MultiheadCrossAttentionLayer
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 # Default values based on common AlphaZero implementations for chess
 DEFAULT_INPUT_CHANNELS = 11
 DEFAULT_BOARD_SIZE = 8
-DEFAULT_NUM_CONV_LAYERS = 5 # Number of convolutional stages (now all are ConvBlocks)
-DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[64]*7] * DEFAULT_NUM_CONV_LAYERS
+DEFAULT_NUM_CONV_BLOCKS = 5 # Number of convolutional stages (now all are ConvBlocks)
+DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[64]*7] * DEFAULT_NUM_CONV_BLOCKS
 DEFAULT_ACTION_SPACE = 1700 # User-specified action space size
 DEFAULT_NUM_PIECES = 32
 DEFAULT_NUM_ATTENTION_HEADS = 4 # Heads for MultiheadCrossAttentionLayer
 DEFAULT_DECODER_FF_DIM_MULT = 4
 DEFAULT_POLICY_HIDDEN_SIZE = 256
+NUM_INTERACTION_LAYERS = 4
 
 # --- Redefined ConvBlock (4D -> 4D) ---
 class ConvBlock(nn.Module):
     """A single convolutional block with Conv -> BatchNorm -> ReLU."""
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size=7, padding=3):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=False)
         self.bn = nn.BatchNorm2d(out_channels)
@@ -88,7 +91,7 @@ class PieceVectorExtractor(nn.Module):
         super().__init__()
         self._raw_extractor = self._RawExtractor(num_pieces)
         # Projects from C_in to C_out
-        self.projection = nn.Linear(input_channels, output_channels) 
+        self.projection = nn.Linear(input_channels, output_channels + input_channels - 1) 
 
     def forward(self, full_board_vector: torch.Tensor, piece_ids: torch.Tensor) -> torch.Tensor:
         raw_piece_vector = self._raw_extractor(full_board_vector, piece_ids.long())
@@ -98,54 +101,65 @@ class PieceVectorExtractor(nn.Module):
 # --- Interaction Block (Keep as is) ---
 class BiDirectionalInteractionBlock(nn.Module):
     """Performs forward and reverse attention between piece and conv features."""
-    def __init__(self, d_model, nhead, dim_feedforward, board_height, board_width):
+    def __init__(self, d_model, nhead, dim_feedforward, board_height, board_width, num_layers=NUM_INTERACTION_LAYERS):
         super().__init__()
         self.board_height = board_height
         self.board_width = board_width
         
         # Forward layer (updates piece vec)
-        self.interaction_layer_fwd = MultiheadCrossAttentionLayer(
-            d_model=d_model, nhead=nhead,
-            dim_feedforward=dim_feedforward, batch_first=True
+        self.interaction_layer_fwd = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(
+                d_model=d_model, nhead=nhead,
+                dim_feedforward=dim_feedforward, batch_first=True
+            ),
+            num_layers=num_layers
         )
         # Reverse layer (updates conv features)
-        self.interaction_layer_rev = MultiheadCrossAttentionLayer(
-            d_model=d_model, nhead=nhead,
-            dim_feedforward=dim_feedforward, batch_first=True
+        self.interaction_layer_rev = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(
+                d_model=d_model, nhead=nhead,
+                dim_feedforward=dim_feedforward, batch_first=True
+            ),
+            num_layers=num_layers
         )
         # Norm for reverse pass (applied to conv features, no residual)
         self.norm_rev = nn.LayerNorm(d_model)
 
-    def forward(self, projected_piece_vector, kv_permuted):
+    def forward(self, projected_piece_vector, conv_features, conv_input):
         """
         Args:
             projected_piece_vector: (N, P, C)
-            kv_permuted: (N, H*W, C) - Context features
+            conv_features: (N, H*W, C) - Context features
 
         Returns:
             updated_piece_vector: (N, P, C)
             updated_conv_features: (N, C, H, W) - Note: Returns 4D spatial map
         """
+        
+        
         # Reshape 4D conv features to 3D for interaction block
-        N, C_curr, H, W = kv_permuted.shape
-        kv_permuted = kv_permuted.view(N, C_curr, -1).permute(0, 2, 1) # (N, H*W, C)
+        conv_features = torch.cat((conv_input, conv_features), dim=1)
 
-        updated_piece_vector = self.interaction_layer_fwd(projected_piece_vector, kv_permuted)
-        interaction_output_rev = self.interaction_layer_rev(tgt=kv_permuted, memory=updated_piece_vector)
-        updated_kv_permuted = self.norm_rev(interaction_output_rev) # Shape (N, H*W, C)
+        N, C_curr, H, W = conv_features.shape
+        conv_features = conv_features.view(N, C_curr, -1).permute(0, 2, 1) # (N, H*W, C)
 
-        N, L, C_out = updated_kv_permuted.shape 
+        updated_piece_vector = self.interaction_layer_fwd(projected_piece_vector, conv_features)
+        interaction_output_rev = self.interaction_layer_rev(tgt=conv_features, memory=updated_piece_vector)
+        updated_conv_features = self.norm_rev(interaction_output_rev) # Shape (N, H*W, C)
+
+        N, L, C_out = updated_conv_features.shape 
         H, W = self.board_height, self.board_width 
-        updated_conv_features = updated_kv_permuted.permute(0, 2, 1).view(N, C_out, H, W) # Shape (N, C, H, W)
+        updated_conv_features = updated_conv_features.permute(0, 2, 1).view(N, C_out, H, W) # Shape (N, C, H, W)
+        updated_conv_features = updated_conv_features[:, conv_input.shape[1]:, :, :]
 
         return updated_piece_vector, updated_conv_features
 
 # --- Policy Head Module ---
 class PolicyHead(nn.Module):
     """Calculates policy logits from the final piece vector."""
-    def __init__(self, num_pieces: int, num_channels: int, action_space_size: int, policy_hidden_size: int):
+    def __init__(self, num_pieces: int, conv_input_channels: int, num_channels: int, action_space_size: int, policy_hidden_size: int):
         super().__init__()
-        policy_input_size = num_pieces * num_channels # P * C
+        policy_input_size = num_pieces * (num_channels + conv_input_channels) # P * C + C_in
         self.policy_fc1 = nn.Linear(policy_input_size, policy_hidden_size)
         self.policy_fc2 = nn.Linear(policy_hidden_size, action_space_size)
 
@@ -195,28 +209,29 @@ class ChessNetwork(nn.Module):
     def __init__(self,
                  input_channels=DEFAULT_INPUT_CHANNELS,
                  board_size=DEFAULT_BOARD_SIZE,
-                 num_conv_layers=DEFAULT_NUM_CONV_LAYERS,
+                 num_conv_blocks=DEFAULT_NUM_CONV_BLOCKS,
                  conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
                  num_attention_heads=DEFAULT_NUM_ATTENTION_HEADS,
                  decoder_ff_dim_mult=DEFAULT_DECODER_FF_DIM_MULT,
-                 policy_hidden_size=DEFAULT_POLICY_HIDDEN_SIZE):
+                 policy_hidden_size=DEFAULT_POLICY_HIDDEN_SIZE,
+                 num_interaction_layers=NUM_INTERACTION_LAYERS):
         super().__init__()
         if input_channels < 2: raise ValueError("Input channels must be >= 2")
-        if num_conv_layers < 1: raise ValueError("Must have at least 1 conv layer stage")
+        if num_conv_blocks < 1: raise ValueError("Must have at least 1 conv layer stage")
 
         self.board_height = board_size
         self.board_width = board_size
         self.action_space_size = action_space_size
         self.input_channels = input_channels # Total input channels
         self.conv_input_channels = input_channels - 1 # Channels for conv body
-        self.num_conv_layers = num_conv_layers # Total number of conv stages
+        self.num_conv_blocks = num_conv_blocks # Total number of conv stages
         self.num_pieces = num_pieces
 
         # --- Convolutional Configuration --- 
-        if conv_blocks_channel_lists is None or len(conv_blocks_channel_lists) != num_conv_layers:
-            raise ValueError(f"conv_blocks_channel_lists must be a list of length num_conv_layers ({num_conv_layers})")
+        if conv_blocks_channel_lists is None or len(conv_blocks_channel_lists) != num_conv_blocks:
+            raise ValueError(f"conv_blocks_channel_lists must be a list of length num_conv_blocks ({num_conv_blocks})")
 
         # Determine final conv channels for downstream modules
         if not conv_blocks_channel_lists or not conv_blocks_channel_lists[-1]:
@@ -235,7 +250,7 @@ class ChessNetwork(nn.Module):
         # --- Convolutional Body (All stages are ConvBlocks now) --- 
         self.conv_layers = nn.ModuleList()
         current_stage_in_channels = self.conv_input_channels # Start with conv input channels
-        for i in range(num_conv_layers): # Iterate num_conv_layers times
+        for i in range(num_conv_blocks): # Iterate num_conv_blocks times
             ch_list = conv_blocks_channel_lists[i]
             if not ch_list:
                  raise ValueError(f"Channel list for conv stage {i} cannot be empty")
@@ -246,17 +261,19 @@ class ChessNetwork(nn.Module):
 
         # --- Interaction Blocks (d_model = C_final) --- 
         self.interaction_blocks = nn.ModuleList()
-        for _ in range(num_conv_layers): # One interaction per conv stage
+        for _ in range(num_conv_blocks): # One interaction per conv stage
             self.interaction_blocks.append(BiDirectionalInteractionBlock(
-                d_model=self.final_conv_channels, 
+                d_model=self.final_conv_channels + self.conv_input_channels, 
                 nhead=num_attention_heads,
                 dim_feedforward=self.final_conv_channels * decoder_ff_dim_mult,
                 board_height=self.board_height,
-                board_width=self.board_width
+                board_width=self.board_width,
+                num_layers=num_interaction_layers
             ))
 
         # --- Instantiate Head Modules (using C_final) --- 
         self.policy_head = PolicyHead(self.num_pieces, 
+                                      self.conv_input_channels,
                                       self.final_conv_channels, # Use final channels
                                       self.action_space_size, 
                                       policy_hidden_size=policy_hidden_size)
@@ -289,7 +306,7 @@ class ChessNetwork(nn.Module):
         # The first conv layer takes conv_input
         conv_features_4d = None # Will be assigned in the first iteration
         
-        num_stages = self.num_conv_layers
+        num_stages = self.num_conv_blocks
         for i in range(num_stages):
             # 1. Apply Convolutional Stage
             conv_stage = self.conv_layers[i]
@@ -315,8 +332,7 @@ class ChessNetwork(nn.Module):
             # 2. Apply Interaction Block
             interaction_block = self.interaction_blocks[i]
             projected_piece_vector, conv_features_4d = interaction_block(
-                projected_piece_vector, conv_features_4d
-            ) # Interaction block outputs features with d_model channels (assumed = final_conv_channels)
+                projected_piece_vector, conv_features_4d, conv_input)
 
         # --- Final Features --- 
         # Final projected_piece_vector (N, P, C_final) for policy
@@ -328,8 +344,8 @@ class ChessNetwork(nn.Module):
 
         return policy_logits, value
 
-
-if __name__ == "__main__":
+    
+def test_network(cfg: DictConfig):
     import sys
     import os
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -337,9 +353,20 @@ if __name__ == "__main__":
     from utils.profile import profile_model
 
     # Example instantiation with new config
-    network = ChessNetwork()
+    network = ChessNetwork(
+        input_channels=cfg.network.input_channels,
+        board_size=cfg.network.board_size,
+        num_conv_blocks=cfg.network.num_conv_blocks,
+        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+        action_space_size=cfg.network.action_space_size,
+        num_pieces=cfg.network.num_pieces,
+        num_attention_heads=cfg.network.num_attention_heads,
+        decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
+        policy_hidden_size=cfg.network.policy_hidden_size,
+        num_interaction_layers=cfg.network.num_interaction_layers
+    )
     print("Network Initialized.")
-    print(f"Using: num_conv_layers={network.num_conv_layers}, final_conv_channels={network.final_conv_channels}, action_space={network.action_space_size}")
+    print(f"Using: num_conv_blocks={network.num_conv_blocks}, final_conv_channels={network.final_conv_channels}, action_space={network.action_space_size}")
 
     board = FullyTrackedBoard('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')
     dummy_input_tensor = torch.from_numpy(board.get_board_vector()).to(dtype=torch.float32)
@@ -371,3 +398,17 @@ if __name__ == "__main__":
                 hide_inner_tensors=True,
                 print_code_path=False)
     print("\nModel graph saved to ./model_viz/")
+
+
+# --- Hydra Entry Point --- 
+# Ensure config_path points to the directory containing train_mcts.yaml
+@hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
+def main(cfg: DictConfig) -> None:
+    print("Configuration:\n")
+    # Use OmegaConf.to_yaml for structured printing
+    print(OmegaConf.to_yaml(cfg))
+    test_network(cfg)
+
+
+if __name__ == "__main__":
+    main()

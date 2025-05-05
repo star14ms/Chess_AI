@@ -486,7 +486,7 @@ class FullyTrackedBoard(chess.Board):
     def get_legal_moves_with_action_ids(
         self,
         return_squares_to_ids: bool = False
-    ) -> Union[Optional[Dict[chess.Square, List[str]]], Optional[List[str]]]:
+    ) -> Union[Optional[Dict[chess.Square, List[int]]], Optional[List[int]]]:
         """
         Calculates representations of absolute action IDs for all legal moves.
 
@@ -584,9 +584,9 @@ class FullyTrackedBoard(chess.Board):
 
         if return_squares_to_ids:
             # Return the dictionary mapping squares to action ID lists
-            final_map: Dict[chess.Square, List[str]] = {}
+            final_map: Dict[chess.Square, List[int]] = {}
             for square, id_list in dest_square_to_action_ids.items():
-                final_map[square] = [str(action_id) for action_id in sorted(id_list)]
+                final_map[square] = [action_id for action_id in sorted(id_list)]
             return final_map
         else:
             # Return a flat list of all unique action IDs
@@ -595,7 +595,7 @@ class FullyTrackedBoard(chess.Board):
                 all_action_ids_int.extend(id_list)
             # Sort and convert to string - ensure uniqueness if necessary (using set)
             # Using set ensures uniqueness, sorting happens after conversion to list
-            unique_sorted_ids_str = [str(aid) for aid in sorted(list(set(all_action_ids_int)))]
+            unique_sorted_ids_str = [aid for aid in sorted(list(set(all_action_ids_int)))]
             return unique_sorted_ids_str
 
     def get_board_vector(self) -> np.ndarray:

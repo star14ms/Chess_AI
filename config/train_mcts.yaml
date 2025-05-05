@@ -22,13 +22,14 @@ network:
   # Values here override defaults in the dataclass
   input_channels: 11
   board_size: 8
-  num_conv_layers: 1
-  conv_blocks_channel_lists: [[16, 16, 16, 16, 16, 16, 16]]
-  num_attention_heads: 8
-  decoder_ff_dim_mult: 4
+  num_conv_blocks: 1
+  conv_blocks_channel_lists: [[32]]
+  num_attention_heads: 2
+  decoder_ff_dim_mult: 2
   action_space_size: 1700
   num_pieces: 32
-  policy_hidden_size: 128
+  policy_hidden_size: 1024
+  num_interaction_layers: 2
 
 # New Env section
 env:
@@ -48,20 +49,20 @@ mcts:
 optimizer:
   _target_: MCTS.config_schema.OptimizerConfig
   type: Adam
-  learning_rate: 0.001
+  learning_rate: 0.1
   # momentum: 0.9 # Not needed for Adam default
   weight_decay: 1e-4
 
 training:
   _target_: MCTS.config_schema.TrainingConfig
   device: auto
-  replay_buffer_size: 50000
-  num_training_iterations: 100
-  training_epochs: 10
-  batch_size: 16
+  replay_buffer_size: 1000
+  num_training_iterations: 10000
+  training_epochs: 30
+  batch_size: 64
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: 8 # Example: Use 8 parallel workers for self-play games
-  self_play_games_per_epoch: 32
+  self_play_games_per_epoch: 1000
   max_game_moves: 1
   checkpoint_dir: ${hydra:run.dir}/checkpoints # Relative to hydra output
   save_interval: 10

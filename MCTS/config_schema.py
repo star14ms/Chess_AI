@@ -8,13 +8,14 @@ class NetworkConfig:
     # Defaults matching network.py where possible
     input_channels: int = 11
     board_size: int = 8
-    num_conv_layers: int = 4
+    num_conv_blocks: int = 4
     conv_blocks_channel_lists: Optional[List[List[int]]] = None 
     num_attention_heads: int = 4
     decoder_ff_dim_mult: int = 4
     action_space_size: int = 1700 # Updated based on latest yaml
     num_pieces: int = 32 # Standard number of pieces
     policy_hidden_size: int = 128 # Example default
+    num_interaction_layers: int = 2
 
 @dataclass
 class MCTSConfig:
