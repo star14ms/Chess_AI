@@ -34,13 +34,14 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     network = ChessNetwork(
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
-        num_conv_layers=cfg.network.num_conv_layers,
+        num_conv_blocks=cfg.network.num_conv_blocks,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
         num_attention_heads=cfg.network.num_attention_heads,
         decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
         policy_hidden_size=cfg.network.policy_hidden_size,
+        num_interaction_layers=cfg.network.num_interaction_layers,
         # Add other required params based on network.py definition
     ).to(device)
     network.load_state_dict(network_state_dict)
@@ -235,13 +236,14 @@ def run_training_loop(cfg: DictConfig) -> None:
     network = ChessNetwork(
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
-        num_conv_layers=cfg.network.num_conv_layers,
+        num_conv_blocks=cfg.network.num_conv_blocks,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
         num_attention_heads=cfg.network.num_attention_heads,
         decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
         policy_hidden_size=cfg.network.policy_hidden_size,
+        num_interaction_layers=cfg.network.num_interaction_layers,
     ).to(device)
     network.train()
     print("Network initialized.")
