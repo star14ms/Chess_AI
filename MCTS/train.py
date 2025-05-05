@@ -144,7 +144,6 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
             network,
             device=device,
             env=mcts_env,  # Pass env (or None)
-            player_color=env.board.turn,
             C_puct=c_puct
         )
 

@@ -16,8 +16,6 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from chess_gym.envs import ChessEnv
-from chess_gym.chess_custom import FullyTrackedBoard
-from utils.policy_human import sample_action
 from network import ChessNetwork
 from mcts_node import MCTSNode
 
@@ -28,14 +26,12 @@ class MCTS:
                  network: ChessNetwork,
                  device: torch.device | str,
                  env: ChessEnv | None = None, # Keep main env for selection/initial state
-                 player_color: chess.Color = chess.WHITE,
                  C_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3,
                  dirichlet_epsilon: float = 0.25):
         self.network = network
         self.device = torch.device(device)
         self.env = env # If None, board.push() will be used for expansion
-        self.player_color = player_color
         self.C_puct = C_puct
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
@@ -91,27 +87,6 @@ class MCTS:
                     print(f"Error stepping primary move {move.uci()} from FEN {original_fen}: {e}")
                     continue # Skip this move
 
-                current_board_state_after_primary = self.env.board.copy() # State after primary move
-
-                # 3. Sample and step opponent move (if applicable)
-                if not current_board_state_after_primary.is_game_over(claim_draw=True):
-                    opponent_moves = list(current_board_state_after_primary.legal_moves)
-                    if opponent_moves:
-                        # Ensure env is in the state *after* primary move before sampling opponent
-                        self.env.board.set_fen(current_board_state_after_primary.fen(), 
-                                               current_board_state_after_primary.piece_tracker)
-                        opponent_move = sample_action(self.env.board, return_move=True)
-                        if opponent_move is not None:
-                            try:
-                                opponent_action_id = self.env.board.move_to_action_id(opponent_move)
-                                if opponent_action_id:
-                                    self.env.step(opponent_action_id)
-                                else:
-                                    print(f"Warning: Could not get action ID for opponent move {opponent_move.uci()}")
-                            except Exception as e:
-                                print(f"Error stepping opponent move {opponent_move.uci()} from FEN {current_board_state_after_primary.fen()}: {e}")
-                                # Child node will reflect state after primary move only
-
                 # 4. Get prior probability for the primary move
                 prior_p = 0.0
                 action_id_0based = action_id - 1
@@ -152,13 +127,6 @@ class MCTS:
                 try:
                     sim_board = leaf_board.copy()
                     sim_board.push(move)
-
-                    if not sim_board.is_game_over(claim_draw=True):
-                        opponent_moves = list(sim_board.legal_moves)
-                        if opponent_moves:
-                            opponent_move = sample_action(sim_board, return_move=True)
-                            if opponent_move is not None and opponent_move in opponent_moves:
-                                sim_board.push(opponent_move)
 
                     child_node = MCTSNode(
                         board=sim_board,
