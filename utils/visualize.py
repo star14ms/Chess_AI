@@ -3,7 +3,7 @@ import chess.svg
 import cairosvg
 from PIL import Image
 import io
-from typing import Optional
+from typing import Optional, Union
 from IPython.display import SVG, HTML, display
 
 from chess_gym.chess_custom import FullyTrackedBoard
@@ -16,6 +16,7 @@ def draw_numbers_on_board(
     font_size: int = None,
     line_height: str = "1.2em", # <-- Vertical distance between lines (adjust as needed)
     board_size: int = 400,
+    return_pil_image: bool = False,
     **kwargs
 ) -> SVG:
     """
@@ -59,7 +60,7 @@ def draw_numbers_on_board(
         num_lines = len(numbers_to_draw_list)
         font_size = font_size_initial or 20 if num_lines <= 2 else 13 if num_lines == 3 else 10
         initial_y_offset = (font_size * (num_lines -1) * 0.6) # Approximate adjustment based on line height factor
-        y_coord = rank_index * square_size + square_size / 2 - 6 + square_size * 0.5 - initial_y_offset # Start near top
+        y_coord = rank_index * square_size + square_size / 2 - (6 if return_pil_image else 8) + square_size * 0.5 - initial_y_offset # Start near top
 
         tspan_elements = ""
         for i, number_str in enumerate(numbers_to_draw_list):
@@ -87,7 +88,7 @@ def draw_numbers_on_board(
     return SVG(modified_svg)
 
 
-def display_svgs_horizontally(svg_list: list[str]):
+def display_svgs_horizontally(svg_list: list[str | SVG]):
     """
     Displays a list of SVG strings horizontally in a Jupyter cell using CSS Flexbox.
 
@@ -135,33 +136,55 @@ def display_svgs_horizontally(svg_list: list[str]):
     display(HTML(html_content))
 
 
-def draw_possible_action_ids_on_board(board: FullyTrackedBoard, size: int = 400) -> Optional[Image.Image]:
+def draw_possible_actions_on_board(
+    board: FullyTrackedBoard,
+    size: int = 400,
+    return_pil_image: bool = False,
+    draw_action_ids: bool = False
+) -> Optional[Union[Image.Image, str]]:
     """
-    Generates an image of a chess board with action IDs drawn on destination squares.
+    Generates an image or SVG string of a chess board with SAN moves or action IDs
+    drawn on destination squares.
 
     Args:
-        board: The current chess.Board object.
-        size: The desired size of the output image in pixels.
+        board: The current FullyTrackedBoard object.
+        size: The desired size of the output image/SVG in pixels.
+        return_pil_image: If True, return a PIL Image. If False, return an SVG string.
+        draw_action_ids: If True, draw the action IDs. If False (default), draw the SAN
+                 representation of moves ending on each square.
 
     Returns:
-        A PIL.Image.Image object representing the board with action IDs, or None
-        if the board state is incompatible with the action space.
+        A PIL.Image.Image object or an SVG string representing the board with
+        SAN moves or action IDs, or None if the board state is incompatible
+        with the action space (only when drawing action IDs).
     """
-    # Calculate the action ID map internally
-    squares_to_action_ids = board.get_legal_moves_with_action_ids(return_squares_to_ids=True)
-
-    # Handle case where action IDs couldn't be generated
-    if squares_to_action_ids is None:
-        return None
+    squares_to_labels = {}
+    if draw_action_ids:
+        # Calculate the action ID map internally
+        squares_to_labels = board.get_legal_moves_with_action_ids(return_squares_to_ids=True)
+        # Handle case where action IDs couldn't be generated
+        if squares_to_labels is None:
+            return None
+    else:
+        # Generate SAN for legal moves
+        for move in board.legal_moves:
+            san_move = board.san(move)
+            to_square = move.to_square
+            if to_square not in squares_to_labels:
+                squares_to_labels[to_square] = []
+            squares_to_labels[to_square].append(san_move)
 
     # Create a new board with the same FEN (optional)
     new_board = chess.Board(board.fen())
 
-    # Draw the action IDs on the board, getting the SVG object
-    svg_object = draw_numbers_on_board(squares_to_action_ids, new_board, board_size=size)
+    # Draw the labels (SANs or IDs) on the board, getting the SVG object
+    svg_object = draw_numbers_on_board(squares_to_labels, new_board, board_size=size, return_pil_image=return_pil_image)
 
     # Extract the SVG string data
     svg_string_data = svg_object.data
+
+    if not return_pil_image:
+        return SVG(svg_string_data)
 
     # Convert SVG string data to PNG bytes in memory
     png_bytes = cairosvg.svg2png(bytestring=svg_string_data.encode('utf-8'))

@@ -15,7 +15,7 @@ import os
 from gymnasium.utils.save_video import save_video
 
 from chess_gym.chess_custom import FullyTrackedBoard
-from utils.visualize import draw_possible_action_ids_on_board
+from utils.visualize import draw_possible_actions_on_board
 
 class MoveSpace(spaces.Space):
     def __init__(self, board: FullyTrackedBoard):
@@ -134,7 +134,7 @@ class ChessEnv(gym.Env):
                  observation_mode='vector', 
                  claim_draw=True, 
                  render_mode=None, 
-                 show_possible_action_ids=False, 
+                 show_possible_actions=False, 
                  save_video_folder: Optional[str] = None,
                  **kwargs):
         super(ChessEnv, self).__init__()
@@ -186,7 +186,7 @@ class ChessEnv(gym.Env):
 
         self.render_size = render_size
         self.claim_draw = claim_draw
-        self.show_possible_action_ids = show_possible_action_ids
+        self.show_possible_actions = show_possible_actions
         self.window = None
         self.clock = None
         self.action_space = MoveSpace(self.board)
@@ -312,7 +312,7 @@ class ChessEnv(gym.Env):
             self.clock = pygame.time.Clock()
 
         # --- Logic to show possible actions (if enabled) ---
-        if self.show_possible_action_ids:
+        if self.show_possible_actions:
             # --- 1. Display standard board FIRST ---
             std_board_image_pil = Image.fromarray(self._get_image())
             std_board_image_pygame = pygame.image.fromstring(
@@ -324,7 +324,7 @@ class ChessEnv(gym.Env):
             # --- End step 1 ---
 
             # --- 2. Display action IDs SECOND ---
-            vis_image_pil = draw_possible_action_ids_on_board(self.board, size=self.render_size)
+            vis_image_pil = draw_possible_actions_on_board(self.board, size=self.render_size, return_pil_image=True)
             if vis_image_pil is not None:
                 vis_image_pygame = pygame.image.fromstring(
                     vis_image_pil.tobytes(), vis_image_pil.size, vis_image_pil.mode
