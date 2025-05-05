@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 
 # Note: These defaults should ideally match the YAML defaults
 
@@ -9,11 +9,12 @@ class NetworkConfig:
     input_channels: int = 11
     board_size: int = 8
     num_conv_layers: int = 4
-    num_filters: int = 24 # Corresponds to d_model for interaction layers in the current reverted state
+    conv_blocks_channel_lists: Optional[List[List[int]]] = None 
     num_attention_heads: int = 4
     decoder_ff_dim_mult: int = 4
-    # Add piece_embedding_dim, interaction_dim if the network architecture requires them again
-    action_space_size: int = 850 # This should likely be derived or set based on env
+    action_space_size: int = 1700 # Updated based on latest yaml
+    num_pieces: int = 32 # Standard number of pieces
+    policy_hidden_size: int = 128 # Example default
 
 @dataclass
 class MCTSConfig:
@@ -41,17 +42,16 @@ class EnvConfig:
 class TrainingConfig:
     device: str = "auto" # auto, cuda, mps, cpu
     replay_buffer_size: int = 50000
-    batch_size: int = 128
-    self_play_games_per_epoch: int = 50
-    training_epochs: int = 10 # Renamed from training_steps_per_iteration for clarity
     num_training_iterations: int = 1000
+    training_epochs: int = 10 # Renamed from training_steps_per_iteration for clarity
+    batch_size: int = 128
+    use_multiprocessing: bool = True # Flag to enable/disable multiprocessing for self-play
+    self_play_workers: int = 0 # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
+    self_play_games_per_epoch: int = 50
+    max_game_moves: int = 200
     checkpoint_dir: str = "checkpoints" # Will be relative to hydra output dir
     save_interval: int = 10
-    max_game_moves: int = 200
     board_cls_str: str = "chess_gym.chess_custom.FullyTrackedBoard"
-    action_spce_size: int = 850 # Define action space size needed by Network
-    self_play_workers: int = 0 # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
-    use_multiprocessing: bool = True # Flag to enable/disable multiprocessing for self-play
     # Removed env parameters
 
 @dataclass

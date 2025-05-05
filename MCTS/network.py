@@ -87,7 +87,7 @@ class PieceVectorExtractor(nn.Module):
     def __init__(self, num_pieces=DEFAULT_NUM_PIECES, input_channels=DEFAULT_INPUT_CHANNELS, output_channels=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS[0][0]):
         super().__init__()
         self._raw_extractor = self._RawExtractor(num_pieces)
-        # Projects from C_in to C_out (num_filters)
+        # Projects from C_in to C_out
         self.projection = nn.Linear(input_channels, output_channels) 
 
     def forward(self, full_board_vector: torch.Tensor, piece_ids: torch.Tensor) -> torch.Tensor:
@@ -337,13 +337,7 @@ if __name__ == "__main__":
     from utils.profile import profile_model
 
     # Example instantiation with new config
-    network = ChessNetwork(
-                 num_conv_layers=DEFAULT_NUM_CONV_LAYERS, 
-                 conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
-                 action_space_size=DEFAULT_ACTION_SPACE,
-                 num_attention_heads=DEFAULT_NUM_ATTENTION_HEADS,
-                 policy_hidden_size=DEFAULT_POLICY_HIDDEN_SIZE
-             )
+    network = ChessNetwork()
     print("Network Initialized.")
     print(f"Using: num_conv_layers={network.num_conv_layers}, final_conv_channels={network.final_conv_channels}, action_space={network.action_space_size}")
 

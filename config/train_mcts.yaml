@@ -22,13 +22,13 @@ network:
   # Values here override defaults in the dataclass
   input_channels: 11
   board_size: 8
-  num_conv_layers: 4
-  num_filters: 64 # Example override
-  # piece_embedding_dim: 64 # Add if needed by network
-  # interaction_dim: 128   # Add if needed by network
-  num_attention_heads: 8 # Example override
+  num_conv_layers: 1
+  conv_blocks_channel_lists: [[16, 16, 16, 16, 16, 16, 16]]
+  num_attention_heads: 8
   decoder_ff_dim_mult: 4
-  action_space_size: 850 # Network needs this 
+  action_space_size: 1700
+  num_pieces: 32
+  policy_hidden_size: 128
 
 # New Env section
 env:
@@ -39,7 +39,7 @@ env:
 
 mcts:
   _target_: MCTS.config_schema.MCTSConfig
-  iterations: 100
+  iterations: 1
   c_puct: 1.41
   temperature_start: 1.0
   temperature_end: 0.1
@@ -56,13 +56,13 @@ training:
   _target_: MCTS.config_schema.TrainingConfig
   device: auto
   replay_buffer_size: 50000
-  batch_size: 32
-  self_play_games_per_epoch: 1
+  num_training_iterations: 100
   training_epochs: 10
-  num_training_iterations: 1
+  batch_size: 16
+  use_multiprocessing: true # Set to false for sequential self-play
+  self_play_workers: 8 # Example: Use 8 parallel workers for self-play games
+  self_play_games_per_epoch: 32
+  max_game_moves: 1
   checkpoint_dir: ${hydra:run.dir}/checkpoints # Relative to hydra output
   save_interval: 10
-  max_game_moves: 1
   board_cls_str: chess_gym.chess_custom.FullyTrackedBoard
-  self_play_workers: 8 # Example: Use 8 parallel workers for self-play games
-  use_multiprocessing: false # Set to false for sequential self-play

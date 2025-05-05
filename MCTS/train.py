@@ -16,7 +16,6 @@ import multiprocessing # Keep for potential parallel execution
 from network import ChessNetwork
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
-from utils.policy_human import sample_action
 from chess_gym.envs import ChessEnv
 
 sys.path.append('.')
@@ -36,10 +35,12 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
         num_conv_layers=cfg.network.num_conv_layers,
-        num_filters=cfg.network.num_filters,
+        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
+        num_pieces=cfg.network.num_pieces,
         num_attention_heads=cfg.network.num_attention_heads,
         decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
+        policy_hidden_size=cfg.network.policy_hidden_size,
         # Add other required params based on network.py definition
     ).to(device)
     network.load_state_dict(network_state_dict)
@@ -167,18 +168,13 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
 
         action_to_take = env.board.move_to_action_id(chosen_move)
         if action_to_take is None:
-            print(f"Warning: Could not convert move {chosen_move.uci()} to action ID.")
+            print(f"Warning: Could not convert legal move {chosen_move.uci()} to action ID. Ending game.")
             if progress is not None and task_id_game is not None:
                 progress.update(task_id_game, visible=False)
             break
 
-        try:
-            # Step the *main* environment (or worker's copy)
-            obs, reward, terminated, truncated, info = env.step(action_to_take)
-            # Step opponent agent
-            env.step(sample_action(env.board, return_id=True))
-        except Exception as e:
-            raise RuntimeError(f"Error during env.step: {e}. Ending game.")
+        # Step the *main* environment (or worker's copy)
+        obs, reward, terminated, truncated, info = env.step(action_to_take)
 
         if progress is not None:
             progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
@@ -186,13 +182,18 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         move_count += 1
 
     # --- Determine final game outcome --- 
-    final_value = 0.0
-    if terminated:
-        result_str = env.board.result(claim_draw=True)
-        if result_str == "1-0": final_value = 1.0
-        elif result_str == "0-1": final_value = -1.0
+    # If the game loop broke due to an illegal move, final_value is already set
+    # Otherwise, determine based on board state
+    if not terminated: # Only re-evaluate if game didn't end due to illegal move penalty
+        final_value = 0.0
+        if env.board.is_game_over(claim_draw=True): # Use is_game_over on the *final* board state
+            # result_str = env.board.result(claim_draw=True)
+            # if result_str == "1-0": final_value = 1.0
+            # elif result_str == "0-1": final_value = -1.0
+            # else: final_value = 0.0 # Draw
+            final_value = 0.0
 
-    # Assign value targets
+    # Assign value targets based on the final_value (set either by game end or illegal move)
     full_game_data = []
     for i, (state_obs, policy_target) in enumerate(game_history):
         # Determine whose turn it was at the state where the MCTS policy was calculated
@@ -235,12 +236,12 @@ def run_training_loop(cfg: DictConfig) -> None:
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
         num_conv_layers=cfg.network.num_conv_layers,
-        num_filters=cfg.network.num_filters,
-        action_space_size=cfg.network.action_space_size, # Get from training cfg
+        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+        action_space_size=cfg.network.action_space_size,
+        num_pieces=cfg.network.num_pieces,
         num_attention_heads=cfg.network.num_attention_heads,
         decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
-        # Add other required params based on current network.py
-        # e.g., num_pieces=cfg.network.num_pieces if defined
+        policy_hidden_size=cfg.network.policy_hidden_size,
     ).to(device)
     network.train()
     print("Network initialized.")
@@ -308,7 +309,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
 
         if use_multiprocessing_flag:
-            print("Starting self-play phase (parallel)...")
+            # print("Starting self-play phase (parallel)...")
             # Determine number of workers
             # Ensure cfg.training.self_play_workers exists in your config!
             try:
@@ -322,7 +323,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             else:
                 # Default heuristic if 0 or not specified: use half the CPUs, minimum 1
                 num_workers = max(1, os.cpu_count() // 2)
-            print(f"Using {num_workers} workers for self-play.")
+            # print(f"Using {num_workers} workers for self-play.")
 
             # Prepare arguments for workers
             # Pass network state_dict instead of the full object for better pickling
@@ -339,7 +340,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             try:
                 # Use 'spawn' context for better compatibility across platforms, especially with CUDA/PyTorch
                 pool = multiprocessing.get_context("spawn").Pool(processes=num_workers)
-                print(f"Submitting {len(worker_args_packed)} games to pool...")
+                # print(f"Submitting {len(worker_args_packed)} games to pool...")
 
                 # Use imap_unordered to get results as they complete
                 results_iterator = pool.imap_unordered(worker_wrapper, worker_args_packed)
@@ -372,7 +373,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     pool.join()
 
         else: # Sequential Execution
-            print("Starting self-play phase (sequential)...")
+            # print("Starting self-play phase (sequential)...")
             with Progress(*progress_columns_selfplay, transient=False) as progress:
                 task_id_selfplay = progress.add_task(
                     "Self-Play Games (Sequential)", 
@@ -399,14 +400,14 @@ def run_training_loop(cfg: DictConfig) -> None:
             replay_buffer.add(experience)
 
         self_play_duration = time.time() - iteration_start_time_selfplay
-        print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration:.2f}s. Buffer size: {len(replay_buffer)}")
+        # print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration:.2f}s. Buffer size: {len(replay_buffer)}")
 
         # --- Training Phase ---
         if len(replay_buffer) < cfg.training.batch_size:
             print("Not enough data in buffer to start training. Skipping phase.")
             continue
 
-        print("Starting training phase...")
+        # print("Starting training phase...")
         network.train()
         total_policy_loss = 0.0
         total_value_loss = 0.0
@@ -453,7 +454,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         training_duration = time.time() - training_start_time
         avg_policy_loss = total_policy_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
         avg_value_loss = total_value_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
-        print(f"Training finished. Duration: {training_duration:.2f}s")
+        # print(f"Training finished. Duration: {training_duration:.2f}s")
         print(f"Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}")
 
         # --- Save Checkpoint ---
