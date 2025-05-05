@@ -65,3 +65,4 @@ training:
   max_game_moves: 1
   board_cls_str: chess_gym.chess_custom.FullyTrackedBoard
   self_play_workers: 8 # Example: Use 8 parallel workers for self-play games
+  use_multiprocessing: false # Set to false for sequential self-play

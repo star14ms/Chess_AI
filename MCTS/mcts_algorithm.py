@@ -34,7 +34,7 @@ class MCTS:
                  dirichlet_epsilon: float = 0.25):
         self.network = network
         self.device = torch.device(device)
-        self.env = env # Main env instance (used less in parallel expansion)
+        self.env = env # If None, board.push() will be used for expansion
         self.player_color = player_color
         self.C_puct = C_puct
         self.dirichlet_alpha = dirichlet_alpha
@@ -60,28 +60,146 @@ class MCTS:
         leaf_node = node
         return leaf_node, search_path
 
+    # --- Expansion Helper Methods ---
+
+    def _expand_sequential(self, leaf_node: MCTSNode, probs_to_use: torch.Tensor,
+                           uniform_prob: float, use_uniform_fallback: bool):
+        """Expands leaf node's children using self.env.step(). Requires self.env.
+
+        Assumes leaf_node is not terminal.
+        """
+        if self.env is None:
+             raise RuntimeError("_expand_sequential called but self.env is None.")
+
+        leaf_board = leaf_node.get_board()
+        # Store FEN/tracker *once* before the loop
+        original_fen = leaf_board.fen()
+        original_tracker = leaf_board.piece_tracker
+        legal_moves_list = list(leaf_board.legal_moves)
+
+        for move in legal_moves_list:
+            if move not in leaf_node.children:
+                # 1. Reset env to original leaf state *before* this move
+                self.env.board.set_fen(original_fen, original_tracker)
+                action_id = leaf_board.move_to_action_id(move)
+                if action_id is None: continue
+
+                # 2. Step primary move
+                try:
+                    self.env.step(action_id)
+                except Exception as e:
+                    print(f"Error stepping primary move {move.uci()} from FEN {original_fen}: {e}")
+                    continue # Skip this move
+
+                current_board_state_after_primary = self.env.board.copy() # State after primary move
+
+                # 3. Sample and step opponent move (if applicable)
+                if not current_board_state_after_primary.is_game_over(claim_draw=True):
+                    opponent_moves = list(current_board_state_after_primary.legal_moves)
+                    if opponent_moves:
+                        # Ensure env is in the state *after* primary move before sampling opponent
+                        self.env.board.set_fen(current_board_state_after_primary.fen(), 
+                                               current_board_state_after_primary.piece_tracker)
+                        opponent_move = sample_action(self.env.board, return_move=True)
+                        if opponent_move is not None:
+                            try:
+                                opponent_action_id = self.env.board.move_to_action_id(opponent_move)
+                                if opponent_action_id:
+                                    self.env.step(opponent_action_id)
+                                else:
+                                    print(f"Warning: Could not get action ID for opponent move {opponent_move.uci()}")
+                            except Exception as e:
+                                print(f"Error stepping opponent move {opponent_move.uci()} from FEN {current_board_state_after_primary.fen()}: {e}")
+                                # Child node will reflect state after primary move only
+
+                # 4. Get prior probability for the primary move
+                prior_p = 0.0
+                action_id_0based = action_id - 1
+                if 0 <= action_id_0based < probs_to_use.shape[0]:
+                    prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
+
+                # 5. Create child node with the final board state from env (needs copy)
+                child_board = self.env.board.copy()
+                child_node = MCTSNode(
+                    board=child_board,
+                    parent=leaf_node,
+                    prior_p=prior_p,
+                    move_leading_here=move
+                )
+                leaf_node.children[move] = child_node
+
+        # Restore env to original leaf state after loop
+        self.env.board.set_fen(original_fen, original_tracker)
+
+    def _expand_parallel(self, leaf_node: MCTSNode, probs_to_use: torch.Tensor,
+                         uniform_prob: float, use_uniform_fallback: bool):
+        """Expands leaf node's children using board.copy() and board.push().
+
+        Assumes leaf_node is not terminal.
+        """
+        leaf_board = leaf_node.get_board()
+        legal_moves_list = list(leaf_board.legal_moves)
+
+        for move in legal_moves_list:
+            action_id = leaf_board.move_to_action_id(move)
+            if action_id is None: continue
+            action_id_0based = action_id - 1
+            prior_p = 0.0
+            if 0 <= action_id_0based < probs_to_use.shape[0]:
+                prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
+
+            if move not in leaf_node.children:
+                try:
+                    sim_board = leaf_board.copy()
+                    sim_board.push(move)
+
+                    if not sim_board.is_game_over(claim_draw=True):
+                        opponent_moves = list(sim_board.legal_moves)
+                        if opponent_moves:
+                            opponent_move = sample_action(sim_board, return_move=True)
+                            if opponent_move is not None and opponent_move in opponent_moves:
+                                sim_board.push(opponent_move)
+
+                    child_node = MCTSNode(
+                        board=sim_board,
+                        parent=leaf_node,
+                        prior_p=prior_p,
+                        move_leading_here=move
+                    )
+                    leaf_node.children[move] = child_node
+                except Exception as e:
+                    print(f"Error during MCTS board.push expansion for move {move.uci()} from FEN {leaf_board.fen()}: {e}")
+
+    # --- Main Expansion & Evaluation Method ---
+
     def _expand_and_evaluate(self, leaf_node: MCTSNode, progress: Progress | None = None) -> float:
-        """Phase 2: Expands leaf node, creates children sequentially, returns evaluated value."""
+        """Phase 2: Gets value for leaf_node and expands its children.
+
+        Dispatches expansion logic to _expand_sequential (if progress is not None)
+        or _expand_parallel (if progress is None).
+        """
         value = 0.0
         if not leaf_node.is_expanded:
             leaf_board = leaf_node.get_board()
 
+            # 1. Handle Terminal Node
             if leaf_board.is_game_over(claim_draw=True):
-                # --- Handle Terminal Node ---
                 result_str = leaf_board.result(claim_draw=True)
                 if result_str == "1-0": value = 1.0
                 elif result_str == "0-1": value = -1.0
                 else: value = 0.0 # Draw
-                leaf_node.is_expanded = True # Mark terminal node as 'expanded'
+                leaf_node.is_expanded = True
+                # No expansion needed for terminal nodes
             else:
-                # --- Non-Terminal: Expand using Network (Main Process) ---
+                # 2. Non-Terminal: Get Network Prediction
                 obs_vector = leaf_board.get_board_vector()
                 obs_tensor = torch.tensor(obs_vector, dtype=torch.float32, device=self.device).unsqueeze(0)
                 with torch.no_grad():
-                    policy_logits, value = self.network(obs_tensor)
+                    policy_logits, value_pred = self.network(obs_tensor)
                 policy_logits = policy_logits.squeeze(0)
-                value = value.item()
+                value = value_pred.item() # Use network's value prediction
 
+                # 3. Calculate Probabilities (with potential fallback and noise)
                 full_probs = F.softmax(policy_logits, dim=0)
                 use_uniform_fallback = False
                 uniform_prob = 0.0
@@ -89,11 +207,13 @@ class MCTS:
                     num_legal_moves = len(list(leaf_board.legal_moves))
                     uniform_prob = 1.0 / num_legal_moves if num_legal_moves > 0 else 0.0
                     use_uniform_fallback = True
-                    value = 0.0 # Reset value if network output unreliable
+                    # Keep value = 0.0 if network output unreliable? Or use predicted value?
+                    # Let's keep the predicted value unless it's NaN itself (unlikely)
 
                 probs_to_use = full_probs
+                # Add Dirichlet Noise (only if root node)
                 if leaf_node.parent is None and not use_uniform_fallback:
-                    # Apply Dirichlet noise (same logic as before)
+                    # --- Dirichlet Noise Logic --- (Same as before)
                     legal_moves = list(leaf_board.legal_moves)
                     num_legal = len(legal_moves)
                     if num_legal > 1:
@@ -106,7 +226,6 @@ class MCTS:
                                 if 0 <= idx < full_probs.shape[0]:
                                     legal_indices.append(idx)
                                     legal_probs.append(full_probs[idx].item())
-
                         if legal_indices:
                             noise = np.random.dirichlet([self.dirichlet_alpha] * len(legal_indices))
                             noise_t = torch.tensor(noise, device=self.device, dtype=torch.float32)
@@ -116,68 +235,19 @@ class MCTS:
                             indices_t = torch.tensor(legal_indices, dtype=torch.long, device=self.device)
                             probs_to_use[indices_t] = combined
 
-                # --- Expand Children Sequentially ---
-                legal_moves_list = list(leaf_board.legal_moves)
+                # 4. Dispatch to appropriate expansion method
+                if progress is not None:
+                    # Use sequential method (requires self.env)
+                    self._expand_sequential(leaf_node, probs_to_use, uniform_prob, use_uniform_fallback)
+                else:
+                    # Use parallel-safe method (board.push)
+                    self._expand_parallel(leaf_node, probs_to_use, uniform_prob, use_uniform_fallback)
 
-                # Prepare subtask for move expansion if progress bar is active (Optional)
-                # This might be too fine-grained for sequential expansion, consider removing if slow
-                expansion_task_id = None
-                total_moves = len(legal_moves_list)
-                # if progress is not None and total_moves > 0:
-                #     expansion_task_id = progress.add_task(f"  ├── Expanding Node Seq (0/{total_moves})", total=total_moves, transient=True)
-
-                for i, move in enumerate(legal_moves_list):
-                    action_id = leaf_board.move_to_action_id(move)
-                    if action_id is None: continue
-                    action_id_0based = action_id - 1
-                    prior_p = 0.0
-                    if 0 <= action_id_0based < probs_to_use.shape[0]:
-                        prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
-
-                    # --- Simulate move sequentially ---
-                    if move not in leaf_node.children:
-                        try:
-                            # Create a copy for simulation
-                            sim_board = leaf_board.copy()
-
-                            # Step 1: Apply the primary move
-                            sim_board.push(move)
-
-                            # Step 2: Sample and apply opponent's random immediate response
-                            if not sim_board.is_game_over(claim_draw=True):
-                                opponent_moves = list(sim_board.legal_moves)
-                                if opponent_moves:
-                                    opponent_move = sample_action(sim_board, return_move=True)
-                                    if opponent_move is not None and opponent_move in opponent_moves:
-                                        sim_board.push(opponent_move)
-                                    # else: Handle case where sampled move is somehow not legal? (Shouldn't happen with sample_action)
-
-                            # Create child node with the final board state
-                            child_node = MCTSNode(
-                                board=sim_board, # Store the final state (already a copy)
-                                parent=leaf_node,
-                                prior_p=prior_p,
-                                move_leading_here=move
-                            )
-                            leaf_node.children[move] = child_node
-
-                        except Exception as e:
-                             # Log error during sequential expansion for this move
-                             print(f"Error during MCTS sequential expansion for move {move.uci()} from FEN {leaf_board.fen()}: {e}")
-                             # Continue to the next move
-
-                    # Update progress after processing a move (Optional)
-                    # if progress is not None and expansion_task_id is not None:
-                    #     progress.update(expansion_task_id, advance=1, description=f"  ├── Expanding Node Seq ({i+1}/{total_moves})")
-
-                # Stop the expansion subtask after the loop (Optional)
-                # if progress is not None and expansion_task_id is not None:
-                #     progress.update(expansion_task_id, visible=False)
-
+                # 5. Mark expanded after attempting expansion
                 leaf_node.is_expanded = True
-                # Removed the fine-grained progress bar update for expansion
 
-        return value # Return the value evaluated by the network for the leaf_node
+        # Return the value obtained from the network (or terminal state)
+        return value
 
     def _backpropagate(self, search_path: List[MCTSNode], value: float, leaf_node_turn: chess.Color):
         """Phase 4: Backpropagates value up the search path."""
@@ -189,13 +259,14 @@ class MCTS:
 
     # --- Main Search Function ---
     def search(self, root_node: MCTSNode, iterations: int,
-               progress: Progress | None = None, parent_task_id = None):
-
-        start_time = time.time()
+               progress: Progress | None = None):
+        
+        if progress is not None:
+            root_fen = self.env.board.fen()
+            root_piece_tracker = self.env.board.piece_tracker
 
         mcts_task_id = None
-        if progress is not None and parent_task_id is not None:
-            # Updated task description at creation
+        if progress is not None:
             mcts_task_id = progress.add_task(f"  ├─ MCTS Sims (0/{iterations})", total=iterations, transient=True, start=False)
             progress.start_task(mcts_task_id)
 
@@ -203,23 +274,22 @@ class MCTS:
             # Phase 1: Selection
             leaf_node, search_path = self._select(root_node)
 
-            # Phase 2: Expansion & Evaluation (Potentially Parallel)
-            # Pass progress only if needed inside _expand_and_evaluate (it's not currently used there)
-            value = self._expand_and_evaluate(leaf_node, progress=progress) # Removed progress pass
+            # Phase 2: Expansion & Evaluation
+            value = self._expand_and_evaluate(leaf_node, progress=progress)
 
             # Phase 4: Backpropagation
             leaf_node_turn = leaf_node.get_board().turn
             self._backpropagate(search_path, value, leaf_node_turn)
 
             if mcts_task_id is not None and progress is not None:
-                 # Update task description in the loop
                  progress.update(mcts_task_id, advance=1, description=f"  ├─ MCTS Sims ({i+1}/{iterations})")
 
         if mcts_task_id is not None and progress is not None:
             progress.stop_task(mcts_task_id)
-            progress.update(mcts_task_id, visible=False) # Make it disappear cleanly
+            progress.update(mcts_task_id, visible=False)
 
-        end_time = time.time()
+        if progress is not None:
+            self.env.board.set_fen(root_fen, root_piece_tracker)
 
     # --- Get Best Move / Policy (No changes needed here) ---
     def get_best_move(self, root_node: MCTSNode, temperature=0.0) -> chess.Move | None:

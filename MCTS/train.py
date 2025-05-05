@@ -10,7 +10,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import get_class # Use instantiate later if needed
 import sys
-import multiprocessing # Added import
+import multiprocessing # Keep for potential parallel execution
 
 # Assuming files are in the MCTS directory relative to the project root
 from network import ChessNetwork
@@ -108,6 +108,9 @@ class ReplayBuffer:
 def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: ChessEnv,
                        progress: Progress | None = None, device: torch.device | None = None):
     """Plays one game of self-play using MCTS and returns the game data."""
+    # If running sequentially, ensure env is reset at the start of each game
+    # If running in parallel, the worker resets its own env copy
+    # This reset is safe for both cases
     obs, _ = env.reset()
     network.eval()
 
@@ -123,7 +126,9 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
     temp_decay_moves = mcts_cfg.temperature_decay_moves
     max_moves = train_cfg.max_game_moves
 
+    task_id_game = None
     if progress is not None:
+        # Create task only if progress object is provided
         task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
         progress.start_task(task_id_game)
 
@@ -133,9 +138,15 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         root_node = MCTSNode(env.board)
 
         # --- Create MCTS instance --- 
-        # Need to pass env_cls and observation_mode to MCTS
-        # Assuming env is instance of the class stored in cfg.training.board_cls_str
-        mcts_player = MCTS(network, device=device, env=env, player_color=env.board.turn, C_puct=c_puct)
+        # Pass env only if running sequentially
+        mcts_env = env if not train_cfg.get('use_multiprocessing', False) else None # Determine env based on flag
+        mcts_player = MCTS(
+            network,
+            device=device,
+            env=mcts_env,  # Pass env (or None)
+            player_color=env.board.turn,
+            C_puct=c_puct
+        )
 
         # --- Run MCTS Search --- 
         mcts_player.search(root_node, mcts_iterations, progress=progress)
@@ -151,26 +162,25 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
 
         if chosen_move is None:
             print(f"Warning: MCTS returned None move. Ending game.")
-            if progress is not None:
+            if progress is not None and task_id_game is not None:
                 progress.update(task_id_game, visible=False)
             break
 
         action_to_take = env.board.move_to_action_id(chosen_move)
         if action_to_take is None:
             print(f"Warning: Could not convert move {chosen_move.uci()} to action ID.")
-            if progress is not None:
+            if progress is not None and task_id_game is not None:
                 progress.update(task_id_game, visible=False)
             break
 
         try:
-            # Step the *main* environment
+            # Step the *main* environment (or worker's copy)
             obs, reward, terminated, truncated, info = env.step(action_to_take)
             # Step opponent agent
             env.step(sample_action(env.board, return_id=True))
         except Exception as e:
-            print(f"Error during env.step: {e}. Ending game.")
-            terminated = True
-            
+            raise RuntimeError(f"Error during env.step: {e}. Ending game.")
+
         if progress is not None:
             progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
 
@@ -186,11 +196,15 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
     # Assign value targets
     full_game_data = []
     for i, (state_obs, policy_target) in enumerate(game_history):
+        # Determine whose turn it was at the state where the MCTS policy was calculated
+        # If state i was White's turn to play, the value target is final_value
+        # If state i was Black's turn to play, the value target is -final_value
+        # Assume White plays at even indices (0, 2, ...)
         is_white_turn_at_state = (i % 2 == 0)
         value_target = final_value if is_white_turn_at_state else -final_value
         full_game_data.append((state_obs, policy_target, value_target))
     
-    if progress is not None:
+    if progress is not None and task_id_game is not None:
         progress.update(task_id_game, visible=False)
 
     return full_game_data
@@ -284,64 +298,104 @@ def run_training_loop(cfg: DictConfig) -> None:
         iteration_start_time = time.time()
         print(f"\n--- Training Iteration {iteration+1}/{cfg.training.num_training_iterations} ---")
 
-        # --- Self-Play Phase (Parallelized) ---
-        print("Starting self-play phase (parallel)...")
-        network.eval() # Keep main network in eval mode if needed elsewhere
+        # --- Self-Play Phase --- 
+        network.eval() 
         games_data_collected = []
-        iteration_start_time_selfplay = time.time() # Time this phase
+        iteration_start_time_selfplay = time.time()
 
-        # Determine number of workers
-        # Ensure cfg.training.self_play_workers exists in your config!
-        try:
-            num_workers_config = cfg.training.self_play_workers
-        except Exception:
-            print("Warning: cfg.training.self_play_workers not found. Defaulting workers.")
-            num_workers_config = 0 # Indicate to use default
+        # Check config flag to decide execution mode
+        # >>>>>>>>>>>>>> ADDED CONDITIONAL EXECUTION BLOCK <<<<<<<<<<<<<<<<
+        # Default to False if the flag is missing
+        use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
 
-        if num_workers_config > 0:
-            num_workers = min(num_workers_config, os.cpu_count())
-        else:
-            # Default heuristic if 0 or not specified: use half the CPUs, minimum 1
-            num_workers = max(1, os.cpu_count() // 2)
-        print(f"Using {num_workers} workers for self-play.")
+        if use_multiprocessing_flag:
+            print("Starting self-play phase (parallel)...")
+            # Determine number of workers
+            # Ensure cfg.training.self_play_workers exists in your config!
+            try:
+                num_workers_config = cfg.training.self_play_workers
+            except Exception:
+                print("Warning: cfg.training.self_play_workers not found. Defaulting workers.")
+                num_workers_config = 0 # Indicate to use default
 
-        # Prepare arguments for workers
-        # Pass network state_dict instead of the full object for better pickling
-        network_state_dict = network.state_dict()
-        device_str = str(device) # Pass device as string
-        # Pack arguments into tuples for the wrapper function
-        worker_args_packed = [
-            (game_num, network_state_dict, cfg, device_str)
-            for game_num in range(cfg.training.self_play_games_per_epoch)
-        ]
+            if num_workers_config > 0:
+                num_workers = min(num_workers_config, os.cpu_count())
+            else:
+                # Default heuristic if 0 or not specified: use half the CPUs, minimum 1
+                num_workers = max(1, os.cpu_count() // 2)
+            print(f"Using {num_workers} workers for self-play.")
 
-        results = []
-        try:
-            # Use 'spawn' context for better compatibility across platforms, especially with CUDA/PyTorch
-            pool = multiprocessing.get_context("spawn").Pool(processes=num_workers)
-            print(f"Submitting {len(worker_args_packed)} games to pool...")
+            # Prepare arguments for workers
+            # Pass network state_dict instead of the full object for better pickling
+            network_state_dict = network.state_dict()
+            device_str = str(device) # Pass device as string
+            # Pack arguments into tuples for the wrapper function
+            worker_args_packed = [
+                (game_num, network_state_dict, cfg, device_str)
+                for game_num in range(cfg.training.self_play_games_per_epoch)
+            ]
 
-            # Use imap_unordered to get results as they complete
-            results_iterator = pool.imap_unordered(worker_wrapper, worker_args_packed)
+            results = []
+            pool = None # Initialize pool to None
+            try:
+                # Use 'spawn' context for better compatibility across platforms, especially with CUDA/PyTorch
+                pool = multiprocessing.get_context("spawn").Pool(processes=num_workers)
+                print(f"Submitting {len(worker_args_packed)} games to pool...")
 
-            # Process results with a progress bar
+                # Use imap_unordered to get results as they complete
+                results_iterator = pool.imap_unordered(worker_wrapper, worker_args_packed)
+
+                # Process results with a progress bar
+                with Progress(*progress_columns_selfplay, transient=False) as progress:
+                    task_id_selfplay = progress.add_task(
+                        "Collecting Self-Play Results (Parallel)",
+                        total=len(worker_args_packed)
+                    )
+                    # Iterate over results as they become available
+                    for game_data in results_iterator:
+                        if game_data: # Check if worker returned valid data
+                            games_data_collected.extend(game_data)
+                        # Update progress for each completed game
+                        progress.update(task_id_selfplay, advance=1)
+                # Explicitly close and join the pool after processing results
+                pool.close()
+                pool.join()
+
+            except Exception as e:
+                print(f"Error during parallel self-play: {e}")
+                # Handle error, maybe skip iteration or exit
+                if pool is not None:
+                    pool.terminate() # Terminate pool on error
+            finally:
+                # Ensure pool is closed and joined even if no error occurred in the try block
+                if pool is not None and pool._state == multiprocessing.pool.RUN:
+                    pool.close()
+                    pool.join()
+
+        else: # Sequential Execution
+            print("Starting self-play phase (sequential)...")
             with Progress(*progress_columns_selfplay, transient=False) as progress:
                 task_id_selfplay = progress.add_task(
-                    "Collecting Self-Play Results",
-                    total=len(worker_args_packed)
+                    "Self-Play Games (Sequential)", 
+                    total=cfg.training.self_play_games_per_epoch
                 )
-                # Iterate over results as they become available
-                for game_data in results_iterator:
-                    if game_data: # Check if worker returned valid data
-                        games_data_collected.extend(game_data)
-                    # Update progress for each completed game
+                # Use values from cfg
+                for game_num in range(cfg.training.self_play_games_per_epoch):
+                    progress.update(task_id_selfplay, description=f"Self-Play Game ({game_num+1}/{cfg.training.self_play_games_per_epoch})")
+                    # Run game in the main process using the main env instance
+                    game_data = run_self_play_game(
+                        network,
+                        cfg.mcts,       # Pass MCTS config section
+                        cfg.training,   # Pass Training config section
+                        env,            # Use the main env instance
+                        progress=progress,
+                        device=device
+                    )
+                    games_data_collected.extend(game_data)
                     progress.update(task_id_selfplay, advance=1)
+        # >>>>>>>>>>>>>> END OF CONDITIONAL EXECUTION BLOCK <<<<<<<<<<<<<<<<
 
-        except Exception as e:
-            print(f"Error during parallel self-play: {e}")
-            # Handle error, maybe skip iteration or exit
-
-        # Add collected data to replay buffer
+        # Add collected data to replay buffer (outside the conditional block)
         for experience in games_data_collected:
             replay_buffer.add(experience)
 
