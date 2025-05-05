@@ -282,18 +282,6 @@ class ChessEnv(gym.Env):
         observation = self._observe()
         info = {}
 
-        # --- Start frame recording for new episode --- 
-        if self.save_video_folder is not None:
-            self.recorded_frames = [] # Clear frames for new episode
-            self.current_episode_step_counter = 0 # Reset step counter for *this* episode
-            
-        if self.render_mode is not None or self.save_video_folder is not None:
-            frame = self.render() # Get frame via rgb_array mode
-
-            if self.save_video_folder is not None and frame is not None: # Ensure render returned something
-                self.recorded_frames.append(frame)
-        # --- End Start Recording --- 
-
         return observation, info
 
     def render(self):
