@@ -20,16 +20,13 @@ network:
   # Target the specific NetworkConfig dataclass
   _target_: MCTS.config_schema.NetworkConfig
   # Values here override defaults in the dataclass
-  input_channels: 11
+  input_channels: 14
   board_size: 8
-  num_conv_blocks: 1
-  conv_blocks_channel_lists: [[32]]
-  num_attention_heads: 2
-  decoder_ff_dim_mult: 2
+  num_residual_layers: 7
+  conv_blocks_channel_lists: [[128, 128], [128, 128], [128, 128], [128, 128], [128, 128], [128, 128], [128, 128]]
   action_space_size: 1700
   num_pieces: 32
-  policy_hidden_size: 1024
-  num_interaction_layers: 2
+  value_head_hidden_size: 256
 
 # New Env section
 env:
@@ -63,7 +60,7 @@ training:
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: 8 # Example: Use 8 parallel workers for self-play games
   self_play_games_per_epoch: 1000
-  max_game_moves: 1
+  max_game_moves: 200
   checkpoint_dir: ${hydra:run.dir}/checkpoints # Relative to hydra output
   save_interval: 10
   board_cls_str: chess_gym.chess_custom.FullyTrackedBoard

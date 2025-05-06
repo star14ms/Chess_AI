@@ -11,9 +11,10 @@ from omegaconf import DictConfig, OmegaConf
 from hydra.utils import get_class # Use instantiate later if needed
 import sys
 import multiprocessing # Keep for potential parallel execution
+import chess
 
 # Assuming files are in the MCTS directory relative to the project root
-from network import ChessNetwork
+from models.network import ChessNetwork
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from chess_gym.envs import ChessEnv
@@ -34,14 +35,10 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     network = ChessNetwork(
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
-        num_conv_blocks=cfg.network.num_conv_blocks,
+        num_residual_layers=cfg.network.num_residual_layers,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
-        num_attention_heads=cfg.network.num_attention_heads,
-        decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
-        policy_hidden_size=cfg.network.policy_hidden_size,
-        num_interaction_layers=cfg.network.num_interaction_layers,
         # Add other required params based on network.py definition
     ).to(device)
     network.load_state_dict(network_state_dict)
@@ -154,25 +151,21 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
 
         # --- Get Policy and Store History --- 
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
-        mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=1.0)
+        mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
         current_obs = obs # Observation *before* the move
         game_history.append((current_obs, mcts_policy))
         
         # --- Select and Make Move --- 
-        chosen_move = mcts_player.get_best_move(root_node, temperature=temperature)
+        if np.random.randn() < 0.5:
+            action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
+        else:
+            action_to_take = np.random.randint(1, network.action_space_size)
 
-        if chosen_move is None:
-            print(f"Warning: MCTS returned None move. Ending game.")
-            if progress is not None and task_id_game is not None:
-                progress.update(task_id_game, visible=False)
-            break
-
-        action_to_take = env.board.move_to_action_id(chosen_move)
-        if action_to_take is None:
-            print(f"Warning: Could not convert legal move {chosen_move.uci()} to action ID. Ending game.")
-            if progress is not None and task_id_game is not None:
-                progress.update(task_id_game, visible=False)
-            break
+        # legal_actions = env.board.get_legal_moves_with_action_ids()
+        # if action_to_take not in legal_actions:
+        #     print(f"Illegal move: {action_to_take}")
+        # else:
+        #     print(f"Legal move: {action_to_take}")
 
         # Step the *main* environment (or worker's copy)
         obs, reward, terminated, truncated, info = env.step(action_to_take)
@@ -183,16 +176,12 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         move_count += 1
 
     # --- Determine final game outcome --- 
-    # If the game loop broke due to an illegal move, final_value is already set
-    # Otherwise, determine based on board state
-    if not terminated: # Only re-evaluate if game didn't end due to illegal move penalty
-        final_value = 0.0
-        if env.board.is_game_over(claim_draw=True): # Use is_game_over on the *final* board state
-            # result_str = env.board.result(claim_draw=True)
-            # if result_str == "1-0": final_value = 1.0
-            # elif result_str == "0-1": final_value = -1.0
-            # else: final_value = 0.0 # Draw
-            final_value = 0.0
+    final_value = 0.0
+    if terminated:
+        result_str = env.board.result(claim_draw=True)
+        if result_str == "1-0": final_value = 1.0
+        elif result_str == "0-1": final_value = -1.0
+        else: final_value = 0.0 # Draw
 
     # Assign value targets based on the final_value (set either by game end or illegal move)
     full_game_data = []
@@ -236,14 +225,11 @@ def run_training_loop(cfg: DictConfig) -> None:
     network = ChessNetwork(
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
-        num_conv_blocks=cfg.network.num_conv_blocks,
+        num_residual_layers=cfg.network.num_residual_layers,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
-        num_attention_heads=cfg.network.num_attention_heads,
-        decoder_ff_dim_mult=cfg.network.decoder_ff_dim_mult,
-        policy_hidden_size=cfg.network.policy_hidden_size,
-        num_interaction_layers=cfg.network.num_interaction_layers,
+        # Add other required params based on network.py definition
     ).to(device)
     network.train()
     print("Network initialized.")
@@ -350,7 +336,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 # Process results with a progress bar
                 with Progress(*progress_columns_selfplay, transient=False) as progress:
                     task_id_selfplay = progress.add_task(
-                        "Collecting Self-Play Results (Parallel)",
+                        "Self-Play",
                         total=len(worker_args_packed)
                     )
                     # Iterate over results as they become available
@@ -378,7 +364,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             # print("Starting self-play phase (sequential)...")
             with Progress(*progress_columns_selfplay, transient=False) as progress:
                 task_id_selfplay = progress.add_task(
-                    "Self-Play Games (Sequential)", 
+                    "Self-Play", 
                     total=cfg.training.self_play_games_per_epoch
                 )
                 # Use values from cfg
@@ -402,7 +388,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             replay_buffer.add(experience)
 
         self_play_duration = time.time() - iteration_start_time_selfplay
-        # print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration:.2f}s. Buffer size: {len(replay_buffer)}")
+        print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration:.2f}s. Buffer size: {len(replay_buffer)}")
 
         # --- Training Phase ---
         if len(replay_buffer) < cfg.training.batch_size:
@@ -462,7 +448,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         # --- Save Checkpoint ---
         # Use values from cfg
         if (iteration + 1) % cfg.training.save_interval == 0:
-            checkpoint_path = os.path.join(checkpoint_dir, f"iteration_{iteration+1}.pth")
+            checkpoint_path = os.path.join(checkpoint_dir, f"model.pth")
+            # checkpoint_path = os.path.join(checkpoint_dir, f"iteration_{iteration+1}.pth")
             print(f"Saving checkpoint to {checkpoint_path}...")
             torch.save({
                 'iteration': iteration + 1,
@@ -481,9 +468,9 @@ def run_training_loop(cfg: DictConfig) -> None:
 # Ensure config_path points to the directory containing train_mcts.yaml
 @hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
 def main(cfg: DictConfig) -> None:
-    print("Configuration:\n")
+    # print("Configuration:\n")
     # Use OmegaConf.to_yaml for structured printing
-    print(OmegaConf.to_yaml(cfg))
+    # print(OmegaConf.to_yaml(cfg))
     run_training_loop(cfg)
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Observation Vector (8 x 8 Grid)
 
-> Vector Shape: ```8 X 8 X 11```
+> Vector Shape: ```8 X 8 X 14```
 
 - ```Color```: ```1 Dim```
     - Range: -1 or 0 or 1 (0 for Empty Tile)
@@ -18,8 +18,11 @@
 - ```Current Player```: ```1 Dim```
     - Range: -1 or 1 (e.g., 1 for White's turn, -1 for Black's turn. Consistent across the 8x8 plane.
 
-- ```Piece ID```: ```1 Dim```
-    - Range: 1 to 32
+- ```Piece ID```: ```4 Dims```
+    - Each dimension is binary (Range: 0 or 1).
+    - If the square is occupied (i.e., ```Color``` is not 0), these 4 dimensions form a binary code (e.g., 0000 to 1111) that uniquely identifies one of up to 16 distinct pieces of that color (including the King).
+    - A specific mapping should be defined (e.g., King: 0000, Queen: 0001, Rook1: 0010, etc.).
+    - If the square is empty (i.e., ```Color``` is 0), this field is all zeros.
 
 # Reference Vector in Network
 - Each pieces will be bound to specific actions in the action space

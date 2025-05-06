@@ -481,14 +481,14 @@ def interpret_tile(
     observation_array: Optional[Union[np.ndarray, torch.Tensor]] = None,
 ) -> str:
     """
-    Interprets an 11-element observation tile vector (numpy, tensor, or square string)
-    and returns a descriptive sentence. Determines start square from numeric ID.
+    Interprets a 14-element observation tile vector (numpy, tensor, or square string)
+    and returns a descriptive sentence. Determines start square from the 4-bit Piece ID.
 
     Args:
-        tile_input: A 1D numpy array (length 11), a 1D torch.Tensor (length 11),
+        tile_input: A 1D numpy array (length 14), a 1D torch.Tensor (length 14),
                     OR a string with algebraic notation (e.g., "a1", "h8").
-        observation_array: The full 11x8x8 observation array (numpy or tensor).
-                           REQUIRED if tile_input is a string. Should have shape (11, 8, 8).
+        observation_array: The full 14x8x8 observation array (numpy or tensor).
+                           REQUIRED if tile_input is a string. Should have shape (14, 8, 8).
 
     Returns:
         A string describing the piece and state on the tile.
@@ -500,7 +500,7 @@ def interpret_tile(
     """
     tile: np.ndarray
     square_index: Optional[chess.Square] = None
-    # start_square_name will be determined from numeric ID later
+    # start_square_name will be determined from the 4-bit Piece ID and color later
 
     if isinstance(tile_input, str):
         if observation_array is None:
@@ -509,12 +509,12 @@ def interpret_tile(
         # --- Handle observation_array being numpy or tensor ---
         obs_array_np: np.ndarray
         if isinstance(observation_array, torch.Tensor):
-            if observation_array.shape != (11, 8, 8):
-                raise ValueError(f"observation_array tensor must have shape (11, 8, 8), got {observation_array.shape}")
+            if observation_array.shape != (14, 8, 8): # Updated shape
+                raise ValueError(f"observation_array tensor must have shape (14, 8, 8), got {observation_array.shape}")
             obs_array_np = observation_array.detach().cpu().numpy()
         elif isinstance(observation_array, np.ndarray):
-            if observation_array.shape != (11, 8, 8):
-                raise ValueError(f"observation_array numpy array must have shape (11, 8, 8), got {observation_array.shape}")
+            if observation_array.shape != (14, 8, 8): # Updated shape
+                raise ValueError(f"observation_array numpy array must have shape (14, 8, 8), got {observation_array.shape}")
             obs_array_np = observation_array
         else:
              raise TypeError(f"observation_array must be a numpy array or torch.Tensor, got {type(observation_array)}")
@@ -537,98 +537,107 @@ def interpret_tile(
     # --- Handle Tensor or Numpy Array Input for tile_input ---
     elif isinstance(tile_input, torch.Tensor):
         # Convert tensor to numpy array
-        if tile_input.ndim != 1 or tile_input.shape[0] != 11:
-            raise ValueError(f"Input torch.Tensor must have shape (11,), got {tile_input.shape}")
+        if tile_input.ndim != 1 or tile_input.shape[0] != 14: # Updated shape
+            raise ValueError(f"Input torch.Tensor must have shape (14,), got {tile_input.shape}")
         # Ensure it's on CPU and detached from graph before converting
         tile = tile_input.detach().cpu().numpy()
     
     elif isinstance(tile_input, np.ndarray):
-        if tile_input.shape != (11,):
-             raise ValueError(f"Input numpy array must have shape (11,), got {tile_input.shape}")
+        if tile_input.shape != (14,): # Updated shape
+             raise ValueError(f"Input numpy array must have shape (14,), got {tile_input.shape}")
         tile = tile_input
     else:
         raise TypeError(f"tile_input must be a string, numpy array, or torch.Tensor, got {type(tile_input)}")
 
 
-    # --- Interpretation Logic (Updated for 11 channels) ---
+    # --- Interpretation Logic (Updated for 14 channels) ---
 
     description_parts = []
     start_square_name: Optional[str] = None # Initialize here
 
     # 1. Piece and Color (Channels 0-6)
-    if tile[0] == 0:
+    piece_color_val = tile[0] # Store for later use with Piece ID
+    if piece_color_val == 0:
         description_parts.append("Empty square")
     else:
-        color = "White" if tile[0] == 1 else "Black"
+        color = "White" if piece_color_val == 1 else "Black"
         piece_type_names = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"]
+        current_piece_type_name = "Unknown" # Default
         try:
             piece_type_index = np.argmax(tile[1:7])
             if tile[1 + piece_type_index] == 1:
-                piece_type_name = piece_type_names[piece_type_index]
-                description_parts.append(f"{color} {piece_type_name}")
+                current_piece_type_name = piece_type_names[piece_type_index]
+                description_parts.append(f"{color} {current_piece_type_name}")
             else:
                  description_parts.append(f"{color} piece (Unknown type)")
         except (ValueError, IndexError):
              description_parts.append(f"{color} piece (Error reading type)")
 
-        # Piece ID (Channel 10) and Determining Start Square (Shifted from 9)
-        piece_id_numeric = int(tile[10])
-        id_string = f"(ID: {piece_id_numeric}"
+        # Reconstruct 4-bit Piece ID from channels 10-13
+        # tile[10] is MSB, tile[13] is LSB
+        id_0_15 = 0
+        if tile[10] == 1: id_0_15 |= (1 << 3)
+        if tile[11] == 1: id_0_15 |= (1 << 2)
+        if tile[12] == 1: id_0_15 |= (1 << 1)
+        if tile[13] == 1: id_0_15 |= (1 << 0)
+        
+        id_string = f"(ID: {id_0_15}"
 
-        # --- Determine Start Square from Numeric ID (1-32) ---
-        if 1 <= piece_id_numeric <= 32:
-            start_sq_idx: Optional[chess.Square] = None
-            nid_color = chess.WHITE if piece_id_numeric <= 16 else chess.BLACK
-            offset_id = piece_id_numeric if nid_color == chess.WHITE else piece_id_numeric - 16
+        # --- Determine Start Square from 4-bit Piece ID (0-15) and Color ---
+        # Piece color is piece_color_val (1 for White, -1 for Black)
+        # ID 0-15: King=0, Queen=1, Rooks=2/3, Knights=4/5, Bishops=6/7, Pawns=8-15
+        start_sq_idx: Optional[chess.Square] = None
+        
+        actual_color_chess = chess.WHITE if piece_color_val == 1 else chess.BLACK
 
-            # Map offset_id (1-16 for each color) to original square
-            if offset_id == 1:   start_sq_idx = chess.A1 if nid_color == chess.WHITE else chess.A8 # R0
-            elif offset_id == 2: start_sq_idx = chess.H1 if nid_color == chess.WHITE else chess.H8 # R1
-            elif offset_id == 3: start_sq_idx = chess.B1 if nid_color == chess.WHITE else chess.B8 # N0
-            elif offset_id == 4: start_sq_idx = chess.G1 if nid_color == chess.WHITE else chess.G8 # N1
-            elif offset_id == 5: start_sq_idx = chess.C1 if nid_color == chess.WHITE else chess.C8 # B0
-            elif offset_id == 6: start_sq_idx = chess.F1 if nid_color == chess.WHITE else chess.F8 # B1
-            elif offset_id == 7: start_sq_idx = chess.D1 if nid_color == chess.WHITE else chess.D8 # Q
-            elif offset_id == 8: start_sq_idx = chess.E1 if nid_color == chess.WHITE else chess.E8 # K
-            elif 9 <= offset_id <= 16: # Pawns P0-P7 -> IDs 9-16 / 25-32
-                pawn_file_index = offset_id - 9 # 0-7 maps to file a-h
-                start_rank = 1 if nid_color == chess.WHITE else 6 # Rank 2 or 7 (0-indexed)
-                start_sq_idx = chess.square(pawn_file_index, start_rank)
+        if id_0_15 == 0: # King
+            start_sq_idx = chess.E1 if actual_color_chess == chess.WHITE else chess.E8
+        elif id_0_15 == 1: # Queen
+            start_sq_idx = chess.D1 if actual_color_chess == chess.WHITE else chess.D8
+        elif id_0_15 == 2: # Rook 0 (e.g., Queenside)
+            start_sq_idx = chess.A1 if actual_color_chess == chess.WHITE else chess.A8
+        elif id_0_15 == 3: # Rook 1 (e.g., Kingside)
+            start_sq_idx = chess.H1 if actual_color_chess == chess.WHITE else chess.H8
+        elif id_0_15 == 4: # Knight 0
+            start_sq_idx = chess.B1 if actual_color_chess == chess.WHITE else chess.B8
+        elif id_0_15 == 5: # Knight 1
+            start_sq_idx = chess.G1 if actual_color_chess == chess.WHITE else chess.G8
+        elif id_0_15 == 6: # Bishop 0
+            start_sq_idx = chess.C1 if actual_color_chess == chess.WHITE else chess.C8
+        elif id_0_15 == 7: # Bishop 1
+            start_sq_idx = chess.F1 if actual_color_chess == chess.WHITE else chess.F8
+        elif 8 <= id_0_15 <= 15: # Pawns (Instances 0-7)
+            pawn_instance_index = id_0_15 - 8 # 0 for A-file pawn, 7 for H-file pawn
+            start_rank_for_pawn = 1 if actual_color_chess == chess.WHITE else 6 # Rank 2 or 7 (0-indexed)
+            start_sq_idx = chess.square(pawn_instance_index, start_rank_for_pawn)
+        # Else: id_0_15 is out of expected range for typical pieces, start_sq_idx remains None
 
-            if start_sq_idx is not None:
-                start_square_name = chess.square_name(start_sq_idx)
+        if start_sq_idx is not None:
+            start_square_name = chess.square_name(start_sq_idx)
         # --- End Determine Start Square ---
 
         if start_square_name:
             id_string += f", Start: {start_square_name})"
         else:
-            id_string += ")" # Close parenthesis if no start square found
-
-        if piece_id_numeric == 0: # Handle case where ID in vector is 0
-             if id_string.endswith(')'):
-                 id_string = id_string[:-1] + " - Untracked)"
-             else: # Should not happen
-                 id_string += " (Untracked)"
+            # If ID is valid (0-15) but doesn't map to a standard start (e.g., promoted piece keeping an ID),
+            # or if ID was >15 (though bits 10-13 only allow 0-15), just show ID.
+            id_string += ")" 
 
         description_parts.append(id_string)
 
-
     # 2. Square Status (Channels 7-8)
-    ep_can_be_captured = int(tile[7]) # Channel 7: En Passant Target (Pawn's square)
-    castling_target = int(tile[8])    # Channel 8: Castling Target (King's landing square)
+    ep_can_be_captured = int(tile[7]) # Channel 7: En Passant Target
+    castling_target = int(tile[8])    # Channel 8: Castling Target
 
-    # Update interpretation for channel 7
     if ep_can_be_captured == 1:
-        description_parts.append("Can be captured EP.") # Changed text slightly
+        description_parts.append("Can be captured EP.")
 
     if castling_target == 1:
         description_parts.append("King can land here via castling.")
 
-    # 3. Current Player (Channel 9 - New)
+    # 3. Current Player (Channel 9)
     current_player_val = int(tile[9])
     player_desc = "(Turn: White)" if current_player_val == 1 else "(Turn: Black)"
-    # Add this separately, perhaps at the end or near the piece description
-    # For now, let's append it as another potential part
 
     # 4. Construct Final Sentence
     if not description_parts:
@@ -636,11 +645,9 @@ def interpret_tile(
 
     final_description = description_parts[0] # Start with piece/empty description
     if len(description_parts) > 1:
-        # Join remaining parts, handling piece ID placement
         piece_id_part = ""
-        status_parts = [] # Renamed from other_parts
+        status_parts = []
         for part in description_parts[1:]:
-            # Check if it's the specific ID string we constructed
             if part.startswith("(ID: "):
                 piece_id_part = " " + part
             else:
@@ -648,12 +655,10 @@ def interpret_tile(
 
         final_description += piece_id_part # Add ID right after piece name
         if status_parts:
-            final_description += ". " + " ".join(status_parts) # Add status parts
+            final_description += ". " + " ".join(status_parts)
 
-    # Append the Current Player info
     final_description += " " + player_desc
 
-    # Ensure final sentence ends with a period if not already there.
     if not final_description.endswith('.'):
         final_description += '.'
 

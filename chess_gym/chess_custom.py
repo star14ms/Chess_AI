@@ -622,21 +622,27 @@ class FullyTrackedBoard(chess.Board):
 
     def get_board_vector(self) -> np.ndarray:
         """
-        Generates an 11x8x8 numpy array representing the board state based on
+        Generates an 14x8x8 numpy array representing the board state based on
         instructions/observation_human.md.
 
-        Output shape: (11, 8, 8) -> (Channels, Rank, File)
+        Output shape: (14, 8, 8) -> (Channels, Rank, File)
 
-        Channels (11 dimensions):
+        Channels (14 dimensions):
         0:   Color (-1 Black, 0 Empty, 1 White)
         1-6: Piece Type / BehaviorType (One-hot: P, N, B, R, Q, K for piece on square)
-        7:   En Passant Target (1 if this square is the EP target, 0 otherwise)
-        8:   Castling Target (1 if King could land here via castling this turn, 0 otherwise)
+        7:   EnPassantTarget (1 if this square is the EP target for the next move, 0 otherwise)
+        8:   CastlingTarget (1 if King could land on this square via castling this turn, 0 otherwise)
         9:   Current Player (-1 Black, 1 White - constant across the plane)
-        10:  Piece ID (0 for empty, 1-32 for pieces - requires mapping logic)
+        10:  Piece ID bit 3 (MSB) (Part of 4-bit ID, 0-15 for pieces of the current color)
+        11:  Piece ID bit 2
+        12:  Piece ID bit 1
+        13:  Piece ID bit 0 (LSB)
+        If a square is empty, Color is 0, Piece Type is all 0s, and Piece ID bits are all 0s.
+        The 4-bit Piece ID identifies one of up to 16 unique pieces per color
+        (e.g., King=0, Queen=1, Rooks=2/3, Knights=4/5, Bishops=6/7, Pawns=8-15).
         """
         # Initialize with shape (Channels, Height, Width) -> (Channels, Rank, File)
-        board_vector = np.zeros((11, 8, 8), dtype=np.int8)
+        board_vector = np.zeros((14, 8, 8), dtype=np.int8)
 
         # Global states needed
         ep_square = self.ep_square
@@ -677,26 +683,16 @@ class FullyTrackedBoard(chess.Board):
                      if self.has_kingside_castling_rights(chess.BLACK):
                         castling_target_squares.add(chess.G8) # King lands on g8
 
-        # Determine the square of the pawn that moved two steps, if any
-        pawn_advanced_two_sq: Optional[chess.Square] = None
-        if ep_square is not None:
-            # If the ep_square is on rank 2 (0-indexed), a White pawn just moved 2 squares.
-            if chess.square_rank(ep_square) == 2: # White pawn moved (e.g., e2-e4), ep_square is rank 2 (e.g., e3)
-                pawn_advanced_two_sq = ep_square + 8 # Pawn landed on rank 3 (e.g., e4)
-            # If the ep_square is on rank 5 (0-indexed), a Black pawn just moved 2 squares.
-            elif chess.square_rank(ep_square) == 5: # Black pawn moved (e.g., e7-e5), ep_square is rank 5 (e.g., e6)
-                pawn_advanced_two_sq = ep_square - 8 # Pawn landed on rank 4 (e.g., e5)
-
         for sq in chess.SQUARES:
             rank = chess.square_rank(sq) # 0-7
             file = chess.square_file(sq) # 0-7
             piece = self.piece_at(sq)
 
-            # Channel 7: Pawn Advanced Two Squares (New Meaning)
-            # Set flag on the PAWN's square, not the target square
-            if pawn_advanced_two_sq == sq:
+            # Channel 7: EnPassantTarget
+            # 1 if this square is the target for an en passant capture on the next move, 0 otherwise
+            if ep_square is not None and sq == ep_square:
                 board_vector[7, rank, file] = 1
-            # else: remains 0
+            # else: remains 0 due to initialization
 
             # Channel 8: Castling Target
             if sq in castling_target_squares:
@@ -711,43 +707,46 @@ class FullyTrackedBoard(chess.Board):
                 piece_type_idx = piece.piece_type - 1 # 0-5 for P,N,B,R,Q,K
                 board_vector[1 + piece_type_idx, rank, file] = 1
 
-                # Channel 10: Piece ID
+                # Channels 10-13: Piece ID (4 binary dimensions)
                 piece_instance_id_tuple = self.get_piece_instance_id_at(sq)
                 if piece_instance_id_tuple:
-                    # --- Implement consistent mapping logic --- 
-                    color, original_type, original_index = piece_instance_id_tuple
-                    mapped_id = 0 # Default invalid ID
-                    offset = 0 if color == chess.WHITE else 16 # White: 0-15, Black: 16-31 -> Add 1 later
+                    _color, original_type, original_index = piece_instance_id_tuple
+                    
+                    id_0_15 = -1 # Default to invalid ID
 
-                    if original_type == chess.ROOK:         # IDs 1,2 / 17,18
-                        mapped_id = offset + 1 + original_index
-                    elif original_type == chess.KNIGHT:       # IDs 3,4 / 19,20
-                        mapped_id = offset + 3 + original_index
-                    elif original_type == chess.BISHOP:       # IDs 5,6 / 21,22
-                        mapped_id = offset + 5 + original_index
-                    elif original_type == chess.QUEEN:        # IDs 7 / 23
-                        mapped_id = offset + 7 + original_index
-                    elif original_type == chess.KING:         # IDs 8 / 24
-                        mapped_id = offset + 8 + original_index
-                    elif original_type == chess.PAWN:         # IDs 9-16 / 25-32
-                        mapped_id = offset + 9 + original_index
+                    if original_type == chess.KING:    # ID 0
+                        id_0_15 = 0
+                    elif original_type == chess.QUEEN:   # ID 1
+                        id_0_15 = 1
+                    elif original_type == chess.ROOK:    # IDs 2, 3
+                        id_0_15 = 2 + original_index
+                    elif original_type == chess.KNIGHT:  # IDs 4, 5
+                        id_0_15 = 4 + original_index
+                    elif original_type == chess.BISHOP:  # IDs 6, 7
+                        id_0_15 = 6 + original_index
+                    elif original_type == chess.PAWN:    # IDs 8-15
+                        id_0_15 = 8 + original_index
                     
-                    if not (1 <= mapped_id <= 32):
-                        # Handle error case: Calculated ID is out of bounds
-                        # This might happen if original_index is unexpected
-                        print(f"Warning: Calculated invalid piece ID {mapped_id} for {piece_instance_id_tuple} at {chess.square_name(sq)}. Setting to 0.")
-                        mapped_id = 0 # Assign 0 if mapping failed
-                    # --- End mapping logic ---
-                    
-                    board_vector[10, rank, file] = mapped_id
-                else:
-                    board_vector[10, rank, file] = 0 # 0 if no specific instance ID tracked
+                    if 0 <= id_0_15 <= 15:
+                        board_vector[10, rank, file] = (id_0_15 >> 3) & 1 # MSB
+                        board_vector[11, rank, file] = (id_0_15 >> 2) & 1
+                        board_vector[12, rank, file] = (id_0_15 >> 1) & 1
+                        board_vector[13, rank, file] = id_0_15 & 1       # LSB
+                    else:
+                        # If ID calculation failed or piece type is unexpected, keep as 0s
+                        # This also handles the case where id_0_15 remained -1
+                        # All bits board_vector[10:14, rank, file] remain 0 due to initialization
+                        if id_0_15 != -1: # Only print warning if it was a calculated but out-of-range ID
+                             print(f"Warning: Calculated out-of-range piece ID {id_0_15} for {piece_instance_id_tuple} at {chess.square_name(sq)}. Piece ID bits set to 0.")
+                # else: piece_instance_id_tuple is None. Piece ID bits (10-13) remain 0.
 
             else:
-                # Empty Square Defaults
-                board_vector[0, rank, file] = 0 # Color
-                # Channels 1-6 (Piece Type) remain 0
-                board_vector[10, rank, file] = 0 # Piece ID
+                # Empty Square Defaults:
+                # Channel 0 (Color) is 0.
+                # Channels 1-6 (Piece Type) remain 0.
+                # Channels 10-13 (Piece ID bits) remain 0.
+                # This is handled by np.zeros initialization and explicit set for channel 0 if needed.
+                board_vector[0, rank, file] = 0 # Explicitly set Color for empty square
 
         return board_vector
 

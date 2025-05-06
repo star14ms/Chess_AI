@@ -1,5 +1,4 @@
 import random
-import time
 import torch
 import torch.nn.functional as F
 from rich.progress import Progress
@@ -16,8 +15,9 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from chess_gym.envs import ChessEnv
-from network import ChessNetwork
+from MCTS.models.network import ChessNetwork
 from mcts_node import MCTSNode
+from utils.analyze import get_action_id_for_piece_abs
 
 
 # --- MCTS Algorithm ---
@@ -226,8 +226,7 @@ class MCTS:
             node.W += current_node_perspective_value
 
     # --- Main Search Function ---
-    def search(self, root_node: MCTSNode, iterations: int,
-               progress: Progress | None = None):
+    def search(self, root_node: MCTSNode, iterations: int, progress: Progress | None = None):
         
         if progress is not None:
             root_fen = self.env.board.fen()
@@ -259,28 +258,53 @@ class MCTS:
         if progress is not None:
             self.env.board.set_fen(root_fen, root_piece_tracker)
 
-    # --- Get Best Move / Policy (No changes needed here) ---
-    def get_best_move(self, root_node: MCTSNode, temperature=0.0) -> chess.Move | None:
+    # --- Get Best Move / Policy --- 
+    # Returns Action ID corresponding to the best move
+    def get_best_move(self, root_node: MCTSNode, temperature=0.0) -> int | None:
         """
-        Selects the best move from the root node after search.
-        - temperature = 0: Choose the most visited node.
-        - temperature > 0: Sample from visit counts distribution.
+        Selects the best **action ID** corresponding to a legal move from the
+        root node after search, based on visit counts.
+        - temperature = 0: Choose the action ID of the most visited legal node.
+        - temperature > 0: Sample an action ID from visit counts distribution of legal moves.
+
+        Args:
+            root_node: The root node of the MCTS search.
+            temperature: Controls exploration in selection. 0 for deterministic.
+
+        Returns:
+            The integer action ID (1-based) of the selected best legal move, or None
+            if no legal moves exist or the action ID cannot be determined.
         """
         if not root_node.children:
             legal = list(root_node.board.legal_moves)
-            return random.choice(legal) if legal else None
+            # If no children, return ID of a random legal move (if any)
+            if not legal: return None
+            selected_move = random.choice(legal)
+            # --- Convert move to ID ---
+            root_board = root_node.get_board()
+            piece_details = root_board.get_piece_instance_id_at(selected_move.from_square)
+            if piece_details is None: return None
+            color, p_type, p_idx = piece_details
+            return get_action_id_for_piece_abs(selected_move.uci(), color, p_type, p_idx)
+            # --- End conversion ---
 
-        children_to_consider = {m: c for m, c in root_node.children.items() if c.N > 0}
+        # Consider only visited children corresponding to legal moves
+        legal_moves = list(root_node.board.legal_moves)
+        children_to_consider = {m: c for m, c in root_node.children.items() if m in legal_moves and c.N > 0}
+
         if not children_to_consider:
-            unexplored_children = [m for m, c in root_node.children.items() if c.N == 0]
-            if unexplored_children:
-                return random.choice(unexplored_children)
-            else:
-                legal = list(root_node.board.legal_moves)
-                return random.choice(legal) if legal else None
+            # If no legal children were visited, return ID of a random legal move
+            if not legal_moves: return None
+            selected_move = random.choice(legal_moves)
+            # --- Convert move to ID ---
+            root_board = root_node.get_board()
+            piece_details = root_board.get_piece_instance_id_at(selected_move.from_square)
+            if piece_details is None: return None
+            color, p_type, p_idx = piece_details
+            return get_action_id_for_piece_abs(selected_move.uci(), color, p_type, p_idx)
+            # --- End conversion ---
 
         if temperature == 0:
-            # ... (rest of get_best_move is unchanged)
             max_visits = -1
             best_move = None
             for move, child in children_to_consider.items():
@@ -288,31 +312,43 @@ class MCTS:
                     max_visits = child.N
                     best_move = move
             if best_move is None:
-                 return random.choice(list(children_to_consider.keys()))
-            return best_move
+                 # Fallback: choose randomly among considered children if best_move wasn't set
+                 best_move = random.choice(list(children_to_consider.keys()))
+
+            # --- Convert move to ID ---
+            root_board = root_node.get_board()
+            piece_details = root_board.get_piece_instance_id_at(best_move.from_square)
+            if piece_details is None: return None
+            color, p_type, p_idx = piece_details
+            return get_action_id_for_piece_abs(best_move.uci(), color, p_type, p_idx)
+            # --- End conversion ---
         else:
             moves = list(children_to_consider.keys())
             visit_counts = np.array([children_to_consider[m].N for m in moves], dtype=float)
 
             if temperature < 1e-6: temperature = 1e-6
-
             visit_counts_temp = visit_counts**(1.0 / temperature)
-            if np.isinf(visit_counts_temp).any() or np.sum(visit_counts_temp) == 0:
+
+            sum_counts_temp = np.sum(visit_counts_temp)
+            if np.isinf(sum_counts_temp) or sum_counts_temp <= 1e-9 or np.isnan(sum_counts_temp):
                  probabilities = np.ones_like(visit_counts) / len(visit_counts)
             else:
-                 probabilities = visit_counts_temp / np.sum(visit_counts_temp)
-
-            # Ensure probabilities sum to 1 after potential numerical issues
+                 probabilities = visit_counts_temp / sum_counts_temp
+            
             sum_probs = np.sum(probabilities)
-            if sum_probs > 0:
-                 probabilities /= sum_probs
-            else: # Fallback to uniform if sum is zero
-                 probabilities = np.ones_like(visit_counts) / len(visit_counts)
-
+            if not np.isclose(sum_probs, 1.0):
+                 if sum_probs > 1e-9: probabilities /= sum_probs
+                 else: probabilities = np.ones_like(visit_counts) / len(visit_counts)
 
             chosen_move = np.random.choice(moves, p=probabilities)
-            return chosen_move
 
+            # --- Convert move to ID ---
+            root_board = root_node.get_board()
+            piece_details = root_board.get_piece_instance_id_at(chosen_move.from_square)
+            if piece_details is None: return None
+            color, p_type, p_idx = piece_details
+            return get_action_id_for_piece_abs(chosen_move.uci(), color, p_type, p_idx)
+            # --- End conversion ---
 
     def get_policy_distribution(self, root_node: MCTSNode, temperature: float = 1.0) -> np.ndarray:
         """
