@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Tuple, Optional, Union, List, ClassVar, Mapping
 from collections import Counter, defaultdict
 import numpy as np
+import enum
 
 from utils.analyze import create_piece_instance_map, get_action_id_for_piece_abs
 
@@ -11,6 +12,8 @@ from utils.analyze import create_piece_instance_map, get_action_id_for_piece_abs
 PieceInstanceId = Tuple[chess.Color, chess.PieceType, int] # (Color, OriginalPieceType, OriginalInstanceIndex 0-7/0-1)
 PieceTrackingInfo = Dict[str, Optional[Union[chess.Square, chess.PieceType]]]
 PieceTracker = Dict[PieceInstanceId, PieceTrackingInfo]
+
+chess.Termination.ILLEGAL_MOVE = enum.auto()
 
 class FullyTrackedBoard(chess.Board):
     """
@@ -63,6 +66,7 @@ class FullyTrackedBoard(chess.Board):
         self.piece_tracker: PieceTracker = {}
         self._piece_tracker_stack: List[Tuple[PieceTracker, bool]] = [] # Store flag state too
         self.is_theoretically_possible_state: bool = True # Assume possible initially
+        self.foul: bool = False
         
         if piece_tracker_override is not None:
             self.piece_tracker = copy.deepcopy(piece_tracker_override)
@@ -196,9 +200,23 @@ class FullyTrackedBoard(chess.Board):
     def reset(self):
         """Resets the board to the standard starting position and populates the tracker."""
         self.is_theoretically_possible_state = True # Reset flag
+        self.foul = False
         self._pre_initialize_tracker_keys()
         super().reset()
         self._populate_tracker_from_standard_start()
+        
+    def is_foul(self) -> bool:
+        """Returns True if the board is in a foul state (illegal move)."""
+        return self.foul
+
+    def is_game_over(self, *, claim_draw: bool = False) -> bool:
+        return self.outcome(claim_draw=claim_draw) is not None
+
+    def outcome(self, claim_draw: bool = False) -> chess.Outcome:
+        """Returns the outcome of the game."""
+        if self.foul:
+            return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
+        return super().outcome()
 
     def set_fen(self, fen: str, piece_tracker_override: Optional[PieceTracker] = None):
         """Sets the board from FEN and populates the tracker based on the FEN state
@@ -261,7 +279,11 @@ class FullyTrackedBoard(chess.Board):
             self._populate_tracker_from_current_state()
 
     # Override push to store the flag state
-    def push(self, move: chess.Move):
+    def push(self, move: chess.Move | None):
+        if move is None:
+            self.foul = True
+            return
+
         # --- Store current tracker state AND flag before applying the move ---
         current_tracker_copy = copy.deepcopy(self.piece_tracker)
         current_flag_state = self.is_theoretically_possible_state
@@ -380,7 +402,7 @@ class FullyTrackedBoard(chess.Board):
         if self.is_theoretically_possible_state:
             use_tracker = True
         else:
-            logging.warning("Robust ID to Move: Board state theoretically impossible. Using positional mapping, not tracker.")
+            # logging.warning("Robust ID to Move: Board state theoretically impossible. Using positional mapping, not tracker.")
             # Pass self instead of board to create_piece_instance_map
             positional_instance_map = create_piece_instance_map(self, {})
 
@@ -406,8 +428,8 @@ class FullyTrackedBoard(chess.Board):
                         logging.warning(f"Robust ID to Move: Positional map lookup failed for move {move.uci()}. Skipping move.")
                         continue # Skip if mapping failed
                 else:
-                     logging.error("Robust ID to Move: Positional map was expected but not created.")
-                     return None # Should not happen
+                    logging.error("Robust ID to Move: Positional map was expected but not created.")
+                    return None # Should not happen
 
             # If we got piece details (either way)
             if piece_details:
