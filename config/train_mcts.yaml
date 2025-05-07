@@ -23,7 +23,7 @@ network:
   input_channels: 14
   board_size: 8
   num_residual_layers: 7
-  conv_blocks_channel_lists: [[128, 128], [128, 128], [128, 128], [128, 128], [128, 128], [128, 128], [128, 128]]
+  conv_blocks_channel_lists: [[32, 32], [32, 32], [32, 32], [32, 32], [32, 32], [32, 32], [32, 32]]
   action_space_size: 1700
   num_pieces: 32
   value_head_hidden_size: 256
@@ -37,7 +37,7 @@ env:
 
 mcts:
   _target_: MCTS.config_schema.MCTSConfig
-  iterations: 1
+  iterations: 32
   c_puct: 1.41
   temperature_start: 1.0
   temperature_end: 0.1
@@ -53,7 +53,7 @@ optimizer:
 training:
   _target_: MCTS.config_schema.TrainingConfig
   device: auto
-  replay_buffer_size: 1000
+  replay_buffer_size: 10000
   num_training_iterations: 10000
   training_epochs: 30
   batch_size: 64

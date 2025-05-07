@@ -72,7 +72,7 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
         network,
         cfg.mcts,
         cfg.training,
-        env,
+        env=None,
         progress=None, # Pass None for progress within worker
         device=device
     )
@@ -85,8 +85,6 @@ def worker_wrapper(args):
     game_id, network_state_dict, cfg, device_str = args
     # Call the original worker function with unpacked args
     return self_play_worker(game_id, network_state_dict, cfg, device_str)
-
-# --- Removed CONFIG dictionary --- 
 
 # --- Replay Buffer (Keep as is) ---
 class ReplayBuffer:
@@ -109,22 +107,25 @@ class ReplayBuffer:
         states = np.array([exp[0] for exp in batch], dtype=np.float32)
         policy_targets = np.array([exp[1] for exp in batch], dtype=np.float32)
         # Ensure FENs are handled as a list of strings, not converted to numpy array directly if they vary in length etc.
-        fens = [exp[2] for exp in batch] 
+        # fens = [exp[2] for exp in batch] 
+        boards = [exp[2] for exp in batch] # Now these are board objects
         value_targets = np.array([exp[3] for exp in batch], dtype=np.float32).reshape(-1, 1)
 
-        return states, policy_targets, fens, value_targets
+        return states, policy_targets, boards, value_targets # Return boards
 
     def __len__(self):
         return len(self.buffer)
 
 
 # --- Self-Play Function (Update args to use config subsections) ---
-def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: ChessEnv,
+def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: ChessEnv | None = None,
                        progress: Progress | None = None, device: torch.device | None = None):
     """Plays one game of self-play using MCTS and returns the game data."""
     # If running sequentially, ensure env is reset at the start of each game
     # If running in parallel, the worker resets its own env copy
     # This reset is safe for both cases
+    if env is None:
+        env = ChessEnv()
     obs, _ = env.reset()
     network.eval()
 
@@ -173,8 +174,10 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         # breakpoint()
 
         current_obs = obs # Observation *before* the move
-        current_fen = env.board.fen() # FEN *before* the move
-        game_history.append((current_obs, mcts_policy, current_fen))
+        # current_fen = env.board.fen() # FEN *before* the move
+        # game_history.append((current_obs, mcts_policy, current_fen))
+        board_copy_at_state = env.board.copy() # Store a copy of the board
+        game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
         # --- Select and Make Move --- 
         action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
@@ -182,35 +185,38 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         # Step the *main* environment (or worker's copy)
         obs, reward, terminated, truncated, info = env.step(action_to_take)
 
+        # if action_to_take not in legal_actions:
+        #     print(f"Illegal move: {env.board.is_foul()} {terminated}")
+        # else:
+        #     print(f"Legal move: {env.board.is_foul()} {terminated}")
+
         if progress is not None:
             progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
 
         move_count += 1
 
-    # --- Determine final game outcome --- 
-    final_value = 0.0
+    # --- Determine final game outcome (from White's perspective) ---
+    final_value = 0.0 # Default to draw
     if terminated:
         result_str = env.board.result(claim_draw=True)
-        if result_str == "1-0": final_value = 1.0
-        elif result_str == "0-1": final_value = -1.0
-        else: final_value = 0.0 # Draw
+        if result_str == "1-0": final_value = 1.0 # White won
+        elif result_str == "0-1": final_value = -1.0 # Black won 
+        else: final_value = 0.0 # Draw (covers "1/2-1/2")
 
     # Assign value targets based on the final_value (set either by game end or illegal move)
-    full_game_data = [] # Will store (state_obs, policy_target, fen_at_state, value_target)
-    for i, (state_obs, policy_target, fen_at_state) in enumerate(game_history):
+    full_game_data = [] # Will store (state_obs, policy_target, board_object_at_state, value_target)
+    for i, (state_obs, policy_target, board_at_state) in enumerate(game_history):
         # Determine whose turn it was at the state where the MCTS policy was calculated
         # If state i was White's turn to play, the value target is final_value
         # If state i was Black's turn to play, the value target is -final_value
         # Assuming White plays at even indices (0, 2, ...) if game starts with White
         # More robust: check board turn from FEN if needed, but this is common for self-play
-        
-        # Determine turn from FEN's active color field
-        temp_board_for_turn_check = type(env.board)() # Create instance of the same board class
-        temp_board_for_turn_check.set_fen(fen_at_state)
-        is_white_turn_at_state = temp_board_for_turn_check.turn == chess.WHITE
+
+        # Determine turn from the copied board object's active color
+        is_white_turn_at_state = board_at_state.turn == chess.WHITE
         
         value_target = final_value if is_white_turn_at_state else -final_value
-        full_game_data.append((state_obs, policy_target, fen_at_state, value_target))
+        full_game_data.append((state_obs, policy_target, board_at_state, value_target)) # Store board_at_state object
     
     if progress is not None and task_id_game is not None:
         progress.update(task_id_game, visible=False)
@@ -229,24 +235,6 @@ def run_training_loop(cfg: DictConfig) -> None:
     else:
         device = torch.device(cfg.training.device)
     print(f"Using device: {device}")
-
-    # Get Board Class dynamically
-    board_cls = None # Initialize to None
-    try:
-        board_cls_str = cfg.training.board_cls_str
-        board_cls = get_class(board_cls_str)
-        print(f"Using Board Class: {board_cls.__name__}")
-    except Exception as e:
-        print(f"Error importing board class '{board_cls_str}': {e}")
-        sys.exit(1)
-    
-    # Create a reusable board instance for checking illegal moves during training
-    # This instance will have its state set by FEN for each sample in a batch.
-    # Ensure board_cls is not None before creating an instance.
-    if board_cls is None:
-        print("Error: Board class was not loaded. Exiting.")
-        sys.exit(1)
-    training_check_board = board_cls()
 
     # Initialize Network using network config
     # Make sure network's __init__ signature matches the parameters passed
@@ -442,7 +430,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                 batch = replay_buffer.sample(cfg.training.batch_size)
                 if batch is None: continue
 
-                states_np, policy_targets_np, fens_batch, value_targets_np = batch
+                # states_np, policy_targets_np, fens_batch, value_targets_np = batch
+                states_np, policy_targets_np, boards_batch, value_targets_np = batch # Unpack boards
                 states_tensor = torch.from_numpy(states_np).to(device)
                 policy_targets_tensor = torch.from_numpy(policy_targets_np).to(device)
                 value_targets_tensor = torch.from_numpy(value_targets_np).to(device)
@@ -470,18 +459,20 @@ def run_training_loop(cfg: DictConfig) -> None:
                     predicted_action_indices = torch.argmax(policy_logits, dim=1) # Shape: (batch_size)
                     network.train() # Set back to train mode
 
-                    for i in range(len(fens_batch)):
-                        fen = fens_batch[i]
-                        training_check_board.set_fen(fen)
+                    # for i in range(len(fens_batch)):
+                    for i in range(len(boards_batch)): # Iterate over boards_batch
+                        current_board_from_batch = boards_batch[i] # Use the board object from the batch
                         
                         # Get the 0-indexed action from network, convert to 1-based for board method
                         predicted_action_id = predicted_action_indices[i].item() + 1
                         
-                        if training_check_board.action_id_to_move(predicted_action_id) is None:
+                        # if training_check_board.action_id_to_move(predicted_action_id) is None:
+                        if current_board_from_batch.action_id_to_move(predicted_action_id) is None: # Use board from batch
                             batch_illegal_moves += 1
                 
                 total_illegal_moves_in_iteration += batch_illegal_moves
-                total_samples_in_iteration += len(fens_batch)
+                # total_samples_in_iteration += len(fens_batch)
+                total_samples_in_iteration += len(boards_batch) # Use length of boards_batch
 
                 current_avg_policy_loss = total_policy_loss / (epoch + 1)
                 current_avg_value_loss = total_value_loss / (epoch + 1)
