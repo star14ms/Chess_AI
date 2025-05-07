@@ -663,3 +663,182 @@ def interpret_tile(
         final_description += '.'
 
     return final_description
+
+# --- Action ID Interpretation --- 
+
+def _interpret_relative_rook_action(relative_id: int) -> Optional[Tuple[str, str]]:
+    """Interprets a relative rook action ID (1-28)."""
+    if not (1 <= relative_id <= 28): return None
+    
+    distance = (relative_id - 1) % 7 + 1
+    direction_code = (relative_id - 1) // 7
+    
+    directions = [("North", "N"), ("East", "E"), ("South", "S"), ("West", "W")]
+    direction_name, direction_symbol = directions[direction_code]
+    
+    move_type = f"Rook {direction_name} dist {distance}"
+    uci_pattern = f"{direction_symbol}_dist_{distance}"
+    return move_type, uci_pattern
+
+def _interpret_relative_knight_action(relative_id: int) -> Optional[Tuple[str, str]]:
+    """Interprets a relative knight action ID (1-8)."""
+    if not (1 <= relative_id <= 8): return None
+    
+    # Reverse of knight_move_patterns in uci_to_relative_knight_action_id
+    patterns_map = {
+        1: ((1, 2), "(1,2)"), 2: ((2, 1), "(2,1)"), 3: ((2, -1), "(2,-1)"), 4: ((1, -2), "(1,-2)"),
+        5: ((-1, -2), "(-1,-2)"), 6: ((-2, -1), "(-2,-1)"), 7: ((-2, 1), "(-2,1)"), 8: ((-1, 2), "(-1,2)")
+    }
+    _delta, pattern_desc = patterns_map[relative_id]
+    move_type = f"Knight move {pattern_desc}"
+    uci_pattern = f"K{pattern_desc.replace('(', '_').replace(')','').replace(',','_')}" # e.g. K_1_2
+    return move_type, uci_pattern
+
+def _interpret_relative_bishop_action(relative_id: int) -> Optional[Tuple[str, str]]:
+    """Interprets a relative bishop action ID (1-28)."""
+    if not (1 <= relative_id <= 28): return None
+
+    distance = (relative_id - 1) % 7 + 1
+    direction_code = (relative_id - 1) // 7
+    
+    directions = [("NorthEast", "NE"), ("SouthEast", "SE"), ("SouthWest", "SW"), ("NorthWest", "NW")]
+    direction_name, direction_symbol = directions[direction_code]
+    
+    move_type = f"Bishop {direction_name} dist {distance}"
+    uci_pattern = f"{direction_symbol}_dist_{distance}"
+    return move_type, uci_pattern
+
+def _interpret_relative_queen_action(relative_id: int) -> Optional[Tuple[str, str]]:
+    """Interprets a relative queen action ID (1-56)."""
+    if not (1 <= relative_id <= 56): return None
+    
+    if 1 <= relative_id <= 28: # Rook-like part
+        move_type, uci_pattern = _interpret_relative_rook_action(relative_id)
+        return f"Queen as Rook: {move_type}", f"Q_as_R_{uci_pattern}"
+    else: # Bishop-like part (relative_id 29-56 maps to bishop 1-28)
+        move_type, uci_pattern = _interpret_relative_bishop_action(relative_id - 28)
+        return f"Queen as Bishop: {move_type}", f"Q_as_B_{uci_pattern}"
+
+def _interpret_relative_king_action(relative_id: int) -> Optional[Tuple[str, str]]:
+    """Interprets a relative king action ID (1-10)."""
+    if not (1 <= relative_id <= 10): return None
+    
+    if relative_id == 9: return "King Kingside Castle", "K_Castle_KS"
+    if relative_id == 10: return "King Queenside Castle", "K_Castle_QS"
+    
+    # Standard moves (1-8)
+    # Reverse of king_move_patterns
+    king_patterns_map = {
+        1: ((0, 1), "N (0,1)"), 2: ((1, 1), "NE (1,1)"), 3: ((1, 0), "E (1,0)"), 4: ((1, -1), "SE (1,-1)"),
+        5: ((0, -1), "S (0,-1)"), 6: ((-1, -1), "SW (-1,-1)"), 7: ((-1, 0), "W (-1,0)"), 8: ((-1, 1), "NW (-1,1)")
+    }
+    _delta, pattern_desc = king_patterns_map[relative_id]
+    move_type = f"King step {pattern_desc}"
+    uci_pattern = f"K_step_{pattern_desc.split(' ')[0]}" # e.g. K_step_N
+    return move_type, uci_pattern
+
+def _interpret_relative_pawn_action(relative_id: int) -> Optional[Tuple[str, str]]:
+    """Interprets a relative pawn action ID (1-82 for Pawn-Forever)."""
+    if not (1 <= relative_id <= 82): return None
+
+    # Standard Pawn Moves (1-18)
+    if 1 <= relative_id <= 18:
+        promo_types = {'Q': "Queen", 'N': "Knight", 'B': "Bishop", 'R': "Rook"}
+        move_directions = ["Forward", "Capture Left", "Capture Right"]
+        
+        if relative_id == 1: return "Pawn Forward 1", "P_Fwd1"
+        if relative_id == 2: return "Pawn Forward 2", "P_Fwd2"
+        if relative_id == 3: return "Pawn Capture Left", "P_CapL" # Assuming EP maps here
+        if relative_id == 4: return "Pawn Capture Right", "P_CapR"# Assuming EP maps here
+        # IDs 5, 6 were for specific EP flags, not directly used by get_action_id_for_piece_abs output range for base pawn moves
+
+        # Promotions (IDs 7-18)
+        if 7 <= relative_id <= 18:
+            promo_offset = relative_id - 7
+            promo_piece_code = (promo_offset // 3)
+            move_direction_code = promo_offset % 3
+            
+            promo_char_map = ['Q', 'N', 'B', 'R']
+            promo_char = promo_char_map[promo_piece_code]
+            promo_name = promo_types[promo_char]
+            direction_name = move_directions[move_direction_code]
+            
+            move_type = f"Pawn {promo_name} Promo {direction_name}"
+            uci_pattern = f"P_Promo{promo_char}_{direction_name.replace(' ','')}"
+            return move_type, uci_pattern
+        return None # Should be covered by above
+
+    # Pawn-as-Queen Moves (relative_id 19-74, maps to queen 1-56)
+    elif 19 <= relative_id <= 74:
+        queen_rel_id = relative_id - 18
+        queen_move_type, queen_uci_pattern = _interpret_relative_queen_action(queen_rel_id)
+        return f"Pawn as Queen: {queen_move_type}", f"P_as_Q_{queen_uci_pattern}"
+
+    # Pawn-as-Knight Moves (relative_id 75-82, maps to knight 1-8)
+    elif 75 <= relative_id <= 82:
+        knight_rel_id = relative_id - 18 - 56
+        knight_move_type, knight_uci_pattern = _interpret_relative_knight_action(knight_rel_id)
+        return f"Pawn as Knight: {knight_move_type}", f"P_as_K_{knight_uci_pattern}"
+    
+    return None # Should not be reached
+
+def interpret_action(action_id: int) -> Optional[Dict[str, Union[str, int, bool]]]:
+    """Interprets an absolute action ID (1-1700) and returns its details."""
+    if not (1 <= action_id <= 1700):
+        logging.warning(f"Action ID {action_id} is out of expected range (1-1700).")
+        return None
+
+    # Constants from get_base_action_id
+    rel_counts = {
+        chess.ROOK: 28, chess.KNIGHT: 8, chess.BISHOP: 28,
+        chess.QUEEN: 56, chess.KING: 10, chess.PAWN: 82
+    }
+    piece_order = [
+        (chess.ROOK, 2, "Rook"), (chess.KNIGHT, 2, "Knight"), (chess.BISHOP, 2, "Bishop"),
+        (chess.QUEEN, 1, "Queen"), (chess.KING, 1, "King"), (chess.PAWN, 8, "Pawn")
+    ]
+    colors = [(chess.WHITE, "White"), (chess.BLACK, "Black")]
+
+    current_base = 1
+    for color_val, color_name in colors:
+        for piece_type_val, num_instances, piece_type_name_str in piece_order:
+            for instance_idx in range(num_instances):
+                instance_action_space_size = rel_counts[piece_type_val]
+                action_id_upper_bound = current_base + instance_action_space_size - 1
+
+                if current_base <= action_id <= action_id_upper_bound:
+                    relative_action_id = action_id - current_base + 1
+                    interpretation_result = None
+                    
+                    if piece_type_val == chess.ROOK:
+                        interpretation_result = _interpret_relative_rook_action(relative_action_id)
+                    elif piece_type_val == chess.KNIGHT:
+                        interpretation_result = _interpret_relative_knight_action(relative_action_id)
+                    elif piece_type_val == chess.BISHOP:
+                        interpretation_result = _interpret_relative_bishop_action(relative_action_id)
+                    elif piece_type_val == chess.QUEEN:
+                        interpretation_result = _interpret_relative_queen_action(relative_action_id)
+                    elif piece_type_val == chess.KING:
+                        interpretation_result = _interpret_relative_king_action(relative_action_id)
+                    elif piece_type_val == chess.PAWN:
+                        interpretation_result = _interpret_relative_pawn_action(relative_action_id)
+
+                    if interpretation_result:
+                        move_type, uci_pattern = interpretation_result
+                        return {
+                            "action_id": action_id,
+                            "piece_color": color_name,
+                            "piece_type_str": piece_type_name_str,
+                            "instance_index": instance_idx, # 0-based
+                            "relative_id_in_piece_space": relative_action_id,
+                            "move_type": move_type,
+                            "uci_pattern": uci_pattern
+                        }
+                    else:
+                        logging.warning(f"Could not interpret relative_id {relative_action_id} for {color_name} {piece_type_name_str} instance {instance_idx} (Abs ID: {action_id})")
+                        return None # Error in relative interpretation
+                
+                current_base += instance_action_space_size
+                
+    logging.warning(f"Action ID {action_id} did not fall into any known piece range.")
+    return None # Should not be reached if action_id is 1-1700 and logic is correct
