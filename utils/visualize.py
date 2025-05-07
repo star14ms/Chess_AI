@@ -5,6 +5,8 @@ from PIL import Image
 import io
 from typing import Optional, Union
 from IPython.display import SVG, HTML, display
+import torch
+import numpy as np
 
 from chess_gym.chess_custom import FullyTrackedBoard
 
@@ -18,7 +20,7 @@ def draw_numbers_on_board(
     board_size: int = 400,
     return_pil_image: bool = False,
     **kwargs
-) -> SVG:
+) -> Union[SVG, Image.Image]:
     """
     Generates an SVG representation of a chess board with numbers/text drawn on
     specified squares. Displays multiple numbers on separate lines using <tspan>.
@@ -31,11 +33,12 @@ def draw_numbers_on_board(
         font_size: The font size of the text.
         line_height: The vertical spacing between lines ('dy' attribute for <tspan>).
         board_size: The size of the SVG board in pixels.
+        return_pil_image: If True, returns a PIL.Image object instead of SVG.
         **kwargs: Additional keyword arguments to pass to chess.svg.board
                   (e.g., squares, arrows, orientation).
 
     Returns:
-        An IPython.display.SVG object representing the board with the numbers drawn on it.
+        Either an IPython.display.SVG object or PIL.Image object representing the board with the numbers drawn on it.
     """
     if board is None:
         board = chess.Board()
@@ -84,6 +87,12 @@ def draw_numbers_on_board(
     else:
         modified_svg = svg_string + all_text_elements
 
+    if return_pil_image:
+        # Convert SVG to PNG bytes using cairosvg
+        png_data = cairosvg.svg2png(bytestring=modified_svg.encode('utf-8'))
+        # Convert PNG bytes to PIL Image
+        return Image.open(io.BytesIO(png_data))
+    
     # Return the SVG object directly
     return SVG(modified_svg)
 
@@ -202,3 +211,56 @@ def board_to_svg(board: chess.Board, size: int = 390) -> str:
         size=size,
         lastmove=board.peek() if board.move_stack else None,
         check=board.king(board.turn) if board.is_check() else None)
+
+
+def visualize_policy_on_board(board: chess.Board, mcts_policy: torch.Tensor, font_size: int = 12, board_size: int = 400, return_pil_image: bool = False) -> SVG | Image.Image:
+    """Visualizes the MCTS policy distribution on the chess board.
+    
+    Args:
+        board: The chess board to visualize
+        mcts_policy: The policy tensor from MCTS
+        font_size: Font size for the labels
+        
+    Returns:
+        PIL Image showing the board with policy values
+    """
+    legal_moves = list(board.legal_moves)
+    legal_policy = {}
+    prob_sum = 0
+    for move in legal_moves:
+        action_id = board.move_to_action_id(move)
+        prob = mcts_policy[action_id - 1].item()*100
+        prob_sum += prob
+        if move.to_square in legal_policy:
+            legal_policy[move.to_square].append(f'{board.san(move)} {np.int32(prob)}%')
+        else:
+            legal_policy[move.to_square] = [f'{board.san(move)} {np.int32(prob)}%']
+    pil_image = draw_numbers_on_board(legal_policy, board, font_size=font_size, board_size=board_size, return_pil_image=return_pil_image)
+    print(f'Probability of Legal Moves: {np.round(prob_sum, 1)}%')
+    return pil_image
+
+
+def visualize_policy_distribution(mcts_policy: torch.Tensor, move_count: int, board: chess.Board) -> None:
+    """Visualizes the full policy distribution as a bar plot.
+    
+    Args:
+        mcts_policy: The policy tensor from MCTS
+        move_count: Current move number for the plot title
+    """
+    import matplotlib.pyplot as plt
+    
+    # Print individual move probabilities
+    if board.turn == chess.WHITE:
+        for i in range(0, 850):
+            print(f"Move {i}: {mcts_policy[i]}")
+    else:
+        for i in range(850, 1700):
+            print(f"Move {i}: {mcts_policy[i]}")
+            
+    # Create bar plot
+    plt.figure(figsize=(10, 2))
+    plt.bar(range(len(mcts_policy)), mcts_policy)
+    plt.title(f'Policy Distribution (Move {move_count})')
+    plt.xlabel('Action ID')
+    plt.ylabel('Probability')
+    plt.show()

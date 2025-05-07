@@ -5,7 +5,6 @@ import sys, os
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 if project_root not in sys.path:
     sys.path.append(project_root)
-from utils.analyze import interpret_tile
 from chess_gym.chess_custom import FullyTrackedBoard
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -177,6 +176,7 @@ def test_network(cfg: DictConfig):
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from torchview_custom.torchview import draw_graphs
     from utils.profile import profile_model
+    # from utils.analyze import interpret_tile
 
     # Example instantiation with new config
     network = ChessNetwork(
@@ -186,6 +186,7 @@ def test_network(cfg: DictConfig):
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
+        value_head_hidden_size=cfg.network.value_head_hidden_size
     )
     print("Network Initialized.")
     print(f"Using: num_residual_layers={network.num_residual_layers}, final_conv_channels={network.final_conv_channels}, action_space={network.action_space_size}")
@@ -193,10 +194,10 @@ def test_network(cfg: DictConfig):
     board = FullyTrackedBoard('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')
     dummy_input_tensor = torch.from_numpy(board.get_board_vector()).to(dtype=torch.float32)
     dummy_input_tensor = dummy_input_tensor.unsqueeze(0).repeat(2, 1, 1, 1)
-    for i in range(dummy_input_tensor.shape[2]):
-        for j in range(dummy_input_tensor.shape[3]):
-            print(f"Tile {i}, {j}:")
-            print(interpret_tile(dummy_input_tensor[0, :, i, j]))
+    # for i in range(dummy_input_tensor.shape[2]):
+    #     for j in range(dummy_input_tensor.shape[3]):
+    #         print(f"Tile {i}, {j}:")
+    #         print(interpret_tile(dummy_input_tensor[0, :, i, j]))
     print("\nInput shape (before batching):", dummy_input_tensor.shape)
 
     network.eval()

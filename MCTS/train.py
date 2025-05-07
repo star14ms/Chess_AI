@@ -18,6 +18,7 @@ from models.network import ChessNetwork
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from chess_gym.envs import ChessEnv
+from utils.visualize import visualize_policy_on_board, visualize_policy_distribution
 
 sys.path.append('.')
 # Dynamically import board class later using get_class
@@ -39,6 +40,7 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
+        value_head_hidden_size=cfg.network.value_head_hidden_size
         # Add other required params based on network.py definition
     ).to(device)
     network.load_state_dict(network_state_dict)
@@ -51,6 +53,17 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
         render_mode=None, # Avoid rendering in workers
         save_video_folder=None
     )
+    
+    # Dynamically get board class for the worker's env
+    # This ensures the worker uses the same board logic as the main process if needed
+    # (e.g., for methods like action_id_to_move if MCTS logic were to use it directly)
+    try:
+        board_cls_for_worker = get_class(cfg.training.board_cls_str)
+        env.board = board_cls_for_worker(fen=env.board.fen()) # Replace env's board with instance of correct class
+    except Exception as e:
+        # Fallback or error if class cannot be loaded
+        print(f"Worker Error: Could not load board class {cfg.training.board_cls_str}: {e}")
+        return [] # Return empty if critical setup fails
 
     # Progress is tricky with multiprocessing pools directly updating Rich progress.
     # Usually, you track completion externally or use shared state (more complex).
@@ -95,9 +108,11 @@ class ReplayBuffer:
 
         states = np.array([exp[0] for exp in batch], dtype=np.float32)
         policy_targets = np.array([exp[1] for exp in batch], dtype=np.float32)
-        value_targets = np.array([exp[2] for exp in batch], dtype=np.float32).reshape(-1, 1)
+        # Ensure FENs are handled as a list of strings, not converted to numpy array directly if they vary in length etc.
+        fens = [exp[2] for exp in batch] 
+        value_targets = np.array([exp[3] for exp in batch], dtype=np.float32).reshape(-1, 1)
 
-        return states, policy_targets, value_targets
+        return states, policy_targets, fens, value_targets
 
     def __len__(self):
         return len(self.buffer)
@@ -113,7 +128,7 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
     obs, _ = env.reset()
     network.eval()
 
-    game_history = []
+    game_history = [] # Will store (state_obs, mcts_policy, fen_at_state)
     move_count = 0
     terminated = False
     truncated = False
@@ -152,20 +167,17 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         # --- Get Policy and Store History --- 
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
         mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
+
+        # visualize_policy_on_board(env.board, mcts_policy, board_size=400, return_pil_image=True).show()
+        # visualize_policy_distribution(mcts_policy, move_count, env.board)
+        # breakpoint()
+
         current_obs = obs # Observation *before* the move
-        game_history.append((current_obs, mcts_policy))
+        current_fen = env.board.fen() # FEN *before* the move
+        game_history.append((current_obs, mcts_policy, current_fen))
         
         # --- Select and Make Move --- 
-        if np.random.randn() < 0.5:
-            action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
-        else:
-            action_to_take = np.random.randint(1, network.action_space_size)
-
-        # legal_actions = env.board.get_legal_moves_with_action_ids()
-        # if action_to_take not in legal_actions:
-        #     print(f"Illegal move: {action_to_take}")
-        # else:
-        #     print(f"Legal move: {action_to_take}")
+        action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
 
         # Step the *main* environment (or worker's copy)
         obs, reward, terminated, truncated, info = env.step(action_to_take)
@@ -184,15 +196,21 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         else: final_value = 0.0 # Draw
 
     # Assign value targets based on the final_value (set either by game end or illegal move)
-    full_game_data = []
-    for i, (state_obs, policy_target) in enumerate(game_history):
+    full_game_data = [] # Will store (state_obs, policy_target, fen_at_state, value_target)
+    for i, (state_obs, policy_target, fen_at_state) in enumerate(game_history):
         # Determine whose turn it was at the state where the MCTS policy was calculated
         # If state i was White's turn to play, the value target is final_value
         # If state i was Black's turn to play, the value target is -final_value
-        # Assume White plays at even indices (0, 2, ...)
-        is_white_turn_at_state = (i % 2 == 0)
+        # Assuming White plays at even indices (0, 2, ...) if game starts with White
+        # More robust: check board turn from FEN if needed, but this is common for self-play
+        
+        # Determine turn from FEN's active color field
+        temp_board_for_turn_check = type(env.board)() # Create instance of the same board class
+        temp_board_for_turn_check.set_fen(fen_at_state)
+        is_white_turn_at_state = temp_board_for_turn_check.turn == chess.WHITE
+        
         value_target = final_value if is_white_turn_at_state else -final_value
-        full_game_data.append((state_obs, policy_target, value_target))
+        full_game_data.append((state_obs, policy_target, fen_at_state, value_target))
     
     if progress is not None and task_id_game is not None:
         progress.update(task_id_game, visible=False)
@@ -213,12 +231,22 @@ def run_training_loop(cfg: DictConfig) -> None:
     print(f"Using device: {device}")
 
     # Get Board Class dynamically
+    board_cls = None # Initialize to None
     try:
-        board_cls = get_class(cfg.training.board_cls_str)
+        board_cls_str = cfg.training.board_cls_str
+        board_cls = get_class(board_cls_str)
         print(f"Using Board Class: {board_cls.__name__}")
     except Exception as e:
-        print(f"Error importing board class '{cfg.training.board_cls_str}': {e}")
+        print(f"Error importing board class '{board_cls_str}': {e}")
         sys.exit(1)
+    
+    # Create a reusable board instance for checking illegal moves during training
+    # This instance will have its state set by FEN for each sample in a batch.
+    # Ensure board_cls is not None before creating an instance.
+    if board_cls is None:
+        print("Error: Board class was not loaded. Exiting.")
+        sys.exit(1)
+    training_check_board = board_cls()
 
     # Initialize Network using network config
     # Make sure network's __init__ signature matches the parameters passed
@@ -229,6 +257,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
+        value_head_hidden_size=cfg.network.value_head_hidden_size
         # Add other required params based on network.py definition
     ).to(device)
     network.train()
@@ -267,7 +296,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         TextColumn("[progress.description]{task.description}"), BarColumn(),
         TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
         TimeRemainingColumn(), TimeElapsedColumn(),
-        TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f}]"),
+        TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f} Ill: {task.fields[illegal_r]:.2%}]"),
     ]
     progress_columns_selfplay = [
         TextColumn("[progress.description]{task.description}"), BarColumn(),
@@ -399,19 +428,21 @@ def run_training_loop(cfg: DictConfig) -> None:
         network.train()
         total_policy_loss = 0.0
         total_value_loss = 0.0
+        total_illegal_moves_in_iteration = 0
+        total_samples_in_iteration = 0
         training_start_time = time.time()
 
         with Progress(*progress_columns_train, transient=False) as progress:
             task_id_train = progress.add_task(
                 "Training Epochs", total=cfg.training.training_epochs,
-                loss_p=float('nan'), loss_v=float('nan')
+                loss_p=float('nan'), loss_v=float('nan'), illegal_r=float('nan')
             )
             # Use values from cfg
             for epoch in range(cfg.training.training_epochs):
                 batch = replay_buffer.sample(cfg.training.batch_size)
                 if batch is None: continue
 
-                states_np, policy_targets_np, value_targets_np = batch
+                states_np, policy_targets_np, fens_batch, value_targets_np = batch
                 states_tensor = torch.from_numpy(states_np).to(device)
                 policy_targets_tensor = torch.from_numpy(policy_targets_np).to(device)
                 value_targets_tensor = torch.from_numpy(value_targets_np).to(device)
@@ -430,20 +461,44 @@ def run_training_loop(cfg: DictConfig) -> None:
 
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
+                
+                # Calculate illegal move ratio for this batch
+                batch_illegal_moves = 0
+                with torch.no_grad(): # Ensure no gradients are computed for this part
+                    network.eval() # Set to eval mode for consistent argmax prediction
+                    # Policy logits are for the current batch
+                    predicted_action_indices = torch.argmax(policy_logits, dim=1) # Shape: (batch_size)
+                    network.train() # Set back to train mode
+
+                    for i in range(len(fens_batch)):
+                        fen = fens_batch[i]
+                        training_check_board.set_fen(fen)
+                        
+                        # Get the 0-indexed action from network, convert to 1-based for board method
+                        predicted_action_id = predicted_action_indices[i].item() + 1
+                        
+                        if training_check_board.action_id_to_move(predicted_action_id) is None:
+                            batch_illegal_moves += 1
+                
+                total_illegal_moves_in_iteration += batch_illegal_moves
+                total_samples_in_iteration += len(fens_batch)
 
                 current_avg_policy_loss = total_policy_loss / (epoch + 1)
                 current_avg_value_loss = total_value_loss / (epoch + 1)
+                current_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
 
                 progress.update(
                     task_id_train, advance=1,
-                    loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss
+                    loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss,
+                    illegal_r=current_illegal_ratio
                 )
 
         training_duration = time.time() - training_start_time
         avg_policy_loss = total_policy_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
         avg_value_loss = total_value_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
+        avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
         # print(f"Training finished. Duration: {training_duration:.2f}s")
-        print(f"Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}")
+        print(f"Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}")
 
         # --- Save Checkpoint ---
         # Use values from cfg
