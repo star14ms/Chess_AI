@@ -5,7 +5,6 @@ import chess
 import chess.svg
 
 import numpy as np
-import pygame
 from io import BytesIO
 import cairosvg
 from PIL import Image
@@ -291,6 +290,7 @@ class ChessEnv(gym.Env):
             return self._get_image()
 
     def _render_pygame(self):
+        import pygame
         if self.window is None:
             pygame.init()
             pygame.display.init()
@@ -362,6 +362,7 @@ class ChessEnv(gym.Env):
         # --- End Save Video --- 
 
         if self.window is not None:
+            import pygame
             pygame.display.quit()
             pygame.quit()
     

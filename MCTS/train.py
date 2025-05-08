@@ -307,9 +307,26 @@ def run_training_loop(cfg: DictConfig) -> None:
     )
 
     # --- Main Training Loop ---
-    start_iter = 0 # TODO: Implement checkpoint loading to resume
+    start_iter = 0 # Initialize start_iter
     progress.print("Starting training loop...")
     total_training_start_time = time.time()
+
+    # Check for existing checkpoint
+    checkpoint_path = os.path.join(checkpoint_dir, "model.pth")
+    if os.path.exists(checkpoint_path):
+        progress.print(f"\nFound existing checkpoint at {checkpoint_path}")
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            network.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_iter = checkpoint['iteration']
+            progress.print(f"Successfully loaded checkpoint from iteration {start_iter}")
+        except Exception as e:
+            progress.print(f"Error loading checkpoint: {e}")
+            progress.print("Starting training from scratch...")
+            start_iter = 0
+    else:
+        progress.print("No existing checkpoint found. Starting training from scratch...")
 
     # Use num_training_iterations from cfg
     for iteration in range(start_iter, cfg.training.num_training_iterations):
@@ -488,18 +505,25 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_elapsed_time = int(time.time() - total_training_start_time)
         print(f"Iteration {iteration+1} completed in {iteration_duration // 60}m {iteration_duration % 60}s (total: {total_elapsed_time // 60}m {total_elapsed_time % 60}s)")
 
-        # --- Save Checkpoint ---
-        # Use values from cfg
-        if (iteration + 1) % cfg.training.save_interval == 0:
-            checkpoint_path = os.path.join(checkpoint_dir, f"model.pth")
-            # checkpoint_path = os.path.join(checkpoint_dir, f"iteratijn_{iteration+1}.pth")
-            progress.print(f"\nSaving checkpoint to ./{checkpoint_path}")
-            torch.save({
-                'iteration': iteration + 1,
-                'model_state_dict': network.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-            }, checkpoint_path)
-    
+        # Save checkpoint after each iteration
+        checkpoint = {
+            'iteration': iteration + 1,
+            'model_state_dict': network.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }
+        torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
+        progress.print(f"Checkpoint saved at iteration {iteration + 1}")
+
+        # Print iteration summary
+        iteration_time = time.time() - iteration_start_time
+        progress.print(f"Iteration {iteration+1} completed in {iteration_time:.2f} seconds")
+        progress.print(f"Total training time so far: {(time.time() - total_training_start_time)/3600:.2f} hours")
+
+    # Final training summary
+    total_training_time = time.time() - total_training_start_time
+    progress.print(f"\nTraining completed in {total_training_time/3600:.2f} hours")
+    progress.print(f"Final model saved at: {os.path.abspath(os.path.join(checkpoint_dir, 'model.pth'))}")
+
     env.close()
     progress.print("\nTraining loop finished.")
 
@@ -508,9 +532,9 @@ def run_training_loop(cfg: DictConfig) -> None:
 # Ensure config_path points to the directory containing train_mcts.yaml
 @hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
 def main(cfg: DictConfig) -> None:
-    # print("Configuration:\n")
+    print("Configuration:\n")
     # Use OmegaConf.to_yaml for structured printing
-    # print(OmegaConf.to_yaml(cfg))
+    print(OmegaConf.to_yaml(cfg))
     run_training_loop(cfg)
 
 if __name__ == "__main__":

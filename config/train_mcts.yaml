@@ -61,6 +61,6 @@ training:
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
   self_play_games_per_epoch: 128
   max_game_moves: 200
-  checkpoint_dir: ${hydra:run.dir}/checkpoints # Relative to hydra output
+  checkpoint_dir: ./checkpoints
   save_interval: 10
   board_cls_str: chess_gym.chess_custom.FullyTrackedBoard
