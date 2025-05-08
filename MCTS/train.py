@@ -148,26 +148,32 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         progress.start_task(task_id_game)
 
     while not terminated and not truncated and move_count < max_moves:
-        # --- Create MCTS root node with FEN and board_cls --- 
-        # Need board_cls from the env instance
-        root_node = MCTSNode(env.board.copy())
-
-        # --- Create MCTS instance --- 
-        # Pass env only if running sequentially
-        mcts_env = env if not train_cfg.get('use_multiprocessing', False) else None # Determine env based on flag
-        mcts_player = MCTS(
-            network,
-            device=device,
-            env=mcts_env,  # Pass env (or None)
-            C_puct=c_puct
-        )
-
-        # --- Run MCTS Search --- 
-        mcts_player.search(root_node, mcts_iterations, progress=progress)
-
         # --- Get Policy and Store History --- 
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
-        mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
+        
+        if mcts_cfg.iterations > 0:
+            # --- Create MCTS root node with FEN and board_cls --- 
+            root_node = MCTSNode(env.board.copy())
+            # --- Create MCTS instance --- 
+            mcts_env = env if not train_cfg.get('use_multiprocessing', False) else None
+            mcts_player = MCTS(
+                network,
+                device=device,
+                env=mcts_env,
+                C_puct=c_puct
+            )
+            # --- Run MCTS Search --- 
+            mcts_player.search(root_node, mcts_iterations, progress=progress)
+            mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
+            action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
+        else:
+            # 1 for all legal moves, 0 for all illegal moves
+            mcts_policy = np.zeros(network.action_space_size)
+            legal_actions = env.board.get_legal_moves_with_action_ids()
+            for action_id in legal_actions:
+                mcts_policy[action_id - 1] = 1
+            # Randomly select from legal moves
+            action_to_take = np.random.choice(legal_actions)
 
         # visualize_policy_on_board(env.board, mcts_policy, board_size=400, return_pil_image=True).show()
         # visualize_policy_distribution(mcts_policy, move_count, env.board)
@@ -177,9 +183,6 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         board_copy_at_state = env.board.copy() # Store a copy of the board
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
-        # --- Select and Make Move --- 
-        action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
-
         # Step the *main* environment (or worker's copy)
         obs, reward, terminated, truncated, info = env.step(action_to_take)
 
@@ -280,7 +283,10 @@ def run_training_loop(cfg: DictConfig) -> None:
     replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
 
     # Loss Functions
-    policy_loss_fn = nn.CrossEntropyLoss()
+    if cfg.mcts.iterations > 0:
+        policy_loss_fn = nn.CrossEntropyLoss()
+    else:
+        policy_loss_fn = nn.BCEWithLogitsLoss()  # BCE with logits combines sigmoid and BCE loss
     value_loss_fn = nn.MSELoss()
 
     # Checkpoint directory (relative to hydra run dir)
