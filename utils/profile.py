@@ -45,6 +45,6 @@ def get_optimal_worker_count(total_cores, num_workers_config=None):
         num_workers = min(num_workers_config, total_cores - 1)
     else:
         # Default to total_cores - 1, optimized to even number for high core counts
-        num_workers = _get_optimal_count(total_cores - 1)
+        num_workers = 1
     
     return num_workers

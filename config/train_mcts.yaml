@@ -57,7 +57,7 @@ training:
   num_training_iterations: 1000
   training_epochs: 100
   batch_size: 128
-  use_multiprocessing: true # Set to false for sequential self-play
+  use_multiprocessing: false # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
   self_play_games_per_epoch: 128
   max_game_moves: 200

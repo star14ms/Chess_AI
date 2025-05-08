@@ -297,13 +297,15 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_cores=total_cores,
         num_workers_config=num_workers_config,
     )
-    if use_multiprocessing_flag:
+    if use_multiprocessing_flag and num_workers > 1:
         progress.print(f"Using {num_workers} workers for self-play (out of {total_cores} CPU cores).")
+    else:
+        progress.print(f"Using {device} for self-play.")
 
     env = ChessEnv(
         observation_mode=cfg.env.observation_mode,
-        render_mode=cfg.env.render_mode if not use_multiprocessing_flag else None,
-        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing_flag else None
+        render_mode=cfg.env.render_mode if not use_multiprocessing_flag and device == 'cpu' else None,
+        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing_flag and device == 'cpu' else None
     )
 
     # --- Main Training Loop ---
@@ -341,11 +343,16 @@ def run_training_loop(cfg: DictConfig) -> None:
         )
         progress.columns = self_play_columns
         
-        network.to('cpu').eval() 
+        # Only move to CPU if using multiple workers
+        if use_multiprocessing_flag:
+            network.to('cpu').eval()
+        else:
+            network.to(device).eval()
+            
         games_data_collected = []
         iteration_start_time_selfplay = time.time()
 
-        if use_multiprocessing_flag:
+        if use_multiprocessing_flag and num_workers > 1:
             # Prepare arguments for workers
             # Pass network state_dict directly since it's clean
             network_state_dict = network.state_dict()
@@ -399,8 +406,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     network,
                     cfg.mcts,       # Pass MCTS config section
                     cfg.training,   # Pass Training config section
-                    env,            # Use the main env instance
-                    progress=progress,
+                    env if device == 'cpu' else None,  # Use the main env instance
+                    progress=progress if device == 'cpu' else None,
                     device=device
                 )
                 games_data_collected.extend(game_data)
