@@ -221,14 +221,16 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
 # Use DictConfig for type hint from Hydra
 def run_training_loop(cfg: DictConfig) -> None: 
     """Main function to run the training loop using Hydra config."""
+    # Progress bar setup (as before)
+    progress = Progress(transient=False)
+    progress.start()
 
     # --- Setup ---
     if cfg.training.device == "auto":
-        device = torch.device("cpu")
-        # device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     else:
         device = torch.device(cfg.training.device)
-    print(f"Using device: {device}")
+    progress.print(f"Using device: {device}" + " (but cpu during self-play)" if "cpu" not in device.type else "")
 
     # Initialize Network using network config
     # Make sure network's __init__ signature matches the parameters passed
@@ -241,9 +243,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         num_pieces=cfg.network.num_pieces,
         value_head_hidden_size=cfg.network.value_head_hidden_size
         # Add other required params based on network.py definition
-    ).to(device)
+    )
     network.train()
-    print("Network initialized.")
+    progress.print("Network initialized.")
 
     # Initialize Optimizer using optimizer config
     opt_cfg = cfg.optimizer
@@ -255,7 +257,7 @@ def run_training_loop(cfg: DictConfig) -> None:
          optimizer = optim.SGD(network.parameters(), lr=opt_cfg.learning_rate, momentum=momentum, weight_decay=opt_cfg.weight_decay)
     else:
         raise ValueError(f"Unsupported optimizer: {opt_cfg.type}")
-    print(f"Optimizer initialized: {opt_cfg.type}")
+    progress.print(f"Optimizer initialized: {opt_cfg.type}")
 
     # Initialize Replay Buffer
     replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
@@ -267,22 +269,30 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Checkpoint directory (relative to hydra run dir)
     checkpoint_dir = cfg.training.checkpoint_dir 
     os.makedirs(checkpoint_dir, exist_ok=True)
-    print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
-
-    # --- Main Training Loop ---
-    start_iter = 0 # TODO: Implement checkpoint loading to resume
-    print("Starting training loop...")
-    total_training_start_time = time.time()
-
-    # Progress bar setup (as before)
-    progress = Progress(transient=False)
-    progress.start()
+    progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
+    
+    # Determine number of workers
+    num_workers_config = cfg.training.get('self_play_workers', 0)
+    total_cores = os.cpu_count()
+    
+    # Get optimal worker count using the utility function
+    from utils.profile import get_optimal_worker_count
+    num_workers = get_optimal_worker_count(
+        total_cores=total_cores,
+        num_workers_config=num_workers_config,
+    )
+    progress.print(f"Using {num_workers} workers for self-play (out of {total_cores} CPU cores).")
 
     env = ChessEnv(
         observation_mode=cfg.env.observation_mode,
-        render_mode=cfg.env.render_mode,
-        save_video_folder=cfg.env.save_video_folder
+        render_mode=cfg.env.render_mode if not cfg.training.get('use_multiprocessing', False) else None,
+        save_video_folder=cfg.env.save_video_folder if not cfg.training.get('use_multiprocessing', False) else None
     )
+
+    # --- Main Training Loop ---
+    start_iter = 0 # TODO: Implement checkpoint loading to resume
+    progress.print("Starting training loop...")
+    total_training_start_time = time.time()
 
     # Use num_training_iterations from cfg
     for iteration in range(start_iter, cfg.training.num_training_iterations):
@@ -297,7 +307,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         )
         progress.columns = self_play_columns
         
-        network.eval() 
+        network.to('cpu').eval() 
         games_data_collected = []
         iteration_start_time_selfplay = time.time()
 
@@ -308,25 +318,10 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         if use_multiprocessing_flag:
             # progress.print("Starting self-play phase (parallel)...")
-            # Determine number of workers
-            # Ensure cfg.training.self_play_workers exists in your config!
-            try:
-                num_workers_config = cfg.training.self_play_workers
-            except Exception:
-                progress.print("Warning: cfg.training.self_play_workers not found. Defaulting workers.")
-                num_workers_config = 0 # Indicate to use default
-
-            if num_workers_config > 0:
-                num_workers = min(num_workers_config, os.cpu_count())
-            else:
-                # Default heuristic if 0 or not specified: use half the CPUs, minimum 1
-                num_workers = max(1, os.cpu_count() // 2)
-            # progress.print(f"Using {num_workers} workers for self-play.")
-
             # Prepare arguments for workers
             # Pass network state_dict instead of the full object for better pickling
             network_state_dict = network.state_dict()
-            device_str = str(device) # Pass device as string
+            device_str = 'cpu' # Pass device as string
             # Pack arguments into tuples for the wrapper function
             worker_args_packed = [
                 (game_num, network_state_dict, cfg, device_str)
@@ -407,7 +402,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.columns = training_columns
 
         # progress.print("Starting training phase...")
-        network.train()
+        network.to(device).train()
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_illegal_moves_in_iteration = 0

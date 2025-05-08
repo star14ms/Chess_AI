@@ -37,7 +37,7 @@ env:
 
 mcts:
   _target_: MCTS.config_schema.MCTSConfig
-  iterations: 32
+  iterations: 100
   c_puct: 1.41
   temperature_start: 1.0
   temperature_end: 0.1
@@ -53,13 +53,13 @@ optimizer:
 training:
   _target_: MCTS.config_schema.TrainingConfig
   device: auto
-  replay_buffer_size: 10000
-  num_training_iterations: 10000
-  training_epochs: 30
-  batch_size: 64
+  replay_buffer_size: 65536
+  num_training_iterations: 1000
+  training_epochs: 100
+  batch_size: 128
   use_multiprocessing: true # Set to false for sequential self-play
-  self_play_workers: 8 # Example: Use 8 parallel workers for self-play games
-  self_play_games_per_epoch: 1000
+  self_play_workers: null # Example: Use 8 parallel workers for self-play games
+  self_play_games_per_epoch: 128
   max_game_moves: 200
   checkpoint_dir: ${hydra:run.dir}/checkpoints # Relative to hydra output
   save_interval: 10
