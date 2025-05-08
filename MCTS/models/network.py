@@ -145,24 +145,23 @@ class ChessNetwork(nn.Module):
         """Forward pass through the network.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (N, C_in_total, H, W). 
-                                Assumes the last channel is piece IDs.
+            x (torch.Tensor): Input tensor of shape (N, C_in_total, H, W)
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: policy_logits (N, action_space_size), 
                                               value (N, 1)
         """
         N = x.shape[0]
-        if x.shape[1] != self.input_channels: # Check against total input channels
+        if x.shape[1] != self.input_channels:
              raise ValueError(f"Input tensor channel dimension ({x.shape[1]}) doesn't match expected total channels ({self.input_channels})")
 
         # --- Feature Extraction --- 
-        conv_features = self.first_conv_block(x) # (N, C_final, H, W)
+        conv_features = self.first_conv_block(x)
 
         num_stages = self.num_residual_layers
         for i in range(num_stages):
             residual_block = self.residual_blocks[i]
-            conv_features = residual_block(conv_features) # Output: (N, C_stage_out, H, W)
+            conv_features = residual_block(conv_features)
 
         policy_logits = self.policy_head(conv_features)
         value = self.value_head(conv_features)

@@ -18,7 +18,7 @@ from models.network import ChessNetwork
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from chess_gym.envs import ChessEnv
-from utils.profile import get_optimal_worker_count, profile_model
+from utils.profile import get_optimal_worker_count, profile_model, format_time
 
 sys.path.append('.')
 # Dynamically import board class later using get_class
@@ -419,7 +419,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             replay_buffer.add(experience)
 
         self_play_duration = int(time.time() - iteration_start_time_selfplay)
-        progress.print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration // 60}m {self_play_duration % 60}s. Buffer size: {len(replay_buffer)}")
+        progress.print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
 
         # --- Training Phase ---
         if len(replay_buffer) < cfg.training.batch_size:
@@ -510,7 +510,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}")
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
-        print(f"Iteration {iteration+1} completed in {iteration_duration // 60}m {iteration_duration % 60}s (total: {total_elapsed_time // 60}m {total_elapsed_time % 60}s)")
+        progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)})")
 
         # Save checkpoint after each iteration
         checkpoint = {
@@ -521,14 +521,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
         progress.print(f"Checkpoint saved at iteration {iteration + 1}")
 
-        # Print iteration summary
-        iteration_time = time.time() - iteration_start_time
-        progress.print(f"Iteration {iteration+1} completed in {iteration_time:.2f} seconds")
-        progress.print(f"Total training time so far: {(time.time() - total_training_start_time)/3600:.2f} hours")
-
     # Final training summary
     total_training_time = time.time() - total_training_start_time
-    progress.print(f"\nTraining completed in {total_training_time/3600:.2f} hours")
+    progress.print(f"\nTraining completed in {format_time(int(total_training_time))}")
     progress.print(f"Final model saved at: {os.path.abspath(os.path.join(checkpoint_dir, 'model.pth'))}")
 
     env.close()
