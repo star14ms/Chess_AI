@@ -19,6 +19,7 @@ from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from chess_gym.envs import ChessEnv
 from utils.visualize import visualize_policy_on_board, visualize_policy_distribution
+from utils.analyze import interpret_action
 
 sys.path.append('.')
 # Dynamically import board class later using get_class
@@ -129,7 +130,7 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
     obs, _ = env.reset()
     network.eval()
 
-    game_history = [] # Will store (state_obs, mcts_policy, fen_at_state)
+    game_history = [] # Will store (state_obs, mcts_policy, board_at_state)
     move_count = 0
     terminated = False
     truncated = False
@@ -150,7 +151,7 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
     while not terminated and not truncated and move_count < max_moves:
         # --- Create MCTS root node with FEN and board_cls --- 
         # Need board_cls from the env instance
-        root_node = MCTSNode(env.board)
+        root_node = MCTSNode(env.board.copy())
 
         # --- Create MCTS instance --- 
         # Pass env only if running sequentially
@@ -174,8 +175,6 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         # breakpoint()
 
         current_obs = obs # Observation *before* the move
-        # current_fen = env.board.fen() # FEN *before* the move
-        # game_history.append((current_obs, mcts_policy, current_fen))
         board_copy_at_state = env.board.copy() # Store a copy of the board
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
@@ -184,11 +183,6 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
 
         # Step the *main* environment (or worker's copy)
         obs, reward, terminated, truncated, info = env.step(action_to_take)
-
-        # if action_to_take not in legal_actions:
-        #     print(f"Illegal move: {env.board.is_foul()} {terminated}")
-        # else:
-        #     print(f"Legal move: {env.board.is_foul()} {terminated}")
 
         if progress is not None:
             progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
@@ -278,19 +272,11 @@ def run_training_loop(cfg: DictConfig) -> None:
     # --- Main Training Loop ---
     start_iter = 0 # TODO: Implement checkpoint loading to resume
     print("Starting training loop...")
+    total_training_start_time = time.time()
 
     # Progress bar setup (as before)
-    progress_columns_train = [
-        TextColumn("[progress.description]{task.description}"), BarColumn(),
-        TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
-        TimeRemainingColumn(), TimeElapsedColumn(),
-        TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f} Ill: {task.fields[illegal_r]:.2%}]"),
-    ]
-    progress_columns_selfplay = [
-        TextColumn("[progress.description]{task.description}"), BarColumn(),
-        TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
-        TimeRemainingColumn(), TimeElapsedColumn(),
-    ]
+    progress = Progress(transient=False)
+    progress.start()
 
     env = ChessEnv(
         observation_mode=cfg.env.observation_mode,
@@ -301,9 +287,16 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Use num_training_iterations from cfg
     for iteration in range(start_iter, cfg.training.num_training_iterations):
         iteration_start_time = time.time()
-        print(f"\n--- Training Iteration {iteration+1}/{cfg.training.num_training_iterations} ---")
+        progress.print(f"\n--- Training Iteration {iteration+1}/{cfg.training.num_training_iterations} ---")
 
         # --- Self-Play Phase --- 
+        self_play_columns = (
+            TextColumn("[progress.description]{task.description}"), BarColumn(),
+            TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
+            TimeRemainingColumn(), TimeElapsedColumn(),
+        )
+        progress.columns = self_play_columns
+        
         network.eval() 
         games_data_collected = []
         iteration_start_time_selfplay = time.time()
@@ -314,13 +307,13 @@ def run_training_loop(cfg: DictConfig) -> None:
         use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
 
         if use_multiprocessing_flag:
-            # print("Starting self-play phase (parallel)...")
+            # progress.print("Starting self-play phase (parallel)...")
             # Determine number of workers
             # Ensure cfg.training.self_play_workers exists in your config!
             try:
                 num_workers_config = cfg.training.self_play_workers
             except Exception:
-                print("Warning: cfg.training.self_play_workers not found. Defaulting workers.")
+                progress.print("Warning: cfg.training.self_play_workers not found. Defaulting workers.")
                 num_workers_config = 0 # Indicate to use default
 
             if num_workers_config > 0:
@@ -328,7 +321,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             else:
                 # Default heuristic if 0 or not specified: use half the CPUs, minimum 1
                 num_workers = max(1, os.cpu_count() // 2)
-            # print(f"Using {num_workers} workers for self-play.")
+            # progress.print(f"Using {num_workers} workers for self-play.")
 
             # Prepare arguments for workers
             # Pass network state_dict instead of the full object for better pickling
@@ -340,28 +333,24 @@ def run_training_loop(cfg: DictConfig) -> None:
                 for game_num in range(cfg.training.self_play_games_per_epoch)
             ]
 
-            results = []
             pool = None # Initialize pool to None
             try:
                 # Use 'spawn' context for better compatibility across platforms, especially with CUDA/PyTorch
                 pool = multiprocessing.get_context("spawn").Pool(processes=num_workers)
-                # print(f"Submitting {len(worker_args_packed)} games to pool...")
+                # progress.print(f"Submitting {len(worker_args_packed)} games to pool...")
 
                 # Use imap_unordered to get results as they complete
                 results_iterator = pool.imap_unordered(worker_wrapper, worker_args_packed)
 
                 # Process results with a progress bar
-                with Progress(*progress_columns_selfplay, transient=False) as progress:
-                    task_id_selfplay = progress.add_task(
-                        "Self-Play",
-                        total=len(worker_args_packed)
-                    )
-                    # Iterate over results as they become available
-                    for game_data in results_iterator:
-                        if game_data: # Check if worker returned valid data
-                            games_data_collected.extend(game_data)
-                        # Update progress for each completed game
-                        progress.update(task_id_selfplay, advance=1)
+                task_id_selfplay = progress.add_task("Self-Play", total=len(worker_args_packed))
+                # Iterate over results as they become available
+                for game_data in results_iterator:
+                    if game_data: # Check if worker returned valid data
+                        games_data_collected.extend(game_data)
+                    # Update progress for each completed game
+                    progress.update(task_id_selfplay, advance=1)
+                progress.update(task_id_selfplay, visible=False)
                 # Explicitly close and join the pool after processing results
                 pool.close()
                 pool.join()
@@ -378,136 +367,137 @@ def run_training_loop(cfg: DictConfig) -> None:
                     pool.join()
 
         else: # Sequential Execution
-            # print("Starting self-play phase (sequential)...")
-            with Progress(*progress_columns_selfplay, transient=False) as progress:
-                task_id_selfplay = progress.add_task(
-                    "Self-Play", 
-                    total=cfg.training.self_play_games_per_epoch
+            # progress.print("Starting self-play phase (sequential)...")
+            task_id_selfplay = progress.add_task("Self-Play", total=cfg.training.self_play_games_per_epoch)
+            # Use values from cfg
+            for game_num in range(cfg.training.self_play_games_per_epoch):
+                progress.update(task_id_selfplay, description=f"Self-Play Game ({game_num+1}/{cfg.training.self_play_games_per_epoch})")
+                # Run game in the main process using the main env instance
+                game_data = run_self_play_game(
+                    network,
+                    cfg.mcts,       # Pass MCTS config section
+                    cfg.training,   # Pass Training config section
+                    env,            # Use the main env instance
+                    progress=progress,
+                    device=device
                 )
-                # Use values from cfg
-                for game_num in range(cfg.training.self_play_games_per_epoch):
-                    progress.update(task_id_selfplay, description=f"Self-Play Game ({game_num+1}/{cfg.training.self_play_games_per_epoch})")
-                    # Run game in the main process using the main env instance
-                    game_data = run_self_play_game(
-                        network,
-                        cfg.mcts,       # Pass MCTS config section
-                        cfg.training,   # Pass Training config section
-                        env,            # Use the main env instance
-                        progress=progress,
-                        device=device
-                    )
-                    games_data_collected.extend(game_data)
-                    progress.update(task_id_selfplay, advance=1)
+                games_data_collected.extend(game_data)
+                progress.update(task_id_selfplay, advance=1)
+            progress.update(task_id_selfplay, visible=False)
         # >>>>>>>>>>>>>> END OF CONDITIONAL EXECUTION BLOCK <<<<<<<<<<<<<<<<
 
         # Add collected data to replay buffer (outside the conditional block)
         for experience in games_data_collected:
             replay_buffer.add(experience)
 
-        self_play_duration = time.time() - iteration_start_time_selfplay
-        print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration:.2f}s. Buffer size: {len(replay_buffer)}")
+        self_play_duration = int(time.time() - iteration_start_time_selfplay)
+        progress.print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration // 60}m {self_play_duration % 60}s. Buffer size: {len(replay_buffer)}")
 
         # --- Training Phase ---
         if len(replay_buffer) < cfg.training.batch_size:
-            print("Not enough data in buffer to start training. Skipping phase.")
+            progress.print("Not enough data in buffer to start training. Skipping phase.")
             continue
+        
+        training_columns = (
+            TextColumn("[progress.description]{task.description}"), BarColumn(),
+            TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
+            TimeRemainingColumn(), TimeElapsedColumn(),
+            TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f} Ill: {task.fields[illegal_r]:.2%}]")
+        )
+        progress.columns = training_columns
 
-        # print("Starting training phase...")
+        # progress.print("Starting training phase...")
         network.train()
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_illegal_moves_in_iteration = 0
         total_samples_in_iteration = 0
-        training_start_time = time.time()
 
-        with Progress(*progress_columns_train, transient=False) as progress:
-            task_id_train = progress.add_task(
-                "Training Epochs", total=cfg.training.training_epochs,
-                loss_p=float('nan'), loss_v=float('nan'), illegal_r=float('nan')
+        task_id_train = progress.add_task(
+            "Training Epochs", total=cfg.training.training_epochs,
+            loss_p=float('nan'), loss_v=float('nan'), illegal_r=float('nan')
+        )
+        # Use values from cfg
+        for epoch in range(cfg.training.training_epochs):
+            batch = replay_buffer.sample(cfg.training.batch_size)
+            if batch is None: continue
+
+            # states_np, policy_targets_np, fens_batch, value_targets_np = batch
+            states_np, policy_targets_np, boards_batch, value_targets_np = batch # Unpack boards
+            states_tensor = torch.from_numpy(states_np).to(device)
+            policy_targets_tensor = torch.from_numpy(policy_targets_np).to(device)
+            value_targets_tensor = torch.from_numpy(value_targets_np).to(device)
+
+            policy_logits, value_preds = network(states_tensor)
+
+            policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
+            # Ensure value shapes match before loss calc
+            value_loss = value_loss_fn(value_preds.squeeze(-1), value_targets_tensor.squeeze(-1))
+
+            total_loss = policy_loss + value_loss
+
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+
+            total_policy_loss += policy_loss.item()
+            total_value_loss += value_loss.item()
+            
+            # Calculate illegal move ratio for this batch
+            batch_illegal_moves = 0
+            with torch.no_grad(): # Ensure no gradients are computed for this part
+                network.eval() # Set to eval mode for consistent argmax prediction
+                # Policy logits are for the current batch
+                predicted_action_indices = torch.argmax(policy_logits, dim=1) # Shape: (batch_size)
+                network.train() # Set back to train mode
+
+                # for i in range(len(fens_batch)):
+                for i in range(len(boards_batch)): # Iterate over boards_batch
+                    current_board_from_batch = boards_batch[i] # Use the board object from the batch
+                    
+                    # Get the 0-indexed action from network, convert to 1-based for board method
+                    predicted_action_id = predicted_action_indices[i].item() + 1
+                    
+                    if current_board_from_batch.action_id_to_move(predicted_action_id) is None: # Use board from batch
+                        batch_illegal_moves += 1
+            
+            total_illegal_moves_in_iteration += batch_illegal_moves
+            # total_samples_in_iteration += len(fens_batch)
+            total_samples_in_iteration += len(boards_batch) # Use length of boards_batch
+
+            current_avg_policy_loss = total_policy_loss / (epoch + 1)
+            current_avg_value_loss = total_value_loss / (epoch + 1)
+            current_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
+
+            progress.update(
+                task_id_train, advance=1,
+                loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss,
+                illegal_r=current_illegal_ratio
             )
-            # Use values from cfg
-            for epoch in range(cfg.training.training_epochs):
-                batch = replay_buffer.sample(cfg.training.batch_size)
-                if batch is None: continue
+        progress.update(task_id_train, visible=False)
 
-                # states_np, policy_targets_np, fens_batch, value_targets_np = batch
-                states_np, policy_targets_np, boards_batch, value_targets_np = batch # Unpack boards
-                states_tensor = torch.from_numpy(states_np).to(device)
-                policy_targets_tensor = torch.from_numpy(policy_targets_np).to(device)
-                value_targets_tensor = torch.from_numpy(value_targets_np).to(device)
-
-                policy_logits, value_preds = network(states_tensor)
-
-                policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
-                # Ensure value shapes match before loss calc
-                value_loss = value_loss_fn(value_preds.squeeze(-1), value_targets_tensor.squeeze(-1))
-
-                total_loss = policy_loss + value_loss
-
-                optimizer.zero_grad()
-                total_loss.backward()
-                optimizer.step()
-
-                total_policy_loss += policy_loss.item()
-                total_value_loss += value_loss.item()
-                
-                # Calculate illegal move ratio for this batch
-                batch_illegal_moves = 0
-                with torch.no_grad(): # Ensure no gradients are computed for this part
-                    network.eval() # Set to eval mode for consistent argmax prediction
-                    # Policy logits are for the current batch
-                    predicted_action_indices = torch.argmax(policy_logits, dim=1) # Shape: (batch_size)
-                    network.train() # Set back to train mode
-
-                    # for i in range(len(fens_batch)):
-                    for i in range(len(boards_batch)): # Iterate over boards_batch
-                        current_board_from_batch = boards_batch[i] # Use the board object from the batch
-                        
-                        # Get the 0-indexed action from network, convert to 1-based for board method
-                        predicted_action_id = predicted_action_indices[i].item() + 1
-                        
-                        # if training_check_board.action_id_to_move(predicted_action_id) is None:
-                        if current_board_from_batch.action_id_to_move(predicted_action_id) is None: # Use board from batch
-                            batch_illegal_moves += 1
-                
-                total_illegal_moves_in_iteration += batch_illegal_moves
-                # total_samples_in_iteration += len(fens_batch)
-                total_samples_in_iteration += len(boards_batch) # Use length of boards_batch
-
-                current_avg_policy_loss = total_policy_loss / (epoch + 1)
-                current_avg_value_loss = total_value_loss / (epoch + 1)
-                current_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
-
-                progress.update(
-                    task_id_train, advance=1,
-                    loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss,
-                    illegal_r=current_illegal_ratio
-                )
-
-        training_duration = time.time() - training_start_time
         avg_policy_loss = total_policy_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
         avg_value_loss = total_value_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
         avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
-        # print(f"Training finished. Duration: {training_duration:.2f}s")
-        print(f"Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}")
+        progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}")
+        iteration_duration = int(time.time() - iteration_start_time)
+        total_elapsed_time = int(time.time() - total_training_start_time)
+        print(f"Iteration {iteration+1} completed in {iteration_duration // 60}m {iteration_duration % 60}s (total: {total_elapsed_time // 60}m {total_elapsed_time % 60}s)")
 
         # --- Save Checkpoint ---
         # Use values from cfg
         if (iteration + 1) % cfg.training.save_interval == 0:
             checkpoint_path = os.path.join(checkpoint_dir, f"model.pth")
-            # checkpoint_path = os.path.join(checkpoint_dir, f"iteration_{iteration+1}.pth")
-            print(f"Saving checkpoint to {checkpoint_path}...")
+            # checkpoint_path = os.path.join(checkpoint_dir, f"iteratijn_{iteration+1}.pth")
+            progress.print(f"\nSaving checkpoint to ./{checkpoint_path}")
             torch.save({
                 'iteration': iteration + 1,
                 'model_state_dict': network.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }, checkpoint_path)
-
-        iteration_duration = time.time() - iteration_start_time
-        print(f"Iteration {iteration+1} completed in {iteration_duration:.2f}s")
     
     env.close()
-    print("\nTraining loop finished.")
+    progress.print("\nTraining loop finished.")
 
 
 # --- Hydra Entry Point --- 
