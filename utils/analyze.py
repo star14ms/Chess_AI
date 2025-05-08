@@ -53,8 +53,8 @@ def uci_to_relative_knight_action_id(uci_move: str) -> Optional[int]:
 
 def uci_to_relative_bishop_action_id(uci_move: str) -> Optional[int]:
     """Calculates the RELATIVE action ID (1-28) for a bishop move pattern."""
-     # --- Same logic as previous uci_to_bishop_action_id ---
-     # --- Returns the ID between 1-28 or None ---
+    # --- Same logic as previous uci_to_bishop_action_id ---
+    # --- Returns the ID between 1-28 or None ---
     if len(uci_move) != 4: return None
     try:
         start_sq, end_sq = chess.parse_square(uci_move[0:2]), chess.parse_square(uci_move[2:4])
@@ -112,8 +112,8 @@ def uci_to_relative_king_action_id(uci_move: str) -> Optional[int]:
     if abs(file_change) == 2 and rank_change == 0:
         # Check if the start square is a typical king starting square for castling
         if start_file == chess.E1 or start_file == chess.E8:
-             if file_change == 2: return 9 # Kingside (e.g., e1g1 or e8g8)
-             if file_change == -2: return 10 # Queenside (e.g., e1c1 or e8c8)
+            if file_change == 2: return 9 # Kingside (e.g., e1g1 or e8g8)
+            if file_change == -2: return 10 # Queenside (e.g., e1c1 or e8c8)
         # If the start square isn't E1/E8 but it's a 2-square horizontal move,
         # it's invalid for our standard definition, return None or handle as error.
         return None
@@ -123,8 +123,8 @@ def uci_to_relative_king_action_id(uci_move: str) -> Optional[int]:
     if abs(file_change) > 1 or abs(rank_change) > 1 or (file_change == 0 and rank_change == 0):
         # If it wasn't castling and isn't a single step move, return None
         # This condition might be slightly redundant now but keeps the logic clear.
-         if not (abs(file_change) == 2 and rank_change == 0): # Only return None if not already handled castling
-             return None
+        if not (abs(file_change) == 2 and rank_change == 0): # Only return None if not already handled castling
+            return None
 
     # Standard single-step moves (relative IDs 1-8)
     king_move_patterns = { # Clockwise from N
@@ -174,7 +174,7 @@ def uci_to_relative_pawn_action_id(uci_move: str, color: chess.Color) -> Optiona
         start_sq = chess.parse_square(move_part[0:2])
         end_sq = chess.parse_square(move_part[2:4])
         if promotion_char and promotion_char not in ['q', 'n', 'b', 'r']:
-             return None # Invalid promotion piece
+            return None # Invalid promotion piece
     except ValueError:
         return None # Invalid square notation
 
@@ -216,11 +216,11 @@ def uci_to_relative_pawn_action_id(uci_move: str, color: chess.Color) -> Optiona
             else: return None
         elif abs(file_change) == 1: # Diagonal moves (Capture or EP)
             if rank_change == expected_rank_change:
-                 # Map diagonal moves based on new order
-                 if file_change == -1:
-                     relative_id = 3 # Cap Left <- Changed from 2
-                 else: # file_change == 1
-                     relative_id = 4 # Cap Right <- Changed from 3
+                # Map diagonal moves based on new order
+                if file_change == -1:
+                    relative_id = 3 # Cap Left <- Changed from 2
+                else: # file_change == 1
+                    relative_id = 4 # Cap Right <- Changed from 3
             else: return None
         else: return None
 
@@ -264,8 +264,8 @@ def get_base_action_id(color: chess.Color, piece_type: chess.PieceType, instance
     }
     max_expected_index = max_instance_map.get(piece_type, -1)
     if instance_index > max_expected_index:
-         logging.warning(f"Invalid instance index {instance_index} for piece type {piece_type}. Max expected: {max_expected_index}")
-         return None
+        logging.warning(f"Invalid instance index {instance_index} for piece type {piece_type}. Max expected: {max_expected_index}")
+        return None
 
     base_id = 1  # Action IDs are 1-based
     # Consistent order of pieces for calculating base IDs
@@ -278,7 +278,7 @@ def get_base_action_id(color: chess.Color, piece_type: chess.PieceType, instance
     if color == chess.BLACK and combine_color_ranges:
         # If combining ranges, add all white piece ranges first for black pieces
         for p_type, count in current_piece_order:
-             base_id += count * rel_counts[p_type]
+            base_id += count * rel_counts[p_type]
     # --- End Conditional Offset ---
 
     # Add ranges for preceding pieces of the *target color*
@@ -289,7 +289,7 @@ def get_base_action_id(color: chess.Color, piece_type: chess.PieceType, instance
             return base_id
         else:
             # Add full range for this preceding piece type of the same color
-             base_id += count * rel_counts[p_type]
+            base_id += count * rel_counts[p_type]
 
     # Should not be reached if piece_type is valid
     logging.error(f"Error: Piece type {piece_type} not found in order.") # Use logging
@@ -517,22 +517,22 @@ def interpret_tile(
                 raise ValueError(f"observation_array numpy array must have shape (14, 8, 8), got {observation_array.shape}")
             obs_array_np = observation_array
         else:
-             raise TypeError(f"observation_array must be a numpy array or torch.Tensor, got {type(observation_array)}")
+            raise TypeError(f"observation_array must be a numpy array or torch.Tensor, got {type(observation_array)}")
         # --- End observation_array handling ---
-            
+
         try:
             square_index = chess.parse_square(tile_input.lower())
             rank = chess.square_rank(square_index)
             file = chess.square_file(square_index)
             if not (0 <= rank < 8 and 0 <= file < 8):
-                 raise ValueError
+                raise ValueError
             # Use the converted numpy array for indexing
             tile = obs_array_np[:, rank, file]
 
         except ValueError:
             raise ValueError(f"Invalid square notation: '{tile_input}'")
         except IndexError:
-             raise IndexError(f"Could not access observation_array[:, {rank}, {file}] for input '{tile_input}'.")
+            raise IndexError(f"Could not access observation_array[:, {rank}, {file}] for input '{tile_input}'.")
 
     # --- Handle Tensor or Numpy Array Input for tile_input ---
     elif isinstance(tile_input, torch.Tensor):
@@ -541,10 +541,10 @@ def interpret_tile(
             raise ValueError(f"Input torch.Tensor must have shape (14,), got {tile_input.shape}")
         # Ensure it's on CPU and detached from graph before converting
         tile = tile_input.detach().cpu().numpy()
-    
+
     elif isinstance(tile_input, np.ndarray):
         if tile_input.shape != (14,): # Updated shape
-             raise ValueError(f"Input numpy array must have shape (14,), got {tile_input.shape}")
+            raise ValueError(f"Input numpy array must have shape (14,), got {tile_input.shape}")
         tile = tile_input
     else:
         raise TypeError(f"tile_input must be a string, numpy array, or torch.Tensor, got {type(tile_input)}")
@@ -569,9 +569,9 @@ def interpret_tile(
                 current_piece_type_name = piece_type_names[piece_type_index]
                 description_parts.append(f"{color} {current_piece_type_name}")
             else:
-                 description_parts.append(f"{color} piece (Unknown type)")
+                description_parts.append(f"{color} piece (Unknown type)")
         except (ValueError, IndexError):
-             description_parts.append(f"{color} piece (Error reading type)")
+            description_parts.append(f"{color} piece (Error reading type)")
 
         # Reconstruct 4-bit Piece ID from channels 10-13
         # tile[10] is MSB, tile[13] is LSB
@@ -580,14 +580,14 @@ def interpret_tile(
         if tile[11] == 1: id_0_15 |= (1 << 2)
         if tile[12] == 1: id_0_15 |= (1 << 1)
         if tile[13] == 1: id_0_15 |= (1 << 0)
-        
+
         id_string = f"(ID: {id_0_15}"
 
         # --- Determine Start Square from 4-bit Piece ID (0-15) and Color ---
         # Piece color is piece_color_val (1 for White, -1 for Black)
         # ID 0-15: King=0, Queen=1, Rooks=2/3, Knights=4/5, Bishops=6/7, Pawns=8-15
         start_sq_idx: Optional[chess.Square] = None
-        
+
         actual_color_chess = chess.WHITE if piece_color_val == 1 else chess.BLACK
 
         if id_0_15 == 0: # King
@@ -621,7 +621,7 @@ def interpret_tile(
         else:
             # If ID is valid (0-15) but doesn't map to a standard start (e.g., promoted piece keeping an ID),
             # or if ID was >15 (though bits 10-13 only allow 0-15), just show ID.
-            id_string += ")" 
+            id_string += ")"
 
         description_parts.append(id_string)
 
@@ -664,18 +664,18 @@ def interpret_tile(
 
     return final_description
 
-# --- Action ID Interpretation --- 
+# --- Action ID Interpretation ---
 
 def _interpret_relative_rook_action(relative_id: int) -> Optional[Tuple[str, str]]:
     """Interprets a relative rook action ID (1-28)."""
     if not (1 <= relative_id <= 28): return None
-    
+
     distance = (relative_id - 1) % 7 + 1
     direction_code = (relative_id - 1) // 7
-    
+
     directions = [("North", "N"), ("East", "E"), ("South", "S"), ("West", "W")]
     direction_name, direction_symbol = directions[direction_code]
-    
+
     move_type = f"Rook {direction_name} dist {distance}"
     uci_pattern = f"{direction_symbol}_dist_{distance}"
     return move_type, uci_pattern
@@ -683,7 +683,7 @@ def _interpret_relative_rook_action(relative_id: int) -> Optional[Tuple[str, str
 def _interpret_relative_knight_action(relative_id: int) -> Optional[Tuple[str, str]]:
     """Interprets a relative knight action ID (1-8)."""
     if not (1 <= relative_id <= 8): return None
-    
+
     # Reverse of knight_move_patterns in uci_to_relative_knight_action_id
     patterns_map = {
         1: ((1, 2), "(1,2)"), 2: ((2, 1), "(2,1)"), 3: ((2, -1), "(2,-1)"), 4: ((1, -2), "(1,-2)"),
@@ -700,10 +700,10 @@ def _interpret_relative_bishop_action(relative_id: int) -> Optional[Tuple[str, s
 
     distance = (relative_id - 1) % 7 + 1
     direction_code = (relative_id - 1) // 7
-    
+
     directions = [("NorthEast", "NE"), ("SouthEast", "SE"), ("SouthWest", "SW"), ("NorthWest", "NW")]
     direction_name, direction_symbol = directions[direction_code]
-    
+
     move_type = f"Bishop {direction_name} dist {distance}"
     uci_pattern = f"{direction_symbol}_dist_{distance}"
     return move_type, uci_pattern
@@ -711,7 +711,7 @@ def _interpret_relative_bishop_action(relative_id: int) -> Optional[Tuple[str, s
 def _interpret_relative_queen_action(relative_id: int) -> Optional[Tuple[str, str]]:
     """Interprets a relative queen action ID (1-56)."""
     if not (1 <= relative_id <= 56): return None
-    
+
     if 1 <= relative_id <= 28: # Rook-like part
         move_type, uci_pattern = _interpret_relative_rook_action(relative_id)
         return f"Queen as Rook: {move_type}", f"Q_as_R_{uci_pattern}"
@@ -722,10 +722,10 @@ def _interpret_relative_queen_action(relative_id: int) -> Optional[Tuple[str, st
 def _interpret_relative_king_action(relative_id: int) -> Optional[Tuple[str, str]]:
     """Interprets a relative king action ID (1-10)."""
     if not (1 <= relative_id <= 10): return None
-    
+
     if relative_id == 9: return "King Kingside Castle", "K_Castle_KS"
     if relative_id == 10: return "King Queenside Castle", "K_Castle_QS"
-    
+
     # Standard moves (1-8)
     # Reverse of king_move_patterns
     king_patterns_map = {
@@ -745,7 +745,7 @@ def _interpret_relative_pawn_action(relative_id: int) -> Optional[Tuple[str, str
     if 1 <= relative_id <= 18:
         promo_types = {'Q': "Queen", 'N': "Knight", 'B': "Bishop", 'R': "Rook"}
         move_directions = ["Forward", "Capture Left", "Capture Right"]
-        
+
         if relative_id == 1: return "Pawn Forward 1", "P_Fwd1"
         if relative_id == 2: return "Pawn Forward 2", "P_Fwd2"
         if relative_id == 3: return "Pawn Capture Left", "P_CapL" # Assuming EP maps here
@@ -757,12 +757,12 @@ def _interpret_relative_pawn_action(relative_id: int) -> Optional[Tuple[str, str
             promo_offset = relative_id - 7
             promo_piece_code = (promo_offset // 3)
             move_direction_code = promo_offset % 3
-            
+
             promo_char_map = ['Q', 'N', 'B', 'R']
             promo_char = promo_char_map[promo_piece_code]
             promo_name = promo_types[promo_char]
             direction_name = move_directions[move_direction_code]
-            
+
             move_type = f"Pawn {promo_name} Promo {direction_name}"
             uci_pattern = f"P_Promo{promo_char}_{direction_name.replace(' ','')}"
             return move_type, uci_pattern
@@ -779,7 +779,7 @@ def _interpret_relative_pawn_action(relative_id: int) -> Optional[Tuple[str, str
         knight_rel_id = relative_id - 18 - 56
         knight_move_type, knight_uci_pattern = _interpret_relative_knight_action(knight_rel_id)
         return f"Pawn as Knight: {knight_move_type}", f"P_as_K_{knight_uci_pattern}"
-    
+
     return None # Should not be reached
 
 def interpret_action(action_id: int) -> Optional[Dict[str, Union[str, int, bool]]]:
@@ -809,7 +809,7 @@ def interpret_action(action_id: int) -> Optional[Dict[str, Union[str, int, bool]
                 if current_base <= action_id <= action_id_upper_bound:
                     relative_action_id = action_id - current_base + 1
                     interpretation_result = None
-                    
+
                     if piece_type_val == chess.ROOK:
                         interpretation_result = _interpret_relative_rook_action(relative_action_id)
                     elif piece_type_val == chess.KNIGHT:
@@ -837,8 +837,8 @@ def interpret_action(action_id: int) -> Optional[Dict[str, Union[str, int, bool]
                     else:
                         logging.warning(f"Could not interpret relative_id {relative_action_id} for {color_name} {piece_type_name_str} instance {instance_idx} (Abs ID: {action_id})")
                         return None # Error in relative interpretation
-                
+
                 current_base += instance_action_space_size
-                
+
     logging.warning(f"Action ID {action_id} did not fall into any known piece range.")
     return None # Should not be reached if action_id is 1-1700 and logic is correct

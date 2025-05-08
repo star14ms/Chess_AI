@@ -321,24 +321,28 @@ class FullyTrackedBoard(chess.Board):
                  self.piece_tracker[moving_piece_id]['promoted_to'] = None
 
         # Handle Castling tracker update (Simplified standard chess logic)
-        if move.uci() in ["e1g1", "e1c1", "e8g8", "e8c8"]:
+        # We need to check the piece type *before* the move was made for castling.
+        # The 'moving_piece_id' captured before super().push() contains the original piece type.
+        is_king_move = moving_piece_id is not None and moving_piece_id[1] == chess.KING
+
+        if is_king_move and move.uci() in ["e1g1", "e1c1", "e8g8", "e8c8"]:
             # This logic needs access to the state BEFORE the push to be fully correct for 960/general case
             # Reverting to simplified standard logic for now
-             is_ks = move.uci() in ["e1g1", "e8g8"]
-             color = not self.turn # Color of player who just moved
-             king_id = (color, chess.KING, 0)
+            is_ks = move.uci() in ["e1g1", "e8g8"]
+            color = not self.turn # Color of player who just moved
+            king_id = (color, chess.KING, 0)
 
-             if is_ks:
-                 rook_id = (color, chess.ROOK, 1) # Kingside rook instance
-                 king_dest_sq = chess.G1 if color == chess.WHITE else chess.G8
-                 rook_dest_sq = chess.F1 if color == chess.WHITE else chess.F8
-             else: # Queenside
-                 rook_id = (color, chess.ROOK, 0) # Queenside rook instance
-                 king_dest_sq = chess.C1 if color == chess.WHITE else chess.C8
-                 rook_dest_sq = chess.D1 if color == chess.WHITE else chess.D8
+            if is_ks:
+                rook_id = (color, chess.ROOK, 1) # Kingside rook instance
+                king_dest_sq = chess.G1 if color == chess.WHITE else chess.G8
+                rook_dest_sq = chess.F1 if color == chess.WHITE else chess.F8
+            else: # Queenside
+                rook_id = (color, chess.ROOK, 0) # Queenside rook instance
+                king_dest_sq = chess.C1 if color == chess.WHITE else chess.C8
+                rook_dest_sq = chess.D1 if color == chess.WHITE else chess.D8
 
-             if king_id in self.piece_tracker: self.piece_tracker[king_id]['current_sq'] = king_dest_sq
-             if rook_id in self.piece_tracker: self.piece_tracker[rook_id]['current_sq'] = rook_dest_sq
+            if king_id in self.piece_tracker: self.piece_tracker[king_id]['current_sq'] = king_dest_sq
+            if rook_id in self.piece_tracker: self.piece_tracker[rook_id]['current_sq'] = rook_dest_sq
 
         # Flag doesn't change during push/pop unless explicitly set by an impossible state calc later
         # self.is_theoretically_possible_state remains as it was before the push
@@ -470,9 +474,9 @@ class FullyTrackedBoard(chess.Board):
                 piece_details = piece_id # (color, original_type, original_index)
                 use_tracker = True
             else:
-                 # Use self.fen()
-                 logging.warning(f"Robust Get ID: Tracker failed for possible state! Square: {chess.square_name(move.from_square)}, Move: {move.uci()}. Falling back to mapping. FEN: {self.fen()}")
-                 # Fall through to mapping logic below
+                # Use self.fen()
+                logging.warning(f"Robust Get ID: Tracker failed for possible state! Square: {chess.square_name(move.from_square)}, Move: {move.uci()}. Falling back to mapping. FEN: {self.fen()}")
+                # Fall through to mapping logic below
         else:
             logging.warning("Robust Get ID: Board state theoretically impossible. Using positional mapping, not tracker.")
             # Fall through to mapping logic below
@@ -487,9 +491,9 @@ class FullyTrackedBoard(chess.Board):
                 piece_details = instance_details_from_map # (color, current_type, mapped_index)
             else:
                 # If mapping also fails (e.g., no piece at source sq, though move implies one)
-                 # Use self.fen()
-                 logging.error(f"Robust Get ID: Positional mapping failed for move {move.uci()} from {chess.square_name(move.from_square)}. Board FEN: {self.fen()}")
-                 return None
+                # Use self.fen()
+                logging.error(f"Robust Get ID: Positional mapping failed for move {move.uci()} from {chess.square_name(move.from_square)}. Board FEN: {self.fen()}")
+                return None
 
         # We should have piece_details now, either from tracker or map
         color, piece_type_to_use, instance_index_to_use = piece_details
@@ -501,7 +505,7 @@ class FullyTrackedBoard(chess.Board):
         )
 
         if action_id is None:
-             logging.warning(f"Robust Get ID: get_action_id_for_piece_abs returned None. Move: {move.uci()}, Details: {piece_details}, Used Tracker: {use_tracker}")
+            logging.warning(f"Robust Get ID: get_action_id_for_piece_abs returned None. Move: {move.uci()}, Details: {piece_details}, Used Tracker: {use_tracker}")
 
         return action_id
 
