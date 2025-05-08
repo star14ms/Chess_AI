@@ -171,7 +171,7 @@ class ChessEnv(gym.Env):
             self.observation_space = spaces.Box(
                 low=-1,
                 high=1,
-                shape=(14, 8, 8),
+                shape=(26, 8, 8),
                 dtype=np.int8
             )
         else:

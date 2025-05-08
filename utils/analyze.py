@@ -481,44 +481,36 @@ def interpret_tile(
     observation_array: Optional[Union[np.ndarray, torch.Tensor]] = None,
 ) -> str:
     """
-    Interprets a 14-element observation tile vector (numpy, tensor, or square string)
-    and returns a descriptive sentence. Determines start square from the 4-bit Piece ID.
+    Interprets a 26-element observation tile vector (numpy, tensor, or square string)
+    and returns a descriptive sentence.
 
     Args:
-        tile_input: A 1D numpy array (length 14), a 1D torch.Tensor (length 14),
+        tile_input: A 1D numpy array (length 26), a 1D torch.Tensor (length 26),
                     OR a string with algebraic notation (e.g., "a1", "h8").
-        observation_array: The full 14x8x8 observation array (numpy or tensor).
-                           REQUIRED if tile_input is a string. Should have shape (14, 8, 8).
+        observation_array: The full 26x8x8 observation array (numpy or tensor).
+                           REQUIRED if tile_input is a string. Should have shape (26, 8, 8).
 
     Returns:
         A string describing the piece and state on the tile.
-
-    Raises:
-        ValueError: If tile_input is a string but observation_array is None or has wrong shape/type.
-        ValueError: If tile_input is an invalid string square notation.
-        TypeError: If tile_input is not a string, numpy array, or torch.Tensor.
     """
     tile: np.ndarray
     square_index: Optional[chess.Square] = None
-    # start_square_name will be determined from the 4-bit Piece ID and color later
 
     if isinstance(tile_input, str):
         if observation_array is None:
             raise ValueError("observation_array must be provided when tile_input is a string.")
 
-        # --- Handle observation_array being numpy or tensor ---
         obs_array_np: np.ndarray
         if isinstance(observation_array, torch.Tensor):
-            if observation_array.shape != (14, 8, 8): # Updated shape
-                raise ValueError(f"observation_array tensor must have shape (14, 8, 8), got {observation_array.shape}")
+            if observation_array.shape != (26, 8, 8):
+                raise ValueError(f"observation_array tensor must have shape (26, 8, 8), got {observation_array.shape}")
             obs_array_np = observation_array.detach().cpu().numpy()
         elif isinstance(observation_array, np.ndarray):
-            if observation_array.shape != (14, 8, 8): # Updated shape
-                raise ValueError(f"observation_array numpy array must have shape (14, 8, 8), got {observation_array.shape}")
+            if observation_array.shape != (26, 8, 8):
+                raise ValueError(f"observation_array numpy array must have shape (26, 8, 8), got {observation_array.shape}")
             obs_array_np = observation_array
         else:
             raise TypeError(f"observation_array must be a numpy array or torch.Tensor, got {type(observation_array)}")
-        # --- End observation_array handling ---
 
         try:
             square_index = chess.parse_square(tile_input.lower())
@@ -526,7 +518,6 @@ def interpret_tile(
             file = chess.square_file(square_index)
             if not (0 <= rank < 8 and 0 <= file < 8):
                 raise ValueError
-            # Use the converted numpy array for indexing
             tile = obs_array_np[:, rank, file]
 
         except ValueError:
@@ -534,35 +525,29 @@ def interpret_tile(
         except IndexError:
             raise IndexError(f"Could not access observation_array[:, {rank}, {file}] for input '{tile_input}'.")
 
-    # --- Handle Tensor or Numpy Array Input for tile_input ---
     elif isinstance(tile_input, torch.Tensor):
-        # Convert tensor to numpy array
-        if tile_input.ndim != 1 or tile_input.shape[0] != 14: # Updated shape
-            raise ValueError(f"Input torch.Tensor must have shape (14,), got {tile_input.shape}")
-        # Ensure it's on CPU and detached from graph before converting
+        if tile_input.ndim != 1 or tile_input.shape[0] != 26:
+            raise ValueError(f"Input torch.Tensor must have shape (26,), got {tile_input.shape}")
         tile = tile_input.detach().cpu().numpy()
 
     elif isinstance(tile_input, np.ndarray):
-        if tile_input.shape != (14,): # Updated shape
-            raise ValueError(f"Input numpy array must have shape (14,), got {tile_input.shape}")
+        if tile_input.shape != (26,):
+            raise ValueError(f"Input numpy array must have shape (26,), got {tile_input.shape}")
         tile = tile_input
     else:
         raise TypeError(f"tile_input must be a string, numpy array, or torch.Tensor, got {type(tile_input)}")
 
-
-    # --- Interpretation Logic (Updated for 14 channels) ---
-
     description_parts = []
-    start_square_name: Optional[str] = None # Initialize here
+    start_square_name: Optional[str] = None
 
     # 1. Piece and Color (Channels 0-6)
-    piece_color_val = tile[0] # Store for later use with Piece ID
+    piece_color_val = tile[0]
     if piece_color_val == 0:
         description_parts.append("Empty square")
     else:
         color = "White" if piece_color_val == 1 else "Black"
         piece_type_names = ["Pawn", "Knight", "Bishop", "Rook", "Queen", "King"]
-        current_piece_type_name = "Unknown" # Default
+        current_piece_type_name = "Unknown"
         try:
             piece_type_index = np.argmax(tile[1:7])
             if tile[1 + piece_type_index] == 1:
@@ -573,61 +558,47 @@ def interpret_tile(
         except (ValueError, IndexError):
             description_parts.append(f"{color} piece (Error reading type)")
 
-        # Reconstruct 4-bit Piece ID from channels 10-13
-        # tile[10] is MSB, tile[13] is LSB
-        id_0_15 = 0
-        if tile[10] == 1: id_0_15 |= (1 << 3)
-        if tile[11] == 1: id_0_15 |= (1 << 2)
-        if tile[12] == 1: id_0_15 |= (1 << 1)
-        if tile[13] == 1: id_0_15 |= (1 << 0)
+        # Get piece ID from one-hot encoding (channels 10-25)
+        piece_id = np.argmax(tile[10:26])
+        if tile[10 + piece_id] == 1:
+            id_string = f"(ID: {piece_id}"
+            
+            # Determine Start Square from Piece ID (0-15) and Color
+            actual_color_chess = chess.WHITE if piece_color_val == 1 else chess.BLACK
+            start_sq_idx: Optional[chess.Square] = None
 
-        id_string = f"(ID: {id_0_15}"
+            if piece_id == 0: # King
+                start_sq_idx = chess.E1 if actual_color_chess == chess.WHITE else chess.E8
+            elif piece_id == 1: # Queen
+                start_sq_idx = chess.D1 if actual_color_chess == chess.WHITE else chess.D8
+            elif piece_id == 2: # Rook 0
+                start_sq_idx = chess.A1 if actual_color_chess == chess.WHITE else chess.A8
+            elif piece_id == 3: # Rook 1
+                start_sq_idx = chess.H1 if actual_color_chess == chess.WHITE else chess.H8
+            elif piece_id == 4: # Knight 0
+                start_sq_idx = chess.B1 if actual_color_chess == chess.WHITE else chess.B8
+            elif piece_id == 5: # Knight 1
+                start_sq_idx = chess.G1 if actual_color_chess == chess.WHITE else chess.G8
+            elif piece_id == 6: # Bishop 0
+                start_sq_idx = chess.C1 if actual_color_chess == chess.WHITE else chess.C8
+            elif piece_id == 7: # Bishop 1
+                start_sq_idx = chess.F1 if actual_color_chess == chess.WHITE else chess.F8
+            elif 8 <= piece_id <= 15: # Pawns
+                pawn_instance_index = piece_id - 8
+                start_rank_for_pawn = 1 if actual_color_chess == chess.WHITE else 6
+                start_sq_idx = chess.square(pawn_instance_index, start_rank_for_pawn)
 
-        # --- Determine Start Square from 4-bit Piece ID (0-15) and Color ---
-        # Piece color is piece_color_val (1 for White, -1 for Black)
-        # ID 0-15: King=0, Queen=1, Rooks=2/3, Knights=4/5, Bishops=6/7, Pawns=8-15
-        start_sq_idx: Optional[chess.Square] = None
+            if start_sq_idx is not None:
+                start_square_name = chess.square_name(start_sq_idx)
+                id_string += f", Start: {start_square_name})"
+            else:
+                id_string += ")"
 
-        actual_color_chess = chess.WHITE if piece_color_val == 1 else chess.BLACK
-
-        if id_0_15 == 0: # King
-            start_sq_idx = chess.E1 if actual_color_chess == chess.WHITE else chess.E8
-        elif id_0_15 == 1: # Queen
-            start_sq_idx = chess.D1 if actual_color_chess == chess.WHITE else chess.D8
-        elif id_0_15 == 2: # Rook 0 (e.g., Queenside)
-            start_sq_idx = chess.A1 if actual_color_chess == chess.WHITE else chess.A8
-        elif id_0_15 == 3: # Rook 1 (e.g., Kingside)
-            start_sq_idx = chess.H1 if actual_color_chess == chess.WHITE else chess.H8
-        elif id_0_15 == 4: # Knight 0
-            start_sq_idx = chess.B1 if actual_color_chess == chess.WHITE else chess.B8
-        elif id_0_15 == 5: # Knight 1
-            start_sq_idx = chess.G1 if actual_color_chess == chess.WHITE else chess.G8
-        elif id_0_15 == 6: # Bishop 0
-            start_sq_idx = chess.C1 if actual_color_chess == chess.WHITE else chess.C8
-        elif id_0_15 == 7: # Bishop 1
-            start_sq_idx = chess.F1 if actual_color_chess == chess.WHITE else chess.F8
-        elif 8 <= id_0_15 <= 15: # Pawns (Instances 0-7)
-            pawn_instance_index = id_0_15 - 8 # 0 for A-file pawn, 7 for H-file pawn
-            start_rank_for_pawn = 1 if actual_color_chess == chess.WHITE else 6 # Rank 2 or 7 (0-indexed)
-            start_sq_idx = chess.square(pawn_instance_index, start_rank_for_pawn)
-        # Else: id_0_15 is out of expected range for typical pieces, start_sq_idx remains None
-
-        if start_sq_idx is not None:
-            start_square_name = chess.square_name(start_sq_idx)
-        # --- End Determine Start Square ---
-
-        if start_square_name:
-            id_string += f", Start: {start_square_name})"
-        else:
-            # If ID is valid (0-15) but doesn't map to a standard start (e.g., promoted piece keeping an ID),
-            # or if ID was >15 (though bits 10-13 only allow 0-15), just show ID.
-            id_string += ")"
-
-        description_parts.append(id_string)
+            description_parts.append(id_string)
 
     # 2. Square Status (Channels 7-8)
-    ep_can_be_captured = int(tile[7]) # Channel 7: En Passant Target
-    castling_target = int(tile[8])    # Channel 8: Castling Target
+    ep_can_be_captured = int(tile[7])
+    castling_target = int(tile[8])
 
     if ep_can_be_captured == 1:
         description_parts.append("Can be captured EP.")
@@ -641,9 +612,9 @@ def interpret_tile(
 
     # 4. Construct Final Sentence
     if not description_parts:
-        return "Error: Could not interpret tile." # Fallback
+        return "Error: Could not interpret tile."
 
-    final_description = description_parts[0] # Start with piece/empty description
+    final_description = description_parts[0]
     if len(description_parts) > 1:
         piece_id_part = ""
         status_parts = []
@@ -653,7 +624,7 @@ def interpret_tile(
             else:
                 status_parts.append(part)
 
-        final_description += piece_id_part # Add ID right after piece name
+        final_description += piece_id_part
         if status_parts:
             final_description += ". " + " ".join(status_parts)
 

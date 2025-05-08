@@ -10,7 +10,8 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 # Default values based on common AlphaZero implementations for chess
-DEFAULT_INPUT_CHANNELS = 11
+DEFAULT_INPUT_CHANNELS = 26  # 10 (features) + 16 (piece type info)
+DEFAULT_DIM_PIECE_TYPE = 16
 DEFAULT_BOARD_SIZE = 8
 DEFAULT_NUM_RESIDUAL_LAYERS = 40
 DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[64]*7] * DEFAULT_NUM_RESIDUAL_LAYERS
@@ -22,21 +23,21 @@ class ConvBlock(nn.Module):
     """A single convolutional block with Conv -> BatchNorm -> ReLU."""
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=False)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=True)
         self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x):
         return F.relu(self.bn(self.conv(x)))
 
 class ResidualConvBlock(nn.Module):
-    def __init__(self, channel_list, kernel_size=7, padding=3):
+    def __init__(self, channel_list, kernel_size=3, padding=1):
         super().__init__()
         self.conv_blocks = nn.Sequential()
         for i in range(len(channel_list)-1):
             self.conv_blocks.append(ConvBlock(channel_list[i], channel_list[i+1], kernel_size, padding))
 
         self.last_block = nn.Sequential(
-            nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=1, padding=0, bias=False),
+            nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=1, padding=0, bias=True),
             nn.BatchNorm2d(channel_list[-1])
         )
 
@@ -46,16 +47,22 @@ class ResidualConvBlock(nn.Module):
 # --- Policy Head Module ---
 class PolicyHead(nn.Module):
     """Calculates policy logits from the final piece vector."""
-    def __init__(self, num_channels: int, action_space_size: int, board_height: int, board_width: int):
+    def __init__(self, num_channels: int, dim_piece_type: int, action_space_size: int, board_height: int, board_width: int):
         super().__init__()
-        self.conv = ConvBlock(num_channels, 2)
-        self.fc = nn.Linear(2*board_height*board_width, action_space_size)
-        
-    def forward(self, conv_features: torch.Tensor) -> torch.Tensor:
+        self.conv = ConvBlock(num_channels, 32)  # Directly reduce channels including piece type
+        self.fc = nn.Linear((32+dim_piece_type+1)*board_height*board_width, action_space_size)
+
+    def forward(self, conv_features: torch.Tensor, piece_type: torch.Tensor) -> torch.Tensor:
         # Input shape: (N, P, C)
         N = conv_features.size(0)
+
         conv_features = self.conv(conv_features)
-        conv_features = conv_features.view(N, -1) # Shape: (N, P * C)
+
+        # Merge piece type with position information
+        conv_features = torch.cat([conv_features, piece_type], dim=1)
+
+        # Continue with normal processing
+        conv_features = conv_features.view(N, -1)  # Shape: (N, P * C)
         policy_logits = self.fc(conv_features)
         return policy_logits
 
@@ -87,21 +94,27 @@ class ValueHead(nn.Module):
 class ChessNetwork(nn.Module):
     """Neural network architecture inspired by AlphaZero for Chess.
 
-    Interaction:
-      - PieceVectorExtractor creates initial (N, P, C_final) vector.
-      - Conv body processes spatial inputs through multiple stages with potentially varying channels.
-      - At each stage i, InteractionBlock updates piece_vector and conv_features using C_final.
-      - Policy head operates on the final piece_vector (input features P * C_final).
-      - Value head operates on final conv_features (input channels C_final).
+    Input channels:
+    - 26 input channels:
+        - 10 channels for features:
+            - Color (1)
+            - BehaviorType (6)
+            - EnPassantTarget (1)
+            - CastlingTarget (1)
+            - Current Player (1)
+        - 16 channels for piece type information:
+            - 16 channels for one-hot piece identity for each color (16)
     """
     def __init__(self,
                  input_channels=DEFAULT_INPUT_CHANNELS,
+                 dim_piece_type=DEFAULT_DIM_PIECE_TYPE,
                  board_size=DEFAULT_BOARD_SIZE,
                  num_residual_layers=DEFAULT_NUM_RESIDUAL_LAYERS,
                  conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
-                 value_head_hidden_size=DEFAULT_VALUE_HEAD_HIDDEN_SIZE):
+                 value_head_hidden_size=DEFAULT_VALUE_HEAD_HIDDEN_SIZE,
+                ):
         super().__init__()
         if input_channels < 2: raise ValueError("Input channels must be >= 2")
         if num_residual_layers < 1: raise ValueError("Must have at least 1 conv layer stage")
@@ -110,7 +123,7 @@ class ChessNetwork(nn.Module):
         self.board_width = board_size
         self.action_space_size = action_space_size
         self.input_channels = input_channels # Total input channels
-        self.conv_input_channels = input_channels # Channels for conv body
+        self.conv_input_channels = input_channels - dim_piece_type # Channels for conv body
         self.num_residual_layers = num_residual_layers # Total number of conv stages
         self.num_pieces = num_pieces
 
@@ -138,7 +151,7 @@ class ChessNetwork(nn.Module):
             current_stage_in_channels = ch_list[-1] # Output of this stage is input for next
 
         # --- Instantiate Head Modules (using C_final) --- 
-        self.policy_head = PolicyHead(self.final_conv_channels, self.action_space_size, self.board_height, self.board_width)
+        self.policy_head = PolicyHead(self.final_conv_channels, dim_piece_type, self.action_space_size, self.board_height, self.board_width)
         self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size)
 
     def forward(self, x):
@@ -146,6 +159,7 @@ class ChessNetwork(nn.Module):
 
         Args:
             x (torch.Tensor): Input tensor of shape (N, C_in_total, H, W)
+                            Last 16 channels are piece type information
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: policy_logits (N, action_space_size), 
@@ -155,15 +169,19 @@ class ChessNetwork(nn.Module):
         if x.shape[1] != self.input_channels:
              raise ValueError(f"Input tensor channel dimension ({x.shape[1]}) doesn't match expected total channels ({self.input_channels})")
 
+        # Split input into features and piece type information
+        features = x[:, :self.conv_input_channels, :, :]
+        piece_type = torch.cat([x[:, :1, :, :], x[:, self.conv_input_channels:, :, :]], dim=1)  # Already in shape [N, 17, H, W]
+
         # --- Feature Extraction --- 
-        conv_features = self.first_conv_block(x)
+        conv_features = self.first_conv_block(features)
 
         num_stages = self.num_residual_layers
         for i in range(num_stages):
             residual_block = self.residual_blocks[i]
             conv_features = residual_block(conv_features)
 
-        policy_logits = self.policy_head(conv_features)
+        policy_logits = self.policy_head(conv_features, piece_type)
         value = self.value_head(conv_features)
 
         return policy_logits, value
@@ -180,6 +198,7 @@ def test_network(cfg: DictConfig):
     # Example instantiation with new config
     network = ChessNetwork(
         input_channels=cfg.network.input_channels,
+        dim_piece_type=cfg.network.dim_piece_type,
         board_size=cfg.network.board_size,
         num_residual_layers=cfg.network.num_residual_layers,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
@@ -195,8 +214,7 @@ def test_network(cfg: DictConfig):
     dummy_input_tensor = dummy_input_tensor.unsqueeze(0).repeat(2, 1, 1, 1)
     # for i in range(dummy_input_tensor.shape[2]):
     #     for j in range(dummy_input_tensor.shape[3]):
-    #         print(f"Tile {i}, {j}:")
-    #         print(interpret_tile(dummy_input_tensor[0, :, i, j]))
+    #         print(dummy_input_tensor[0, 10:, i, j], interpret_tile(dummy_input_tensor[0, :, i, j]))
     print("\nInput shape (before batching):", dummy_input_tensor.shape)
 
     network.eval()

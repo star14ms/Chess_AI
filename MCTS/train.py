@@ -35,6 +35,7 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     # (Ensure parameters match your network's __init__)
     network = ChessNetwork(
         input_channels=cfg.network.input_channels,
+        dim_piece_type=cfg.network.dim_piece_type,
         board_size=cfg.network.board_size,
         num_residual_layers=cfg.network.num_residual_layers,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
@@ -241,6 +242,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Make sure network's __init__ signature matches the parameters passed
     network = ChessNetwork(
         input_channels=cfg.network.input_channels,
+        dim_piece_type=cfg.network.dim_piece_type,
         board_size=cfg.network.board_size,
         num_residual_layers=cfg.network.num_residual_layers,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
@@ -253,6 +255,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Create a separate network instance for profiling
     profile_network = ChessNetwork(
         input_channels=cfg.network.input_channels,
+        dim_piece_type=cfg.network.dim_piece_type,
         board_size=cfg.network.board_size,
         num_residual_layers=cfg.network.num_residual_layers,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,

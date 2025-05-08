@@ -6,7 +6,8 @@ from typing import Optional, List
 @dataclass
 class NetworkConfig:
     # Defaults matching network.py where possible
-    input_channels: int = 14
+    input_channels: int = 26
+    dim_piece_type: int = 16 # Standard number of piece types
     board_size: int = 8
     num_residual_layers: int = 40
     conv_blocks_channel_lists: Optional[List[List[int]]] = [[256, 256]] * 40

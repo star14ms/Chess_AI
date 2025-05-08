@@ -20,13 +20,14 @@ network:
   # Target the specific NetworkConfig dataclass
   _target_: MCTS.config_schema.NetworkConfig
   # Values here override defaults in the dataclass
-  input_channels: 14
+  input_channels: 26
+  dim_piece_type: 16
   board_size: 8
   num_residual_layers: 7
   conv_blocks_channel_lists: [[32, 32], [32, 32], [32, 32], [32, 32], [32, 32], [32, 32], [32, 32]]
   action_space_size: 1700
   num_pieces: 32
-  value_head_hidden_size: 256
+  value_head_hidden_size: 512
 
 # New Env section
 env:
