@@ -4,11 +4,13 @@ def profile_model(model, inputs):
     from rich import print
     import sys
     macs, params = profile(model, inputs=inputs, verbose=False)
-    print('모델 생성 완료! (Input {}: MACs: {} M | Params: {} K)'.format(
-        sys.getsizeof(inputs[0].storage()),
+    print('Network initialized! (Input {} MB : MACs: {} M | Params: {} M)'.format(
+        sys.getsizeof(inputs[0].untyped_storage())/1000/1000,
         round(macs/1000/1000, 2), 
-        round(params/1000, 2),
+        round(params/1000/1000, 2),
     ))
+
+    return macs, params
 
 def get_optimal_worker_count(total_cores, num_workers_config=None):
     """Determine the optimal number of workers for multiprocessing.

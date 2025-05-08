@@ -18,8 +18,7 @@ from models.network import ChessNetwork
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from chess_gym.envs import ChessEnv
-from utils.visualize import visualize_policy_on_board, visualize_policy_distribution
-from utils.analyze import interpret_action
+from utils.profile import get_optimal_worker_count, profile_model
 
 sys.path.append('.')
 # Dynamically import board class later using get_class
@@ -231,6 +230,9 @@ def run_training_loop(cfg: DictConfig) -> None:
     else:
         device = torch.device(cfg.training.device)
     progress.print(f"Using device: {device}" + " (but cpu during self-play)" if "cpu" not in device.type else "")
+    
+    # Check config flag to decide execution mode
+    use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
 
     # Initialize Network using network config
     # Make sure network's __init__ signature matches the parameters passed
@@ -242,10 +244,25 @@ def run_training_loop(cfg: DictConfig) -> None:
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
         value_head_hidden_size=cfg.network.value_head_hidden_size
-        # Add other required params based on network.py definition
-    )
-    network.train()
-    progress.print("Network initialized.")
+    ).to(device)
+    network.eval()
+
+    # Create a separate network instance for profiling
+    profile_network = ChessNetwork(
+        input_channels=cfg.network.input_channels,
+        board_size=cfg.network.board_size,
+        num_residual_layers=cfg.network.num_residual_layers,
+        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+        action_space_size=cfg.network.action_space_size,
+        num_pieces=cfg.network.num_pieces,
+        value_head_hidden_size=cfg.network.value_head_hidden_size
+    ).to(device)
+    profile_network.eval()
+
+    # Profile the network
+    N, C, H, W = cfg.training.batch_size, cfg.network.input_channels, cfg.network.board_size, cfg.network.board_size
+    profile_model(profile_network, (torch.randn(N, C, H, W).to(device),))
+    del profile_network  # Clean up the profiling network
 
     # Initialize Optimizer using optimizer config
     opt_cfg = cfg.optimizer
@@ -276,17 +293,17 @@ def run_training_loop(cfg: DictConfig) -> None:
     total_cores = os.cpu_count()
     
     # Get optimal worker count using the utility function
-    from utils.profile import get_optimal_worker_count
     num_workers = get_optimal_worker_count(
         total_cores=total_cores,
         num_workers_config=num_workers_config,
     )
-    progress.print(f"Using {num_workers} workers for self-play (out of {total_cores} CPU cores).")
+    if use_multiprocessing_flag:
+        progress.print(f"Using {num_workers} workers for self-play (out of {total_cores} CPU cores).")
 
     env = ChessEnv(
         observation_mode=cfg.env.observation_mode,
-        render_mode=cfg.env.render_mode if not cfg.training.get('use_multiprocessing', False) else None,
-        save_video_folder=cfg.env.save_video_folder if not cfg.training.get('use_multiprocessing', False) else None
+        render_mode=cfg.env.render_mode if not use_multiprocessing_flag else None,
+        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing_flag else None
     )
 
     # --- Main Training Loop ---
@@ -311,15 +328,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         games_data_collected = []
         iteration_start_time_selfplay = time.time()
 
-        # Check config flag to decide execution mode
-        # >>>>>>>>>>>>>> ADDED CONDITIONAL EXECUTION BLOCK <<<<<<<<<<<<<<<<
-        # Default to False if the flag is missing
-        use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
-
         if use_multiprocessing_flag:
-            # progress.print("Starting self-play phase (parallel)...")
             # Prepare arguments for workers
-            # Pass network state_dict instead of the full object for better pickling
+            # Pass network state_dict directly since it's clean
             network_state_dict = network.state_dict()
             device_str = 'cpu' # Pass device as string
             # Pack arguments into tuples for the wrapper function
@@ -362,7 +373,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                     pool.join()
 
         else: # Sequential Execution
-            # progress.print("Starting self-play phase (sequential)...")
             task_id_selfplay = progress.add_task("Self-Play", total=cfg.training.self_play_games_per_epoch)
             # Use values from cfg
             for game_num in range(cfg.training.self_play_games_per_epoch):
@@ -379,7 +389,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                 games_data_collected.extend(game_data)
                 progress.update(task_id_selfplay, advance=1)
             progress.update(task_id_selfplay, visible=False)
-        # >>>>>>>>>>>>>> END OF CONDITIONAL EXECUTION BLOCK <<<<<<<<<<<<<<<<
 
         # Add collected data to replay buffer (outside the conditional block)
         for experience in games_data_collected:
