@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from torch import nn
 
 # Assuming files are in the MCTS directory relative to the project root
-from models.network import ChessNetwork
+from models.network import ChessNetwork, FullyTrackedBoard
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from chess_gym.envs import ChessEnv
@@ -60,17 +60,7 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
         render_mode=None, # Avoid rendering in workers
         save_video_folder=None
     )
-    
-    # Dynamically get board class for the worker's env
-    # This ensures the worker uses the same board logic as the main process if needed
-    # (e.g., for methods like action_id_to_move if MCTS logic were to use it directly)
-    try:
-        board_cls_for_worker = get_class(cfg.training.board_cls_str)
-        env.board = board_cls_for_worker(fen=env.board.fen()) # Replace env's board with instance of correct class
-    except Exception as e:
-        # Fallback or error if class cannot be loaded
-        print(f"Worker Error: Could not load board class {cfg.training.board_cls_str}: {e}")
-        return [] # Return empty if critical setup fails
+    env.board = FullyTrackedBoard(fen=env.board.fen()) # Replace env's board with instance of correct class
 
     # Progress is tricky with multiprocessing pools directly updating Rich progress.
     # Usually, you track completion externally or use shared state (more complex).
@@ -132,7 +122,10 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv 
     # This reset is safe for both cases
     if env is None:
         env = ChessEnv()
-    obs, _ = env.reset()
+    options = {
+        'fen': cfg.training.initial_board_fen
+    } if cfg.training.initial_board_fen else None
+    obs, _ = env.reset(options=options)
     if network is not None:
         network.eval()
 

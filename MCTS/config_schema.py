@@ -51,8 +51,7 @@ class TrainingConfig:
     max_game_moves: int = 200
     checkpoint_dir: str = "checkpoints" # Will be relative to hydra output dir
     save_interval: int = 10
-    board_cls_str: str = "chess_gym.chess_custom.FullyTrackedBoard"
-    # Removed env parameters
+    initial_board_fen: str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" #except pawns
 
 @dataclass
 class Config:

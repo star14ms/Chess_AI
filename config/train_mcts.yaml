@@ -24,7 +24,7 @@ network:
   dim_piece_type: 16
   board_size: 8
   num_residual_layers: 0
-  num_filters: [16, 32, 64, 128, 128, 128, 128]
+  num_filters: [32, 32, 64, 64, 128, 128, 128]
   conv_blocks_channel_lists: []
   action_space_size: 1700
   num_pieces: 32
@@ -65,4 +65,4 @@ training:
   max_game_moves: 200
   checkpoint_dir: ./checkpoints
   save_interval: 10
-  board_cls_str: chess_gym.chess_custom.FullyTrackedBoard
+  fen_initial_state: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
