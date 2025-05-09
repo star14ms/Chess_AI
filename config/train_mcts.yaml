@@ -65,4 +65,4 @@ training:
   max_game_moves: 200
   checkpoint_dir: ./checkpoints
   save_interval: 10
-  fen_initial_state: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+  initial_board_fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
