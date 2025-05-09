@@ -12,6 +12,8 @@ from hydra.utils import get_class # Use instantiate later if needed
 import sys
 import multiprocessing # Keep for potential parallel execution
 import chess
+import torch.nn.functional as F
+from torch import nn
 
 # Assuming files are in the MCTS directory relative to the project root
 from models.network import ChessNetwork
@@ -33,19 +35,22 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
 
     # Re-initialize Network in the worker process
     # (Ensure parameters match your network's __init__)
-    network = ChessNetwork(
-        input_channels=cfg.network.input_channels,
-        dim_piece_type=cfg.network.dim_piece_type,
-        board_size=cfg.network.board_size,
-        num_residual_layers=cfg.network.num_residual_layers,
-        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-        action_space_size=cfg.network.action_space_size,
-        num_pieces=cfg.network.num_pieces,
-        value_head_hidden_size=cfg.network.value_head_hidden_size
-        # Add other required params based on network.py definition
-    ).to(device)
-    network.load_state_dict(network_state_dict)
-    network.eval() # Ensure it's in eval mode
+    if cfg.mcts.iterations > 0:
+        network = ChessNetwork(
+            input_channels=cfg.network.input_channels,
+            dim_piece_type=cfg.network.dim_piece_type,
+            board_size=cfg.network.board_size,
+            num_residual_layers=cfg.network.num_residual_layers,
+            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+            action_space_size=cfg.network.action_space_size,
+            num_pieces=cfg.network.num_pieces,
+            value_head_hidden_size=cfg.network.value_head_hidden_size
+            # Add other required params based on network.py definition
+        ).to(device)
+        network.load_state_dict(network_state_dict)
+        network.eval() # Ensure it's in eval mode
+    else:
+        network = None
 
     # Re-initialize Environment in the worker process
     # Assumes env config is part of the main cfg
@@ -70,9 +75,8 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     # Usually, you track completion externally or use shared state (more complex).
     # For simplicity, we'll omit the fine-grained progress updates from within the worker.
     game_data = run_self_play_game(
+        cfg,
         network,
-        cfg.mcts,
-        cfg.training,
         env=None,
         progress=None, # Pass None for progress within worker
         device=device
@@ -119,7 +123,7 @@ class ReplayBuffer:
 
 
 # --- Self-Play Function (Update args to use config subsections) ---
-def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: ChessEnv | None = None,
+def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv | None = None,
                        progress: Progress | None = None, device: torch.device | None = None):
     """Plays one game of self-play using MCTS and returns the game data."""
     # If running sequentially, ensure env is reset at the start of each game
@@ -128,19 +132,20 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
     if env is None:
         env = ChessEnv()
     obs, _ = env.reset()
-    network.eval()
+    if network is not None:
+        network.eval()
 
     game_history = [] # Will store (state_obs, mcts_policy, board_at_state)
     move_count = 0
     terminated = False
     truncated = False
 
-    mcts_iterations = mcts_cfg.iterations
-    c_puct = mcts_cfg.c_puct
-    temp_start = mcts_cfg.temperature_start
-    temp_end = mcts_cfg.temperature_end
-    temp_decay_moves = mcts_cfg.temperature_decay_moves
-    max_moves = train_cfg.max_game_moves
+    mcts_iterations = cfg.mcts.iterations
+    c_puct = cfg.mcts.c_puct
+    temp_start = cfg.mcts.temperature_start
+    temp_end = cfg.mcts.temperature_end
+    temp_decay_moves = cfg.mcts.temperature_decay_moves
+    max_moves = cfg.training.max_game_moves
 
     task_id_game = None
     if progress is not None:
@@ -152,11 +157,11 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
         # --- Get Policy and Store History --- 
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
         
-        if mcts_cfg.iterations > 0:
+        if cfg.mcts.iterations > 0:
             # --- Create MCTS root node with FEN and board_cls --- 
             root_node = MCTSNode(env.board.copy())
             # --- Create MCTS instance --- 
-            mcts_env = env if not train_cfg.get('use_multiprocessing', False) else None
+            mcts_env = env if not cfg.training.get('use_multiprocessing', False) else None
             mcts_player = MCTS(
                 network,
                 device=device,
@@ -169,7 +174,7 @@ def run_self_play_game(network, mcts_cfg: OmegaConf, train_cfg: OmegaConf, env: 
             action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
         else:
             # 1 for all legal moves, 0 for all illegal moves
-            mcts_policy = np.zeros(network.action_space_size)
+            mcts_policy = np.zeros(cfg.network.action_space_size)
             legal_actions = env.board.get_legal_moves_with_action_ids()
             for action_id in legal_actions:
                 mcts_policy[action_id - 1] = 1
@@ -233,11 +238,26 @@ def run_training_loop(cfg: DictConfig) -> None:
         device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     else:
         device = torch.device(cfg.training.device)
-    progress.print(f"Using device: {device}" + " (but cpu during self-play)" if "cpu" not in device.type else "")
-    
+    log_str_trining_device = f"{device} for training"
+
+    # Determine number of workers
+    num_workers_config = cfg.training.get('self_play_workers', 0)
+    total_cores = os.cpu_count()
+
+    # Get optimal worker count using the utility function
+    num_workers = get_optimal_worker_count(
+        total_cores=total_cores,
+        num_workers_config=num_workers_config,
+    )
+
     # Check config flag to decide execution mode
     use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
 
+    if use_multiprocessing_flag and num_workers > 1:
+        progress.print(f"Using {num_workers} workers for self-play (out of {total_cores} CPU cores),", log_str_trining_device)
+    else:
+        progress.print(f"Using {device} for self-play, {log_str_trining_device}")
+    
     # Initialize Network using network config
     # Make sure network's __init__ signature matches the parameters passed
     network = ChessNetwork(
@@ -296,25 +316,11 @@ def run_training_loop(cfg: DictConfig) -> None:
     checkpoint_dir = cfg.training.checkpoint_dir 
     os.makedirs(checkpoint_dir, exist_ok=True)
     progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
-    
-    # Determine number of workers
-    num_workers_config = cfg.training.get('self_play_workers', 0)
-    total_cores = os.cpu_count()
-    
-    # Get optimal worker count using the utility function
-    num_workers = get_optimal_worker_count(
-        total_cores=total_cores,
-        num_workers_config=num_workers_config,
-    )
-    if use_multiprocessing_flag and num_workers > 1:
-        progress.print(f"Using {num_workers} workers for self-play (out of {total_cores} CPU cores).")
-    else:
-        progress.print(f"Using {device} for self-play.")
 
     env = ChessEnv(
         observation_mode=cfg.env.observation_mode,
-        render_mode=cfg.env.render_mode if not use_multiprocessing_flag and device == 'cpu' else None,
-        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing_flag and device == 'cpu' else None
+        render_mode=cfg.env.render_mode if not use_multiprocessing_flag and device.type == 'cpu' else None,
+        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing_flag and device.type == 'cpu' else None
     )
 
     # --- Main Training Loop ---
@@ -412,11 +418,10 @@ def run_training_loop(cfg: DictConfig) -> None:
                 progress.update(task_id_selfplay, description=f"Self-Play Game ({game_num+1}/{cfg.training.self_play_games_per_epoch})")
                 # Run game in the main process using the main env instance
                 game_data = run_self_play_game(
-                    network,
-                    cfg.mcts,       # Pass MCTS config section
-                    cfg.training,   # Pass Training config section
-                    env if device == 'cpu' else None,  # Use the main env instance
-                    progress=progress if device == 'cpu' else None,
+                    cfg,
+                    network if cfg.mcts.iterations > 0 else None,
+                    env if device.type == 'cpu' else None,  # Use the main env instance
+                    progress=progress if device.type == 'cpu' else None,
                     device=device
                 )
                 games_data_collected.extend(game_data)
@@ -439,7 +444,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             TextColumn("[progress.description]{task.description}"), BarColumn(),
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(), TimeElapsedColumn(),
-            TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f} Ill: {task.fields[illegal_r]:.2%}]")
+            TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f} Ill: {task.fields[illegal_r]:.2%} P: {task.fields[illegal_p]:.2%}]")
         )
         progress.columns = training_columns
 
@@ -452,7 +457,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         task_id_train = progress.add_task(
             "Training Epochs", total=cfg.training.training_epochs,
-            loss_p=float('nan'), loss_v=float('nan'), illegal_r=float('nan')
+            loss_p=float('nan'), loss_v=float('nan'), illegal_r=float('nan'), illegal_p=float('nan')
         )
         # Use values from cfg
         for epoch in range(cfg.training.training_epochs):
@@ -480,28 +485,35 @@ def run_training_loop(cfg: DictConfig) -> None:
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
             
-            # Calculate illegal move ratio for this batch
-            batch_illegal_moves = 0
-            with torch.no_grad(): # Ensure no gradients are computed for this part
-                network.eval() # Set to eval mode for consistent argmax prediction
-                # Policy logits are for the current batch
-                predicted_action_indices = torch.argmax(policy_logits, dim=1) # Shape: (batch_size)
-                network.train() # Set back to train mode
-
-                # for i in range(len(fens_batch)):
-                for i in range(len(boards_batch)): # Iterate over boards_batch
-                    current_board_from_batch = boards_batch[i] # Use the board object from the batch
+            # Calculate both metrics for this batch
+            with torch.no_grad():
+                # 1. Calculate illegal move probability mass
+                policy_probs = F.softmax(policy_logits, dim=1)
+                batch_illegal_prob_mass = 0.0
+                
+                # 2. Calculate argmax legality ratio
+                batch_illegal_moves = 0
+                predicted_action_indices = torch.argmax(policy_logits, dim=1)  # Shape: (batch_size)
+                
+                for i in range(len(boards_batch)):
+                    current_board = boards_batch[i]
                     
-                    # Get the 0-indexed action from network, convert to 1-based for board method
+                    # Calculate illegal probability mass
+                    legal_moves = set(current_board.get_legal_moves_with_action_ids())
+                    legal_indices = torch.tensor([move_id - 1 for move_id in legal_moves], device=device)
+                    illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
+                    batch_illegal_prob_mass += illegal_prob
+                    
+                    # Check if argmax move is legal
                     predicted_action_id = predicted_action_indices[i].item() + 1
-                    
-                    if current_board_from_batch.action_id_to_move(predicted_action_id) is None: # Use board from batch
+                    if current_board.action_id_to_move(predicted_action_id) is None:
                         batch_illegal_moves += 1
+                
+                avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
             
             total_illegal_moves_in_iteration += batch_illegal_moves
-            # total_samples_in_iteration += len(fens_batch)
-            total_samples_in_iteration += len(boards_batch) # Use length of boards_batch
-
+            total_samples_in_iteration += len(boards_batch)
+            
             current_avg_policy_loss = total_policy_loss / (epoch + 1)
             current_avg_value_loss = total_value_loss / (epoch + 1)
             current_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
@@ -509,14 +521,15 @@ def run_training_loop(cfg: DictConfig) -> None:
             progress.update(
                 task_id_train, advance=1,
                 loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss,
-                illegal_r=current_illegal_ratio
+                illegal_r=current_illegal_ratio,
+                illegal_p=avg_illegal_prob_mass
             )
         progress.update(task_id_train, visible=False)
 
         avg_policy_loss = total_policy_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
         avg_value_loss = total_value_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
         avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
-        progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}")
+        progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, Avg Illegal Move Prob Mass: {avg_illegal_prob_mass:.2%}")
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
         progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)})")

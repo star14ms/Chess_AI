@@ -53,8 +53,8 @@ optimizer:
 
 training:
   _target_: MCTS.config_schema.TrainingConfig
-  device: auto
   replay_buffer_size: 65536
+  device: auto # If device is cpu and multiprocessing is false and render_mode is not null, you can see the pygame window
   num_training_iterations: 1000
   training_epochs: 100
   batch_size: 128
