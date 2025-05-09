@@ -13,11 +13,12 @@ from omegaconf import DictConfig, OmegaConf
 DEFAULT_INPUT_CHANNELS = 26  # 10 (features) + 16 (piece type info)
 DEFAULT_DIM_PIECE_TYPE = 16
 DEFAULT_BOARD_SIZE = 8
-DEFAULT_NUM_RESIDUAL_LAYERS = 40
-DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[64]*7] * DEFAULT_NUM_RESIDUAL_LAYERS
+DEFAULT_NUM_RESIDUAL_LAYERS = 0
+DEFAULT_NUM_FILTERS = [16, 32, 64, 128, 128, 128, 128]
+DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [] * DEFAULT_NUM_RESIDUAL_LAYERS
 DEFAULT_ACTION_SPACE = 1700 # User-specified action space size
 DEFAULT_NUM_PIECES = 32
-DEFAULT_VALUE_HEAD_HIDDEN_SIZE = 256
+DEFAULT_VALUE_HIDDEN_SIZE = 64
 
 class ConvBlock(nn.Module):
     """A single convolutional block with Conv -> BatchNorm -> ReLU."""
@@ -28,6 +29,23 @@ class ConvBlock(nn.Module):
 
     def forward(self, x):
         return F.relu(self.bn(self.conv(x)))
+
+class ConvBlockInitial(nn.Module):
+    """A multi-scale convolutional block that captures both local and long-range patterns."""
+    def __init__(self, in_channels, num_filters=[16, 32, 64, 128, 128, 128, 128]):
+        super().__init__()
+        self.conv_paths = nn.ModuleList()
+        self.bn_paths = nn.ModuleList()
+
+        num_filters = [in_channels] + num_filters
+        self.conv_blocks = nn.Sequential()
+        for i in range(len(num_filters)-1):
+            self.conv_blocks.append(ConvBlock(num_filters[i], num_filters[i+1], kernel_size=3, padding=1))
+            
+        self.bn = nn.BatchNorm2d(num_filters[-1])
+
+    def forward(self, x):
+        return F.relu(self.bn(self.conv_blocks(x)))
 
 class ResidualConvBlock(nn.Module):
     def __init__(self, channel_list, kernel_size=3, padding=1):
@@ -49,17 +67,20 @@ class PolicyHead(nn.Module):
     """Calculates policy logits from the final piece vector."""
     def __init__(self, num_channels: int, dim_piece_type: int, action_space_size: int, board_height: int, board_width: int):
         super().__init__()
-        self.conv = ConvBlock(num_channels, 32)  # Directly reduce channels including piece type
-        self.fc = nn.Linear((32+dim_piece_type+1)*board_height*board_width, action_space_size)
+        self.conv = ConvBlock(num_channels+dim_piece_type+1, 128)  # Directly reduce channels including piece type
+        self.fc = nn.Sequential(
+            nn.Linear(128*board_height*board_width, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_space_size)
+        )
 
     def forward(self, conv_features: torch.Tensor, piece_type: torch.Tensor) -> torch.Tensor:
         # Input shape: (N, P, C)
         N = conv_features.size(0)
 
-        conv_features = self.conv(conv_features)
-
         # Merge piece type with position information
         conv_features = torch.cat([conv_features, piece_type], dim=1)
+        conv_features = self.conv(conv_features)
 
         # Continue with normal processing
         conv_features = conv_features.view(N, -1)  # Shape: (N, P * C)
@@ -110,15 +131,13 @@ class ChessNetwork(nn.Module):
                  dim_piece_type=DEFAULT_DIM_PIECE_TYPE,
                  board_size=DEFAULT_BOARD_SIZE,
                  num_residual_layers=DEFAULT_NUM_RESIDUAL_LAYERS,
+                 num_filters=DEFAULT_NUM_FILTERS,
                  conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
-                 value_head_hidden_size=DEFAULT_VALUE_HEAD_HIDDEN_SIZE,
+                 value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
                 ):
         super().__init__()
-        if input_channels < 2: raise ValueError("Input channels must be >= 2")
-        if num_residual_layers < 1: raise ValueError("Must have at least 1 conv layer stage")
-
         self.board_height = board_size
         self.board_width = board_size
         self.action_space_size = action_space_size
@@ -126,29 +145,30 @@ class ChessNetwork(nn.Module):
         self.conv_input_channels = input_channels - dim_piece_type # Channels for conv body
         self.num_residual_layers = num_residual_layers # Total number of conv stages
         self.num_pieces = num_pieces
+        self.num_filters_last_stage = num_filters[-1]
 
         # --- Convolutional Configuration --- 
         if conv_blocks_channel_lists is None or len(conv_blocks_channel_lists) != num_residual_layers:
             raise ValueError(f"conv_blocks_channel_lists must be a list of length num_residual_layers ({num_residual_layers})")
 
-        if not conv_blocks_channel_lists or not conv_blocks_channel_lists[-1]:
-             raise ValueError("Last channel list in conv_blocks_channel_lists cannot be empty")
-        final_conv_channels = conv_blocks_channel_lists[-1][-1]
-        
-        self.final_conv_channels = final_conv_channels # C_final
+        self.first_conv_block = ConvBlockInitial(self.conv_input_channels, num_filters=num_filters)
 
-        # --- Convolutional Body (All stages are ConvBlocks now) --- 
-        self.first_conv_block = ConvBlock(self.conv_input_channels, conv_blocks_channel_lists[0][0])
-        self.residual_blocks = nn.ModuleList()
-        current_stage_in_channels = conv_blocks_channel_lists[0][0] # Start with conv input channels
-        for i in range(num_residual_layers): # Iterate num_residual_layers times
-            ch_list = conv_blocks_channel_lists[i]
-            if not ch_list:
-                 raise ValueError(f"Channel list for conv stage {i} cannot be empty")
-            self.residual_blocks.append(
-                ResidualConvBlock(channel_list=[current_stage_in_channels] + ch_list)
-            )
-            current_stage_in_channels = ch_list[-1] # Output of this stage is input for next
+        if conv_blocks_channel_lists:
+            self.final_conv_channels = conv_blocks_channel_lists[-1][-1]
+
+            # --- Convolutional Body (All stages are ConvBlocks now) --- 
+            self.residual_blocks = nn.ModuleList()
+            current_stage_in_channels = self.num_filters_last_stage # Start with conv input channels
+            for i in range(num_residual_layers): # Iterate num_residual_layers times
+                ch_list = conv_blocks_channel_lists[i]
+                if not ch_list:
+                    raise ValueError(f"Channel list for conv stage {i} cannot be empty")
+                self.residual_blocks.append(
+                    ResidualConvBlock(channel_list=[current_stage_in_channels] + ch_list)
+                )
+                current_stage_in_channels = ch_list[-1] # Output of this stage is input for next
+        else:
+            self.final_conv_channels = self.num_filters_last_stage
 
         # --- Instantiate Head Modules (using C_final) --- 
         self.policy_head = PolicyHead(self.final_conv_channels, dim_piece_type, self.action_space_size, self.board_height, self.board_width)
@@ -201,6 +221,7 @@ def test_network(cfg: DictConfig):
         dim_piece_type=cfg.network.dim_piece_type,
         board_size=cfg.network.board_size,
         num_residual_layers=cfg.network.num_residual_layers,
+        num_filters=cfg.network.num_filters,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,

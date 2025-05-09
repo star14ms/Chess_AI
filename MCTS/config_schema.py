@@ -9,8 +9,9 @@ class NetworkConfig:
     input_channels: int = 26
     dim_piece_type: int = 16 # Standard number of piece types
     board_size: int = 8
-    num_residual_layers: int = 40
-    conv_blocks_channel_lists: Optional[List[List[int]]] = [[256, 256]] * 40
+    num_filters: List[int] = [32, 64, 64, 128, 128, 128, 128]
+    num_residual_layers: int = 0
+    conv_blocks_channel_lists: Optional[List[List[int]]] = [] * 0
     action_space_size: int = 1700 # Updated based on latest yaml
     num_pieces: int = 32 # Standard number of pieces
     value_head_hidden_size: int = 256
