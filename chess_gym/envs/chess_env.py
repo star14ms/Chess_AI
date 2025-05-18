@@ -13,13 +13,14 @@ import os
 
 from gymnasium.utils.save_video import save_video
 
-from chess_gym.chess_custom import FullyTrackedBoard
+from chess_gym.chess_custom import LegacyChessBoard, FullyTrackedBoard
 from utils.visualize import draw_possible_actions_on_board
 
 class MoveSpace(spaces.Space):
-    def __init__(self, board: FullyTrackedBoard):
+    def __init__(self, board: FullyTrackedBoard | LegacyChessBoard, use_4672_action_space: bool = False):
         super().__init__(dtype=np.int32)
         self.board = board
+        self.use_4672_action_space = use_4672_action_space
         self._shape = (6,)  # [from_square, to_square, promotion, drop, promotion_color, drop_color]
 
     @property
@@ -43,11 +44,85 @@ class MoveSpace(spaces.Space):
     def _action_to_move(self, action: Union[int, np.ndarray, list]) -> chess.Move:
         # Check if action is an integer ID
         if isinstance(action, (int, np.integer)):
-            if not self.board.is_theoretically_possible_state:
-                raise ValueError("Cannot convert action ID to move for a theoretically impossible board state.")
-            # Convert from integer ID using the imported function
-            # Pass self.board as the first argument
-            return self.board.action_id_to_move(action)
+            if self.use_4672_action_space:
+                # Convert from 4672 action space to chess move
+                square = (action - 1) // 73
+                relative_action = (action - 1) % 73 + 1  # Convert to 1-based
+                
+                # Handle special cases
+                if relative_action >= 70:  # Castling
+                    if relative_action == 70:  # Kingside
+                        return chess.Move.from_uci('e1g1' if self.board.turn == chess.WHITE else 'e8g8')
+                    else:  # Queenside
+                        return chess.Move.from_uci('e1c1' if self.board.turn == chess.WHITE else 'e8c8')
+                elif relative_action >= 64:  # Promotion
+                    promo_pieces = ['q', 'n', 'b', 'r']
+                    promo_idx = relative_action - 64
+                    promo_char = promo_pieces[promo_idx]
+                    # Get the source square and calculate target square
+                    start_sq = chess.square_name(square)
+                    # For promotions, we need to determine the target square
+                    rank = chess.square_rank(square)
+                    file = chess.square_file(square)
+                    if self.board.turn == chess.WHITE:
+                        end_sq = chess.square_name(chess.square(file, 7))
+                    else:
+                        end_sq = chess.square_name(chess.square(file, 0))
+                    return chess.Move.from_uci(f"{start_sq}{end_sq}{promo_char}")
+                else:  # Regular move
+                    # Calculate direction (0-7) and distance (1-7)
+                    if 1 <= relative_action <= 56:  # Queen-like moves
+                        direction = (relative_action - 1) // 7
+                        distance = (relative_action - 1) % 7 + 1
+                        
+                        # Calculate file and rank changes based on direction
+                        file_change = 0
+                        rank_change = 0
+                        if direction == 0:  # N
+                            rank_change = distance
+                        elif direction == 1:  # NE
+                            file_change = distance
+                            rank_change = distance
+                        elif direction == 2:  # E
+                            file_change = distance
+                        elif direction == 3:  # SE
+                            file_change = distance
+                            rank_change = -distance
+                        elif direction == 4:  # S
+                            rank_change = -distance
+                        elif direction == 5:  # SW
+                            file_change = -distance
+                            rank_change = -distance
+                        elif direction == 6:  # W
+                            file_change = -distance
+                        elif direction == 7:  # NW
+                            file_change = -distance
+                            rank_change = distance
+                    elif 57 <= relative_action <= 64:  # Knight moves
+                        knight_patterns = {
+                            1: (2, 1), 2: (1, 2), 3: (-1, 2), 4: (-2, 1),
+                            5: (-2, -1), 6: (-1, -2), 7: (1, -2), 8: (2, -1)
+                        }
+                        file_change, rank_change = knight_patterns[relative_action - 56]
+                    else:
+                        return chess.Move.null()
+                    
+                    start_file = chess.square_file(square)
+                    start_rank = chess.square_rank(square)
+                    end_file = start_file + file_change
+                    end_rank = start_rank + rank_change
+                    
+                    if 0 <= end_file < 8 and 0 <= end_rank < 8:
+                        start_sq = chess.square_name(square)
+                        end_sq = chess.square_name(chess.square(end_file, end_rank))
+                        return chess.Move.from_uci(f"{start_sq}{end_sq}")
+                    else:
+                        # Invalid move - return a no-op move
+                        return chess.Move.null()
+            else:
+                if not self.board.is_theoretically_possible_state:
+                    raise ValueError("Cannot convert action ID to move for a theoretically impossible board state.")
+                return self.board.action_id_to_move(action)
         
         # Check if action is a list or numpy array (legacy format)
         elif isinstance(action, (list, np.ndarray)):
@@ -76,23 +151,73 @@ class MoveSpace(spaces.Space):
             else:
                 drop = None
                 
-            move = chess.Move(from_square, to_square, promotion, drop)
-            return move
+            return chess.Move(from_square, to_square, promotion, drop)
         else:
             # Raise error for unsupported action type
             raise TypeError(f"Unsupported action type: {type(action)}")
 
     def _move_to_action(self, move: chess.Move, return_id: bool = False) -> Union[np.ndarray, int]:
-        # Check if we should return the integer ID
-        is_possible = hasattr(self.board, 'is_theoretically_possible_state') and self.board.is_theoretically_possible_state
-
         if return_id:
-            if is_possible:
-                # Assuming FullyTrackedBoard has is_theoretically_possible_state method
-                return self.board.move_to_action_id(move)
+            if self.use_4672_action_space:
+                # Convert move to 4672 action space
+                start_sq = move.from_square
+                file_change = chess.square_file(move.to_square) - chess.square_file(start_sq)
+                rank_change = chess.square_rank(move.to_square) - chess.square_rank(start_sq)
+                
+                # Handle special cases
+                if move.promotion is not None:
+                    # Promotion moves (65-68)
+                    promo_pieces = ['q', 'n', 'b', 'r']
+                    promo_idx = promo_pieces.index(move.promotion.symbol().lower())
+                    return start_sq * 73 + 65 + promo_idx
+                elif abs(file_change) == 2 and rank_change == 0 and move.from_square in [chess.E1, chess.E8]:
+                    # Castling (69-70)
+                    if file_change == 2:  # Kingside
+                        return start_sq * 73 + 69
+                    else:  # Queenside
+                        return start_sq * 73 + 70
+                else:
+                    # Check if it's a knight move
+                    is_knight_move = (abs(file_change) == 2 and abs(rank_change) == 1) or (abs(file_change) == 1 and abs(rank_change) == 2)
+                    
+                    if is_knight_move:
+                        # Knight moves are encoded as 57-64
+                        knight_patterns = {
+                            (2, 1): 1, (1, 2): 2, (-1, 2): 3, (-2, 1): 4,
+                            (-2, -1): 5, (-1, -2): 6, (1, -2): 7, (2, -1): 8
+                        }
+                        move_index = 56 + knight_patterns.get((file_change, rank_change), 0)
+                    else:
+                        # Queen-like moves are encoded as 1-56
+                        # Determine direction (0-7)
+                        if rank_change > 0:  # North
+                            if file_change > 0: direction = 1  # NE
+                            elif file_change < 0: direction = 7  # NW
+                            else: direction = 0  # N
+                        elif rank_change < 0:  # South
+                            if file_change > 0: direction = 3  # SE
+                            elif file_change < 0: direction = 5  # SW
+                            else: direction = 4  # S
+                        else:  # East or West
+                            if file_change > 0: direction = 2  # E
+                            else: direction = 6  # W
+                            
+                        # Calculate distance (1-7)
+                        distance = max(abs(file_change), abs(rank_change))
+                        if distance > 7:
+                            raise ValueError(f"Invalid move distance: {distance}")
+                            
+                        # direction * 7 + distance
+                        move_index = direction * 7 + distance
+                    
+                    if 1 <= move_index <= 73:  # Total of 73 move types per square
+                        return start_sq * 73 + move_index
+                    else:
+                        raise ValueError(f"Invalid move index: {move_index}")
             else:
-                # Raise error if ID requested for impossible state
-                raise ValueError("Cannot return action ID for a theoretically impossible board state.")
+                if not self.board.is_theoretically_possible_state:
+                    raise ValueError("Cannot return action ID for a theoretically impossible board state.")
+                return self.board.move_to_action_id(move)
         
         # Otherwise, return the legacy 6-element array
         from_square = move.from_square
@@ -135,6 +260,7 @@ class ChessEnv(gym.Env):
                  render_mode=None, 
                  show_possible_actions=False, 
                  save_video_folder: Optional[str] = None,
+                 use_4672_action_space: bool = False,
                  **kwargs):
         super(ChessEnv, self).__init__()
 
@@ -152,6 +278,7 @@ class ChessEnv(gym.Env):
 
         self.observation_mode = observation_mode
         self.render_mode = render_mode
+        self.use_4672_action_space = use_4672_action_space
 
         if observation_mode == 'rgb_array':
             self.observation_space = spaces.Box(
@@ -178,7 +305,10 @@ class ChessEnv(gym.Env):
             raise ValueError(f"Invalid observation_mode: {observation_mode}. Must be one of {self.metadata['observation_modes']}")
 
         self.chess960 = kwargs.get('chess960', False)
-        self.board = FullyTrackedBoard(chess960=self.chess960)
+        if use_4672_action_space:
+            self.board = LegacyChessBoard(chess960=self.chess960)
+        else:
+            self.board = FullyTrackedBoard(chess960=self.chess960)
 
         if self.chess960:
             self.board.set_chess960_pos(np.random.randint(0, 960))
@@ -188,7 +318,9 @@ class ChessEnv(gym.Env):
         self.show_possible_actions = show_possible_actions
         self.window = None
         self.clock = None
-        self.action_space = MoveSpace(self.board)
+        
+        # Set action space based on the use_4672_action_space flag
+        self.action_space = MoveSpace(self.board, use_4672_action_space=use_4672_action_space)
 
     def _get_image(self):
         out = BytesIO()
@@ -220,8 +352,10 @@ class ChessEnv(gym.Env):
         return observation
 
     def step(self, action):
-        # Convert the action array to a chess move
+        # Convert the action to a chess move using MoveSpace
         move = self.action_space._action_to_move(action)
+
+        # Push the move regardless of legality
         self.board.push(move)
 
         observation = self._observe()
@@ -246,14 +380,6 @@ class ChessEnv(gym.Env):
             if self.save_video_folder is not None and frame is not None: # Ensure render returned something
                 self.recorded_frames.append(frame)
         # --- End Record Frame --- 
-
-        # --- Trigger video save on episode end --- 
-        # NOTE: The save happens in the *next* reset call, triggered by this termination
-        # This ensures the final frame is included before saving.
-        # if self.save_video_folder is not None and (terminated or truncated):
-        #     self._save_recorded_video() # Save is now handled in reset
-        #     self.video_episode_index += 1 # Increment episode index *after* saving
-        # --- End Trigger Save --- 
 
         return observation, reward, terminated, truncated, info
 

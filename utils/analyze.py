@@ -447,7 +447,7 @@ def get_action_id_for_piece_abs(
 
 def create_piece_instance_map(
     board: chess.Board,
-    instance_map: Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]
+    instance_map: Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]] = {}
 ) -> Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]:
     """
     Populates a given map from square to (color, piece_type, instance_index)
@@ -813,3 +813,300 @@ def interpret_action(action_id: int) -> Optional[Dict[str, Union[str, int, bool]
 
     logging.warning(f"Action ID {action_id} did not fall into any known piece range.")
     return None # Should not be reached if action_id is 1-1700 and logic is correct
+
+
+def get_base_action_id_4672(square: chess.Square) -> int:
+    """Calculates the base action ID for a specific square in the 4672-action space.
+    
+    Args:
+        square: The chess square (0-63) to get the base action ID for.
+        
+    Returns:
+        The 1-based starting action ID for the square's action range.
+    """
+    # Each square has 73 possible actions
+    # Base ID for square 0 (a1) is 1, square 1 (b1) is 74, etc.
+    return square * 73 + 1
+
+def get_absolute_action_id_4672(
+    uci: str,
+    color: chess.Color,
+    piece_type: chess.PieceType,
+    instance_index: int
+) -> Optional[int]:
+    """
+    Calculates the absolute action ID for a given move in the 4672-action space.
+    
+    Args:
+        uci: The move in UCI format.
+        color: The color of the piece making the move.
+        piece_type: The type of the piece making the move.
+        instance_index: The 0-based index for this instance of the piece/color.
+        
+    Returns:
+        The absolute action ID (1-based) or None if the move is invalid.
+    """
+    if len(uci) != 4 and len(uci) != 5:
+        return None
+        
+    try:
+        start_sq = chess.parse_square(uci[0:2])
+        end_sq = chess.parse_square(uci[2:4])
+    except ValueError:
+        return None
+        
+    # Get base ID for the starting square
+    base_id = get_base_action_id_4672(start_sq)
+    
+    # Calculate relative action ID based on end square and promotion
+    file_change = chess.square_file(end_sq) - chess.square_file(start_sq)
+    rank_change = chess.square_rank(end_sq) - chess.square_rank(start_sq)
+    
+    # Handle promotions (part of queen's move types)
+    if len(uci) == 5:
+        promo_char = uci[4].lower()
+        if promo_char not in ['q', 'n', 'b', 'r']:
+            return None
+            
+        # Promotion moves are encoded as 65-73
+        promo_offset = {'q': 65, 'n': 66, 'b': 67, 'r': 68}[promo_char]
+        return base_id + promo_offset - 1  # Subtract 1 because base_id is 1-based
+    
+    # Handle castling (part of queen's move types)
+    if piece_type == chess.KING and abs(file_change) == 2 and rank_change == 0:
+        if file_change == 2:  # Kingside
+            return base_id + 69 - 1  # Subtract 1 because base_id is 1-based
+        else:  # Queenside
+            return base_id + 70 - 1  # Subtract 1 because base_id is 1-based
+    
+    # Regular moves
+    if abs(file_change) > 7 or abs(rank_change) > 7:
+        return None
+        
+    # Calculate direction (0-7) and distance (1-7)
+    if file_change == 0 and rank_change == 0:
+        return None  # No move
+        
+    # Determine direction (0-7)
+    if rank_change > 0:  # North
+        if file_change > 0: direction = 1  # NE
+        elif file_change < 0: direction = 7  # NW
+        else: direction = 0  # N
+    elif rank_change < 0:  # South
+        if file_change > 0: direction = 3  # SE
+        elif file_change < 0: direction = 5  # SW
+        else: direction = 4  # S
+    else:  # East or West
+        if file_change > 0: direction = 2  # E
+        else: direction = 6  # W
+        
+    # Calculate distance (1-7)
+    distance = max(abs(file_change), abs(rank_change))
+    if distance > 7:
+        return None
+        
+    # Check if it's a knight move
+    is_knight_move = (abs(file_change) == 2 and abs(rank_change) == 1) or (abs(file_change) == 1 and abs(rank_change) == 2)
+    
+    if is_knight_move:
+        # Knight moves are encoded as 57-64
+        # Map the knight move pattern to 1-8
+        knight_patterns = {
+            (2, 1): 1, (1, 2): 2, (-1, 2): 3, (-2, 1): 4,
+            (-2, -1): 5, (-1, -2): 6, (1, -2): 7, (2, -1): 8
+        }
+        move_index = 56 + knight_patterns.get((file_change, rank_change), 0)
+    else:
+        # Queen-like moves are encoded as 1-56
+        # direction * 7 + distance
+        move_index = direction * 7 + distance
+    
+    if 1 <= move_index <= 73:  # Total of 73 move types per square
+        return base_id + move_index - 1  # Subtract 1 because base_id is 1-based
+    
+    return None
+
+def get_action_id_for_piece_abs_4672(
+    uci: str,
+    color: chess.Color,
+    piece_type: chess.PieceType,
+    instance_index: int
+) -> Optional[int]:
+    """
+    Alias for get_absolute_action_id_4672 for backward compatibility.
+    """
+    return get_absolute_action_id_4672(uci, color, piece_type, instance_index)
+
+def create_piece_instance_map_4672(
+    board: chess.Board,
+    instance_map: Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]] = {}
+) -> Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]:
+    """
+    Creates a map from square to (color, piece_type, instance_index) for the 4672-action space.
+    This is similar to the original but simplified since we don't need instance tracking
+    for the 4672-action space.
+    
+    Args:
+        board: The current chess.Board object.
+        instance_map: The dictionary to populate. It will be cleared first.
+        
+    Returns:
+        The populated instance_map dictionary.
+    """
+    instance_map.clear()
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            # For 4672-action space, instance_index is always 0
+            instance_map[square] = (piece.color, piece.piece_type, 0)
+    return instance_map
+
+def interpret_tile_4672(
+    tile_input: Union[np.ndarray, str, torch.Tensor],
+    observation_array: Optional[Union[np.ndarray, torch.Tensor]] = None,
+) -> str:
+    """
+    Interprets a tile in the 4672-action space observation format.
+    This is similar to the original but simplified since we don't need
+    piece instance tracking.
+    
+    Args:
+        tile_input: A 1D numpy array, a 1D torch.Tensor, or a square string.
+        observation_array: The full observation array (required if tile_input is a string).
+        
+    Returns:
+        A string describing the piece and state on the tile.
+    """
+    # Implementation is similar to interpret_tile but without piece instance tracking
+    # This is a placeholder - you'll need to implement the specific observation format
+    # for your 4672-action space
+    return "Not implemented yet"
+
+def interpret_action_4672(action_id: int) -> Optional[Dict[str, Union[str, int, bool]]]:
+    """Interprets an absolute action ID in the 4672-action space."""
+    if not (1 <= action_id <= 4672):
+        logging.warning(f"Action ID {action_id} is out of expected range (1-4672).")
+        return None
+        
+    # Calculate which square this action belongs to
+    square = (action_id - 1) // 73
+    relative_action = (action_id - 1) % 73 + 1  # Convert to 1-based
+    
+    # Get square name
+    square_name = chess.square_name(square)
+    
+    # Interpret the relative action
+    if 1 <= relative_action <= 56:
+        # Queen-like moves (8 directions × 7 distances)
+        direction = (relative_action - 1) // 7
+        distance = (relative_action - 1) % 7 + 1
+        
+        directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        direction_name = directions[direction]
+        
+        # Calculate end square
+        file_change = 0
+        rank_change = 0
+        if direction == 0:  # N
+            rank_change = distance
+        elif direction == 1:  # NE
+            file_change = distance
+            rank_change = distance
+        elif direction == 2:  # E
+            file_change = distance
+        elif direction == 3:  # SE
+            file_change = distance
+            rank_change = -distance
+        elif direction == 4:  # S
+            rank_change = -distance
+        elif direction == 5:  # SW
+            file_change = -distance
+            rank_change = -distance
+        elif direction == 6:  # W
+            file_change = -distance
+        elif direction == 7:  # NW
+            file_change = -distance
+            rank_change = distance
+            
+        end_file = chess.square_file(square) + file_change
+        end_rank = chess.square_rank(square) + rank_change
+        
+        if 0 <= end_file < 8 and 0 <= end_rank < 8:
+            end_square = chess.square(end_file, end_rank)
+            end_square_name = chess.square_name(end_square)
+            move_type = f"Queen-like move {direction_name} distance {distance}"
+            uci_pattern = f"{square_name}{end_square_name}"
+        else:
+            return None
+            
+    elif 57 <= relative_action <= 64:
+        # Knight moves (8 patterns)
+        knight_patterns = {
+            1: (2, 1), 2: (1, 2), 3: (-1, 2), 4: (-2, 1),
+            5: (-2, -1), 6: (-1, -2), 7: (1, -2), 8: (2, -1)
+        }
+        file_change, rank_change = knight_patterns[relative_action - 56]
+        
+        end_file = chess.square_file(square) + file_change
+        end_rank = chess.square_rank(square) + rank_change
+        
+        if 0 <= end_file < 8 and 0 <= end_rank < 8:
+            end_square = chess.square(end_file, end_rank)
+            end_square_name = chess.square_name(end_square)
+            move_type = f"Knight move pattern {relative_action - 56}"
+            uci_pattern = f"{square_name}{end_square_name}"
+        else:
+            return None
+            
+    elif 65 <= relative_action <= 73:
+        # Promotions (3 moves × 3 underpromotions)
+        promo_types = ['q', 'n', 'b']  # Queen, Knight, Bishop underpromotions
+        move_directions = ["forward", "left", "right"]
+        
+        promo_idx = (relative_action - 65) // 3
+        direction_idx = (relative_action - 65) % 3
+        
+        promo_char = promo_types[promo_idx]
+        direction = move_directions[direction_idx]
+        
+        # Calculate end square based on direction
+        rank = chess.square_rank(square)
+        file = chess.square_file(square)
+        
+        if rank == 6:  # White pawn
+            end_rank = 7
+            if direction == "forward":
+                end_file = file
+            elif direction == "left":
+                end_file = file - 1
+            else:  # right
+                end_file = file + 1
+        elif rank == 1:  # Black pawn
+            end_rank = 0
+            if direction == "forward":
+                end_file = file
+            elif direction == "left":
+                end_file = file - 1
+            else:  # right
+                end_file = file + 1
+        else:
+            return None
+            
+        if 0 <= end_file < 8:
+            end_square = chess.square(end_file, end_rank)
+            end_square_name = chess.square_name(end_square)
+            move_type = f"Promotion to {promo_char.upper()} {direction}"
+            uci_pattern = f"{square_name}{end_square_name}{promo_char}"
+        else:
+            return None
+            
+    else:
+        return None
+        
+    return {
+        "action_id": action_id,
+        "square": square_name,
+        "relative_action": relative_action,
+        "move_type": move_type,
+        "uci_pattern": uci_pattern
+    }

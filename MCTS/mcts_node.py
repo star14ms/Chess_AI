@@ -11,12 +11,12 @@ import os
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.append(project_root)
-from chess_gym.chess_custom import FullyTrackedBoard
+from chess_gym.chess_custom import FullyTrackedBoard, LegacyChessBoard
 
 # --- MCTS Node ---
 class MCTSNode:
     """Node in the MCTS tree. Stores state via FEN string."""
-    def __init__(self, board: FullyTrackedBoard,
+    def __init__(self, board: FullyTrackedBoard | LegacyChessBoard,
                  parent: Optional['MCTSNode'] = None, 
                  prior_p: float = 0.0, 
                  move_leading_here: Optional[chess.Move] = None

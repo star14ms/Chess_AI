@@ -16,7 +16,9 @@ import torch.nn.functional as F
 from torch import nn
 
 # Assuming files are in the MCTS directory relative to the project root
-from models.network import ChessNetwork, FullyTrackedBoard
+from models.network import ChessNetwork
+from models.network_4672 import ChessNetwork4672
+from chess_gym.chess_custom import LegacyChessBoard, FullyTrackedBoard
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from chess_gym.envs import ChessEnv
@@ -36,18 +38,29 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     # Re-initialize Network in the worker process
     # (Ensure parameters match your network's __init__)
     if cfg.mcts.iterations > 0:
-        network = ChessNetwork(
-            input_channels=cfg.network.input_channels,
-            dim_piece_type=cfg.network.dim_piece_type,
-            board_size=cfg.network.board_size,
-            num_residual_layers=cfg.network.num_residual_layers,
-            num_filters=cfg.network.num_filters,
-            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-            action_space_size=cfg.network.action_space_size,
-            num_pieces=cfg.network.num_pieces,
-            value_head_hidden_size=cfg.network.value_head_hidden_size
-            # Add other required params based on network.py definition
-        ).to(device)
+        if cfg.network.action_space_mode == "4672":
+            network = ChessNetwork4672(
+                input_channels=cfg.network.input_channels,
+                board_size=cfg.network.board_size,
+                num_residual_layers=cfg.network.num_residual_layers,
+                num_filters=cfg.network.num_filters,
+                conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+                action_space_size=cfg.network.action_space_size,
+                num_pieces=cfg.network.num_pieces,
+                value_head_hidden_size=cfg.network.value_head_hidden_size
+            ).to(device)
+        else:
+            network = ChessNetwork(
+                input_channels=cfg.network.input_channels,
+                dim_piece_type=cfg.network.dim_piece_type,
+                board_size=cfg.network.board_size,
+                num_residual_layers=cfg.network.num_residual_layers,
+                num_filters=cfg.network.num_filters,
+                conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+                action_space_size=cfg.network.action_space_size,
+                num_pieces=cfg.network.num_pieces,
+                value_head_hidden_size=cfg.network.value_head_hidden_size
+            ).to(device)
         network.load_state_dict(network_state_dict)
         network.eval() # Ensure it's in eval mode
     else:
@@ -58,9 +71,15 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     env = ChessEnv(
         observation_mode=cfg.env.observation_mode,
         render_mode=None, # Avoid rendering in workers
-        save_video_folder=None
+        save_video_folder=None,
+        use_4672_action_space=cfg.network.action_space_mode == "4672"
     )
-    env.board = FullyTrackedBoard(fen=env.board.fen()) # Replace env's board with instance of correct class
+    
+    # Choose board class based on action space mode
+    if cfg.network.action_space_mode == "4672":
+        env.board = LegacyChessBoard(fen=env.board.fen())
+    else:  # "1700"
+        env.board = FullyTrackedBoard(fen=env.board.fen())
 
     # Progress is tricky with multiprocessing pools directly updating Rich progress.
     # Usually, you track completion externally or use shared state (more complex).
@@ -121,7 +140,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv 
     # If running in parallel, the worker resets its own env copy
     # This reset is safe for both cases
     if env is None:
-        env = ChessEnv()
+        env = ChessEnv(use_4672_action_space=cfg.network.action_space_mode == "4672")
     options = {
         'fen': cfg.training.initial_board_fen
     } if cfg.training.initial_board_fen else None
@@ -160,7 +179,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv 
                 network,
                 device=device,
                 env=mcts_env,
-                C_puct=c_puct
+                C_puct=c_puct,
+                action_space_mode=cfg.network.action_space_mode
             )
             # --- Run MCTS Search --- 
             mcts_player.search(root_node, mcts_iterations, progress=progress)
@@ -234,6 +254,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         device = torch.device(cfg.training.device)
     log_str_trining_device = f"{device} for training"
 
+    # Print action space mode
+    progress.print(f"Using {cfg.network.action_space_mode} action space mode")
+
     # Determine number of workers
     num_workers_config = cfg.training.get('self_play_workers', 0)
     total_cores = os.cpu_count()
@@ -254,31 +277,55 @@ def run_training_loop(cfg: DictConfig) -> None:
     
     # Initialize Network using network config
     # Make sure network's __init__ signature matches the parameters passed
-    network = ChessNetwork(
-        input_channels=cfg.network.input_channels,
-        dim_piece_type=cfg.network.dim_piece_type,
-        board_size=cfg.network.board_size,
-        num_residual_layers=cfg.network.num_residual_layers,
-        num_filters=cfg.network.num_filters,
-        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-        action_space_size=cfg.network.action_space_size,
-        num_pieces=cfg.network.num_pieces,
-        value_head_hidden_size=cfg.network.value_head_hidden_size
-    ).to(device)
+    if cfg.network.action_space_mode == "4672":
+        network = ChessNetwork4672(
+            input_channels=cfg.network.input_channels,
+            board_size=cfg.network.board_size,
+            num_residual_layers=cfg.network.num_residual_layers,
+            num_filters=cfg.network.num_filters,
+            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+            action_space_size=cfg.network.action_space_size,
+            num_pieces=cfg.network.num_pieces,
+            value_head_hidden_size=cfg.network.value_head_hidden_size
+        ).to(device)
+    else:
+        network = ChessNetwork(
+            input_channels=cfg.network.input_channels,
+            dim_piece_type=cfg.network.dim_piece_type,
+            board_size=cfg.network.board_size,
+            num_residual_layers=cfg.network.num_residual_layers,
+            num_filters=cfg.network.num_filters,
+            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+            action_space_size=cfg.network.action_space_size,
+            num_pieces=cfg.network.num_pieces,
+            value_head_hidden_size=cfg.network.value_head_hidden_size
+        ).to(device)
     network.eval()
 
     # Create a separate network instance for profiling
-    profile_network = ChessNetwork(
-        input_channels=cfg.network.input_channels,
-        dim_piece_type=cfg.network.dim_piece_type,
-        board_size=cfg.network.board_size,
-        num_residual_layers=cfg.network.num_residual_layers,
-        num_filters=cfg.network.num_filters,
-        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-        action_space_size=cfg.network.action_space_size,
-        num_pieces=cfg.network.num_pieces,
-        value_head_hidden_size=cfg.network.value_head_hidden_size
-    ).to(device)
+    if cfg.network.action_space_mode == "4672":
+        profile_network = ChessNetwork4672(
+            input_channels=cfg.network.input_channels,
+            board_size=cfg.network.board_size,
+            num_residual_layers=cfg.network.num_residual_layers,
+            num_filters=cfg.network.num_filters,
+            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+            action_space_size=cfg.network.action_space_size,
+            num_pieces=cfg.network.num_pieces,
+            value_head_hidden_size=cfg.network.value_head_hidden_size
+        ).to(device)
+    else:
+        profile_network = ChessNetwork(
+            input_channels=cfg.network.input_channels,
+            dim_piece_type=cfg.network.dim_piece_type,
+            board_size=cfg.network.board_size,
+            num_residual_layers=cfg.network.num_residual_layers,
+            num_filters=cfg.network.num_filters,
+            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+            action_space_size=cfg.network.action_space_size,
+            num_pieces=cfg.network.num_pieces,
+            value_head_hidden_size=cfg.network.value_head_hidden_size
+        ).to(device)
     profile_network.eval()
 
     # Profile the network
@@ -316,8 +363,15 @@ def run_training_loop(cfg: DictConfig) -> None:
     env = ChessEnv(
         observation_mode=cfg.env.observation_mode,
         render_mode=cfg.env.render_mode if not use_multiprocessing_flag and device.type == 'cpu' else None,
-        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing_flag and device.type == 'cpu' else None
+        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing_flag and device.type == 'cpu' else None,
+        use_4672_action_space=cfg.network.action_space_mode == "4672"
     )
+    
+    # Choose board class based on action space mode
+    if cfg.network.action_space_mode == "4672":
+        env.board = LegacyChessBoard(fen=env.board.fen())
+    else:  # "1700"
+        env.board = FullyTrackedBoard(fen=env.board.fen())
 
     # --- Main Training Loop ---
     start_iter = 0 # Initialize start_iter

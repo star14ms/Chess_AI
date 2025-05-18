@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 import numpy as np
 import enum
 
-from utils.analyze import create_piece_instance_map, get_action_id_for_piece_abs
+from utils.analyze import create_piece_instance_map, get_action_id_for_piece_abs, create_piece_instance_map_4672, get_action_id_for_piece_abs_4672
 
 # Define type aliases for clarity
 PieceInstanceId = Tuple[chess.Color, chess.PieceType, int] # (Color, OriginalPieceType, OriginalInstanceIndex 0-7/0-1)
@@ -15,7 +15,342 @@ PieceTracker = Dict[PieceInstanceId, PieceTrackingInfo]
 
 chess.Termination.ILLEGAL_MOVE = enum.auto()
 
-class FullyTrackedBoard(chess.Board):
+class BaseChessBoard(chess.Board):
+    """Base class for chess boards with vector representation capability."""
+    
+    def __init__(self, fen: Optional[str] = chess.STARTING_FEN, *, chess960: bool = False):
+        """Initialize the board with foul state tracking."""
+        self.foul: bool = False
+        super().__init__(fen, chess960=chess960)
+    
+    def get_board_vector(self) -> np.ndarray:
+        """
+        Generates a 26x8x8 numpy array representing the board state.
+
+        Output shape: (26, 8, 8) -> (Channels, Rank, File)
+
+        Channels (26 dimensions):
+        Features (10 channels):
+        0:   Color (-1 Black, 0 Empty, 1 White)
+        1-6: Piece Type / BehaviorType (One-hot: P, N, B, R, Q, K for piece on square)
+        7:   EnPassantTarget (1 if this square is the EP target for the next move, 0 otherwise)
+        8:   CastlingTarget (1 if King could land on this square via castling this turn, 0 otherwise)
+        9:   Current Player (-1 Black, 1 White - constant across the plane)
+
+        Piece Type Information (16 channels):
+        10-25: Piece Identity (16 channels, one-hot encoding for each piece)
+        """
+        # Initialize with shape (Channels, Height, Width) -> (Channels, Rank, File)
+        board_vector = np.zeros((26, 8, 8), dtype=np.int8)
+
+        # Global states needed
+        ep_square = self.ep_square
+        current_turn = self.turn
+        castling_rights = self.castling_rights
+
+        # Channel 9: Current Player (Constant plane)
+        player_val = 1 if current_turn == chess.WHITE else -1
+        board_vector[9, :, :] = player_val
+
+        # Potential castling destination squares for the current player
+        castling_target_squares = set()
+        if current_turn == chess.WHITE:
+            if castling_rights & chess.BB_A1: # White Queenside
+                if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
+                   self.piece_at(chess.B1) is None and self.piece_at(chess.C1) is None and self.piece_at(chess.D1) is None:
+                    if self.has_queenside_castling_rights(chess.WHITE):
+                        castling_target_squares.add(chess.C1)
+            if castling_rights & chess.BB_H1: # White Kingside
+                if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
+                   self.piece_at(chess.F1) is None and self.piece_at(chess.G1) is None:
+                    if self.has_kingside_castling_rights(chess.WHITE):
+                        castling_target_squares.add(chess.G1)
+        else: # BLACK's turn
+            if castling_rights & chess.BB_A8: # Black Queenside
+                if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
+                   self.piece_at(chess.B8) is None and self.piece_at(chess.C8) is None and self.piece_at(chess.D8) is None:
+                    if self.has_queenside_castling_rights(chess.BLACK):
+                        castling_target_squares.add(chess.C8)
+            if castling_rights & chess.BB_H8: # Black Kingside
+                if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
+                   self.piece_at(chess.F8) is None and self.piece_at(chess.G8) is None:
+                    if self.has_kingside_castling_rights(chess.BLACK):
+                        castling_target_squares.add(chess.G8)
+
+        for sq in chess.SQUARES:
+            rank = chess.square_rank(sq)
+            file = chess.square_file(sq)
+            piece = self.piece_at(sq)
+
+            # Channel 7: EnPassantTarget
+            if ep_square is not None and sq == ep_square:
+                board_vector[7, rank, file] = 1
+
+            # Channel 8: Castling Target
+            if sq in castling_target_squares:
+                board_vector[8, rank, file] = 1
+
+            if piece:
+                # Channel 0: Color
+                color_val = 1 if piece.color == chess.WHITE else -1
+                board_vector[0, rank, file] = color_val
+
+                # Channels 1-6: Piece Type / BehaviorType (One-hot)
+                piece_type_idx = piece.piece_type - 1 # 0-5 for P,N,B,R,Q,K
+                board_vector[1 + piece_type_idx, rank, file] = 1
+
+                # Channels 10-25: Piece Identity (16 channels, one-hot)
+                self._set_piece_identity_channels(board_vector, sq, rank, file, piece)
+
+            else:
+                # Empty Square Defaults
+                board_vector[0, rank, file] = 0
+
+        return board_vector
+
+    def _set_piece_identity_channels(self, board_vector: np.ndarray, sq: chess.Square, rank: int, file: int, piece: chess.Piece):
+        """Abstract method to be implemented by child classes for setting piece identity channels."""
+        raise NotImplementedError("Child classes must implement _set_piece_identity_channels")
+
+    def is_foul(self) -> bool:
+        """Returns True if the board is in a foul state (illegal move)."""
+        return self.foul
+
+    def is_game_over(self, *, claim_draw: bool = False) -> bool:
+        return self.outcome(claim_draw=claim_draw) is not None
+
+    def outcome(self, claim_draw: bool = False) -> chess.Outcome:
+        """Returns the outcome of the game."""
+        if self.foul:
+            return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
+        return super().outcome()
+
+    def push(self, move: chess.Move | None):
+        """Pushes a move to the board, handling illegal moves."""
+        if move is None:
+            self.foul = True
+            return
+        super().push(move)
+
+    def copy(self, *, stack: Union[bool, int] = True) -> 'BaseChessBoard':
+        """Creates a copy of the board, including the foul state."""
+        board_copy = super().copy(stack=stack)
+        board_copy.foul = self.foul
+        return board_copy
+
+class LegacyChessBoard(BaseChessBoard):
+    """Chess board class for the 4672 action space without piece tracking."""
+    
+    def _set_piece_identity_channels(self, board_vector: np.ndarray, sq: chess.Square, rank: int, file: int, piece: chess.Piece):
+        """Sets piece identity channels based on current piece type and position."""
+        # For legacy board, we use a simpler identity system based on current piece type
+        piece_type = piece.piece_type
+        color = piece.color
+        
+        # Map piece type to identity channel (0-15)
+        if piece_type == chess.KING:
+            id_0_15 = 0
+        elif piece_type == chess.QUEEN:
+            id_0_15 = 1
+        elif piece_type == chess.ROOK:
+            id_0_15 = 2 + (1 if chess.square_file(sq) > 3 else 0)  # Kingside/Queenside
+        elif piece_type == chess.KNIGHT:
+            id_0_15 = 4 + (1 if chess.square_file(sq) > 3 else 0)  # Kingside/Queenside
+        elif piece_type == chess.BISHOP:
+            id_0_15 = 6 + (1 if chess.square_file(sq) > 3 else 0)  # Kingside/Queenside
+        elif piece_type == chess.PAWN:
+            id_0_15 = 8 + chess.square_file(sq)  # File-based identity for pawns
+        
+        # Set the corresponding one-hot channel
+        if 0 <= id_0_15 <= 15:
+            board_vector[10 + id_0_15, rank, file] = 1
+
+    def action_id_to_move(self, action_id: int) -> Optional[chess.Move]:
+        """
+        Finds the legal chess.Move for an action ID in the 4672 action space.
+
+        Args:
+            action_id: The absolute action ID (1-based, 1-4672).
+
+        Returns:
+            The corresponding chess.Move if legal and found, otherwise None.
+            If None is returned, the move will be considered illegal and the game will terminate.
+        """
+        if not (1 <= action_id <= 4672):
+            logging.warning(f"Legacy ID to Move: action_id {action_id} is outside expected range (1-4672).")
+            return None
+
+        # Get all legal moves
+        for move in self.legal_moves:
+            # Create piece instance map for current board state
+            piece_instance_map = create_piece_instance_map_4672(self)
+            
+            # Get piece details from the map
+            piece_details = piece_instance_map.get(move.from_square)
+            if piece_details is None:
+                continue
+                
+            color, piece_type, instance_index = piece_details
+            
+            # Calculate action ID for this move
+            calculated_id = get_action_id_for_piece_abs_4672(
+                move.uci(), color, piece_type, instance_index
+            )
+            
+            if calculated_id == action_id:
+                return move
+
+        # If we get here, the action_id doesn't correspond to any legal move
+        logging.warning(f"Legacy ID to Move: action_id {action_id} does not correspond to any legal move.")
+        return None  # This will trigger the foul state in push()
+
+    def move_to_action_id(self, move: chess.Move) -> Optional[int]:
+        """
+        Calculates the absolute action ID (1-4672) for a move.
+
+        Args:
+            move: The chess.Move object.
+
+        Returns:
+            The absolute action ID (1-based) or None.
+        """
+        # Create piece instance map for current board state
+        piece_instance_map = create_piece_instance_map_4672(self)
+        
+        # Get piece details from the map
+        piece_details = piece_instance_map.get(move.from_square)
+        if piece_details is None:
+            logging.warning(f"Move to ID: No piece found at source square {chess.square_name(move.from_square)}")
+            return None
+            
+        color, piece_type, instance_index = piece_details
+        
+        # Calculate action ID using the 4672-specific function
+        action_id = get_action_id_for_piece_abs_4672(
+            move.uci(), color, piece_type, instance_index
+        )
+        
+        if action_id is None:
+            logging.warning(f"Move to ID: Failed to calculate action ID for move {move.uci()}")
+            
+        return action_id
+
+    def get_legal_moves_with_action_ids(
+        self,
+        return_squares_to_ids: bool = False
+    ) -> Union[Optional[Dict[chess.Square, List[int]]], Optional[List[int]]]:
+        """
+        Calculates representations of absolute action IDs for all legal moves in the 4672 action space.
+
+        Args:
+            return_squares_to_ids: If True, returns a dictionary mapping destination
+                squares to sorted lists of action IDs. If False (default), returns a
+                single sorted list containing all unique valid action IDs.
+
+        Returns:
+            - If return_squares_to_ids is True: Optional[Dict[chess.Square, List[int]]]
+            - If return_squares_to_ids is False: Optional[List[int]]
+        """
+        dest_square_to_action_ids: Dict[chess.Square, List[int]] = defaultdict(list)
+
+        for move in self.legal_moves:
+            action_id = self.move_to_action_id(move)
+            if action_id is not None:
+                dest_square_to_action_ids[move.to_square].append(action_id)
+
+        if return_squares_to_ids:
+            # Return the dictionary mapping squares to action ID lists
+            final_map: Dict[chess.Square, List[int]] = {}
+            for square, id_list in dest_square_to_action_ids.items():
+                final_map[square] = sorted(id_list)
+            return final_map
+        else:
+            # Return a flat list of all unique action IDs
+            all_action_ids = []
+            for id_list in dest_square_to_action_ids.values():
+                all_action_ids.extend(id_list)
+            return sorted(list(set(all_action_ids)))
+
+    def get_board_vector(self) -> np.ndarray:
+        """
+        Generates a 10x8x8 numpy array representing the board state.
+
+        Output shape: (10, 8, 8) -> (Channels, Rank, File)
+
+        Channels (10 dimensions):
+        Features (10 channels):
+        0:   Color (-1 Black, 0 Empty, 1 White)
+        1-6: Piece Type / BehaviorType (One-hot: P, N, B, R, Q, K for piece on square)
+        7:   EnPassantTarget (1 if this square is the EP target for the next move, 0 otherwise)
+        8:   CastlingTarget (1 if King could land on this square via castling this turn, 0 otherwise)
+        9:   Current Player (-1 Black, 1 White - constant across the plane)
+        """
+        # Initialize with shape (Channels, Height, Width) -> (Channels, Rank, File)
+        board_vector = np.zeros((10, 8, 8), dtype=np.int8)
+
+        # Global states needed
+        ep_square = self.ep_square
+        current_turn = self.turn
+        castling_rights = self.castling_rights
+
+        # Channel 9: Current Player (Constant plane)
+        player_val = 1 if current_turn == chess.WHITE else -1
+        board_vector[9, :, :] = player_val
+
+        # Potential castling destination squares for the current player
+        castling_target_squares = set()
+        if current_turn == chess.WHITE:
+            if castling_rights & chess.BB_A1: # White Queenside
+                if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
+                   self.piece_at(chess.B1) is None and self.piece_at(chess.C1) is None and self.piece_at(chess.D1) is None:
+                    if self.has_queenside_castling_rights(chess.WHITE):
+                        castling_target_squares.add(chess.C1)
+            if castling_rights & chess.BB_H1: # White Kingside
+                if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
+                   self.piece_at(chess.F1) is None and self.piece_at(chess.G1) is None:
+                    if self.has_kingside_castling_rights(chess.WHITE):
+                        castling_target_squares.add(chess.G1)
+        else: # BLACK's turn
+            if castling_rights & chess.BB_A8: # Black Queenside
+                if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
+                   self.piece_at(chess.B8) is None and self.piece_at(chess.C8) is None and self.piece_at(chess.D8) is None:
+                    if self.has_queenside_castling_rights(chess.BLACK):
+                        castling_target_squares.add(chess.C8)
+            if castling_rights & chess.BB_H8: # Black Kingside
+                if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
+                   self.piece_at(chess.F8) is None and self.piece_at(chess.G8) is None:
+                    if self.has_kingside_castling_rights(chess.BLACK):
+                        castling_target_squares.add(chess.G8)
+
+        for sq in chess.SQUARES:
+            rank = chess.square_rank(sq)
+            file = chess.square_file(sq)
+            piece = self.piece_at(sq)
+
+            # Channel 7: EnPassantTarget
+            if ep_square is not None and sq == ep_square:
+                board_vector[7, rank, file] = 1
+
+            # Channel 8: Castling Target
+            if sq in castling_target_squares:
+                board_vector[8, rank, file] = 1
+
+            if piece:
+                # Channel 0: Color
+                color_val = 1 if piece.color == chess.WHITE else -1
+                board_vector[0, rank, file] = color_val
+
+                # Channels 1-6: Piece Type / BehaviorType (One-hot)
+                piece_type_idx = piece.piece_type - 1 # 0-5 for P,N,B,R,Q,K
+                board_vector[1 + piece_type_idx, rank, file] = 1
+
+            else:
+                # Empty Square Defaults
+                board_vector[0, rank, file] = 0
+
+        return board_vector
+
+class FullyTrackedBoard(BaseChessBoard):
     """
     A chess.Board subclass that tracks the original identity and current state
     of all 32 starting pieces throughout the game. Includes a flag indicating
@@ -66,7 +401,6 @@ class FullyTrackedBoard(chess.Board):
         self.piece_tracker: PieceTracker = {}
         self._piece_tracker_stack: List[Tuple[PieceTracker, bool]] = [] # Store flag state too
         self.is_theoretically_possible_state: bool = True # Assume possible initially
-        self.foul: bool = False
         
         if piece_tracker_override is not None:
             self.piece_tracker = copy.deepcopy(piece_tracker_override)
@@ -80,7 +414,6 @@ class FullyTrackedBoard(chess.Board):
             # Populate tracker based on the board state set by super().__init__
             self._post_init_populate_tracker(fen) # This sets is_theoretically_possible_state
 
-
     def _post_init_populate_tracker(self, initial_fen: Optional[str]):
          """Decides which population method to call after board is set."""
          if initial_fen == chess.STARTING_FEN:
@@ -90,7 +423,6 @@ class FullyTrackedBoard(chess.Board):
              # Reset flag, it will be set by the population method if issues found
              self.is_theoretically_possible_state = True
              self._populate_tracker_from_current_state()
-
 
     def _pre_initialize_tracker_keys(self):
         """Creates entries for all 32 potential starting pieces with None values."""
@@ -117,7 +449,6 @@ class FullyTrackedBoard(chess.Board):
                 # This case implies the board wasn't actually standard start, flag it.
                 self.is_theoretically_possible_state = False
                 print(f"Warning: Standard start population failed for {piece_id} at {chess.square_name(start_sq)}")
-
 
     def _populate_tracker_from_current_state(self):
         """
@@ -205,19 +536,6 @@ class FullyTrackedBoard(chess.Board):
         super().reset()
         self._populate_tracker_from_standard_start()
         
-    def is_foul(self) -> bool:
-        """Returns True if the board is in a foul state (illegal move)."""
-        return self.foul
-
-    def is_game_over(self, *, claim_draw: bool = False) -> bool:
-        return self.outcome(claim_draw=claim_draw) is not None
-
-    def outcome(self, claim_draw: bool = False) -> chess.Outcome:
-        """Returns the outcome of the game."""
-        if self.foul:
-            return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
-        return super().outcome()
-
     def set_fen(self, fen: str, piece_tracker_override: Optional[PieceTracker] = None):
         """Sets the board from FEN and populates the tracker based on the FEN state
            or uses the provided tracker override.
@@ -408,7 +726,7 @@ class FullyTrackedBoard(chess.Board):
         else:
             # logging.warning("Robust ID to Move: Board state theoretically impossible. Using positional mapping, not tracker.")
             # Pass self instead of board to create_piece_instance_map
-            positional_instance_map = create_piece_instance_map(self, {})
+            positional_instance_map = create_piece_instance_map(self)
 
         # Iterate through legal moves and calculate their ID using the chosen method
         for move in self.legal_moves:
@@ -484,7 +802,7 @@ class FullyTrackedBoard(chess.Board):
         # Fallback/Default: Use positional mapping (create_piece_instance_map)
         if piece_details is None: # If not using tracker or tracker failed
             # Pass self instead of board
-            instance_map = create_piece_instance_map(self, {}) 
+            instance_map = create_piece_instance_map(self) 
             instance_details_from_map = instance_map.get(move.from_square)
             if instance_details_from_map:
                  # Note: piece_type here is the CURRENT type on the board
@@ -547,7 +865,7 @@ class FullyTrackedBoard(chess.Board):
             use_tracker = True
         else:
             # Impossible state, use positional mapping
-            positional_instance_map = create_piece_instance_map(self, {})
+            positional_instance_map = create_piece_instance_map(self)
             if not log_warning_issued:
                 logging.warning("Get Legal Moves w/ IDs: Board state theoretically impossible. Using positional mapping for all moves.")
                 log_warning_issued = True
@@ -623,140 +941,6 @@ class FullyTrackedBoard(chess.Board):
             # Using set ensures uniqueness, sorting happens after conversion to list
             unique_sorted_ids_str = [aid for aid in sorted(list(set(all_action_ids_int)))]
             return unique_sorted_ids_str
-
-    def get_board_vector(self) -> np.ndarray:
-        """
-        Generates a 26x8x8 numpy array representing the board state.
-
-        Output shape: (26, 8, 8) -> (Channels, Rank, File)
-
-        Channels (26 dimensions):
-        Features (10 channels):
-        0:   Color (-1 Black, 0 Empty, 1 White)
-        1-6: Piece Type / BehaviorType (One-hot: P, N, B, R, Q, K for piece on square)
-        7:   EnPassantTarget (1 if this square is the EP target for the next move, 0 otherwise)
-        8:   CastlingTarget (1 if King could land on this square via castling this turn, 0 otherwise)
-        9:   Current Player (-1 Black, 1 White - constant across the plane)
-
-        Piece Type Information (16 channels):
-        10-25: Piece Identity (16 channels, one-hot encoding for each piece)
-        """
-        # Initialize with shape (Channels, Height, Width) -> (Channels, Rank, File)
-        board_vector = np.zeros((26, 8, 8), dtype=np.int8)
-
-        # Global states needed
-        ep_square = self.ep_square
-        current_turn = self.turn
-        castling_rights = self.castling_rights
-
-        # Channel 9: Current Player (Constant plane)
-        player_val = 1 if current_turn == chess.WHITE else -1
-        board_vector[9, :, :] = player_val
-
-        # Potential castling destination squares for the current player
-        castling_target_squares = set()
-        if current_turn == chess.WHITE:
-            if castling_rights & chess.BB_A1: # White Queenside
-                if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
-                   self.piece_at(chess.B1) is None and self.piece_at(chess.C1) is None and self.piece_at(chess.D1) is None:
-                    if self.has_queenside_castling_rights(chess.WHITE):
-                        castling_target_squares.add(chess.C1)
-            if castling_rights & chess.BB_H1: # White Kingside
-                if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
-                   self.piece_at(chess.F1) is None and self.piece_at(chess.G1) is None:
-                    if self.has_kingside_castling_rights(chess.WHITE):
-                        castling_target_squares.add(chess.G1)
-        else: # BLACK's turn
-            if castling_rights & chess.BB_A8: # Black Queenside
-                if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
-                   self.piece_at(chess.B8) is None and self.piece_at(chess.C8) is None and self.piece_at(chess.D8) is None:
-                    if self.has_queenside_castling_rights(chess.BLACK):
-                        castling_target_squares.add(chess.C8)
-            if castling_rights & chess.BB_H8: # Black Kingside
-                if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
-                   self.piece_at(chess.F8) is None and self.piece_at(chess.G8) is None:
-                    if self.has_kingside_castling_rights(chess.BLACK):
-                        castling_target_squares.add(chess.G8)
-
-        for sq in chess.SQUARES:
-            rank = chess.square_rank(sq)
-            file = chess.square_file(sq)
-            piece = self.piece_at(sq)
-
-            # Channel 7: EnPassantTarget
-            if ep_square is not None and sq == ep_square:
-                board_vector[7, rank, file] = 1
-
-            # Channel 8: Castling Target
-            if sq in castling_target_squares:
-                board_vector[8, rank, file] = 1
-
-            if piece:
-                # Channel 0: Color
-                color_val = 1 if piece.color == chess.WHITE else -1
-                board_vector[0, rank, file] = color_val
-
-                # Channels 1-6: Piece Type / BehaviorType (One-hot)
-                piece_type_idx = piece.piece_type - 1 # 0-5 for P,N,B,R,Q,K
-                board_vector[1 + piece_type_idx, rank, file] = 1
-
-                # Channels 10-25: Piece Identity (16 channels, one-hot)
-                piece_instance_id_tuple = self.get_piece_instance_id_at(sq)
-                if piece_instance_id_tuple:
-                    _color, original_type, original_index = piece_instance_id_tuple
-                    
-                    id_0_15 = -1
-
-                    if original_type == chess.KING:    # ID 0
-                        id_0_15 = 0
-                    elif original_type == chess.QUEEN:   # ID 1
-                        id_0_15 = 1
-                    elif original_type == chess.ROOK:    # IDs 2, 3
-                        id_0_15 = 2 + original_index
-                    elif original_type == chess.KNIGHT:  # IDs 4, 5
-                        id_0_15 = 4 + original_index
-                    elif original_type == chess.BISHOP:  # IDs 6, 7
-                        id_0_15 = 6 + original_index
-                    elif original_type == chess.PAWN:    # IDs 8-15
-                        id_0_15 = 8 + original_index
-                    
-                    if 0 <= id_0_15 <= 15:
-                        # Set the corresponding one-hot channel
-                        board_vector[10 + id_0_15, rank, file] = 1
-                    else:
-                        if id_0_15 != -1:
-                            print(f"Warning: Calculated out-of-range piece ID {id_0_15} for {piece_instance_id_tuple} at {chess.square_name(sq)}. Piece ID bits set to 0.")
-
-            else:
-                # Empty Square Defaults
-                board_vector[0, rank, file] = 0
-
-        return board_vector
-
-    # --- Express Move in Notation ---
-    def san(self, move_or_action_id: Union[chess.Move, int]) -> str:
-        """Returns the SAN notation for a move."""
-        if isinstance(move_or_action_id, int):
-            move = self.action_id_to_move(move_or_action_id)
-        else:
-            move = move_or_action_id
-        return super().san(move)
-    
-    def lan(self, move_or_action_id: Union[chess.Move, int]) -> str:
-        """Returns the LAN notation for a move."""
-        if isinstance(move_or_action_id, int):
-            move = self.action_id_to_move(move_or_action_id)
-        else:
-            move = move_or_action_id
-        return super().lan(move)
-    
-    def uci(self, move_or_action_id: Union[chess.Move, int]) -> str:
-        """Returns the UCI notation for a move."""
-        if isinstance(move_or_action_id, int):
-            move = self.action_id_to_move(move_or_action_id)
-        else:
-            move = move_or_action_id
-        return super().uci(move)
 
     def get_numeric_id_to_instance_id_map(self) -> Dict[int, PieceInstanceId]:
         """Creates a mapping from numeric ID (1-32) back to PieceInstanceId tuple."""
@@ -859,3 +1043,30 @@ class FullyTrackedBoard(chess.Board):
         else:
             logging.warning(f"get_start_square_from_numeric_id: Reconstructed Piece ID {instance_id} (from numeric {numeric_id}) not found in piece_tracker.")
             return None
+
+    def _set_piece_identity_channels(self, board_vector: np.ndarray, sq: chess.Square, rank: int, file: int, piece: chess.Piece):
+        """Sets piece identity channels based on tracked piece identity."""
+        piece_instance_id_tuple = self.get_piece_instance_id_at(sq)
+        if piece_instance_id_tuple:
+            _color, original_type, original_index = piece_instance_id_tuple
+            
+            id_0_15 = -1
+
+            if original_type == chess.KING:    # ID 0
+                id_0_15 = 0
+            elif original_type == chess.QUEEN:   # ID 1
+                id_0_15 = 1
+            elif original_type == chess.ROOK:    # IDs 2, 3
+                id_0_15 = 2 + original_index
+            elif original_type == chess.KNIGHT:  # IDs 4, 5
+                id_0_15 = 4 + original_index
+            elif original_type == chess.BISHOP:  # IDs 6, 7
+                id_0_15 = 6 + original_index
+            elif original_type == chess.PAWN:    # IDs 8-15
+                id_0_15 = 8 + original_index
+            
+            if 0 <= id_0_15 <= 15:
+                board_vector[10 + id_0_15, rank, file] = 1
+            else:
+                if id_0_15 != -1:
+                    print(f"Warning: Calculated out-of-range piece ID {id_0_15} for {piece_instance_id_tuple} at {chess.square_name(sq)}. Piece ID bits set to 0.")

@@ -28,13 +28,15 @@ class MCTS:
                  env: ChessEnv | None = None, # Keep main env for selection/initial state
                  C_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3,
-                 dirichlet_epsilon: float = 0.25):
+                 dirichlet_epsilon: float = 0.25,
+                 action_space_mode: str = "1700"):  # Add action_space_mode parameter
         self.network = network
         self.device = torch.device(device)
         self.env = env # If None, board.push() will be used for expansion
         self.C_puct = C_puct
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
+        self.action_space_mode = action_space_mode  # Store action space mode
         self.network.eval()
 
     # --- MCTS Phases ---
@@ -280,13 +282,17 @@ class MCTS:
             # If no children, return ID of a random legal move (if any)
             if not legal: return None
             selected_move = random.choice(legal)
-            # --- Convert move to ID ---
-            root_board = root_node.get_board()
-            piece_details = root_board.get_piece_instance_id_at(selected_move.from_square)
-            if piece_details is None: return None
-            color, p_type, p_idx = piece_details
-            return get_action_id_for_piece_abs(selected_move.uci(), color, p_type, p_idx)
-            # --- End conversion ---
+            
+            if self.action_space_mode == "4672":
+                # For 4672 action space, just use move_to_action_id
+                return root_node.board.move_to_action_id(selected_move)
+            else:
+                # For 1700 action space, use piece instance tracking
+                root_board = root_node.get_board()
+                piece_details = root_board.get_piece_instance_id_at(selected_move.from_square)
+                if piece_details is None: return None
+                color, p_type, p_idx = piece_details
+                return get_action_id_for_piece_abs(selected_move.uci(), color, p_type, p_idx)
 
         # Consider only visited children corresponding to legal moves
         legal_moves = list(root_node.board.legal_moves)
@@ -296,13 +302,15 @@ class MCTS:
             # If no legal children were visited, return ID of a random legal move
             if not legal_moves: return None
             selected_move = random.choice(legal_moves)
-            # --- Convert move to ID ---
-            root_board = root_node.get_board()
-            piece_details = root_board.get_piece_instance_id_at(selected_move.from_square)
-            if piece_details is None: return None
-            color, p_type, p_idx = piece_details
-            return get_action_id_for_piece_abs(selected_move.uci(), color, p_type, p_idx)
-            # --- End conversion ---
+            
+            if self.action_space_mode == "4672":
+                return root_node.board.move_to_action_id(selected_move)
+            else:
+                root_board = root_node.get_board()
+                piece_details = root_board.get_piece_instance_id_at(selected_move.from_square)
+                if piece_details is None: return None
+                color, p_type, p_idx = piece_details
+                return get_action_id_for_piece_abs(selected_move.uci(), color, p_type, p_idx)
 
         if temperature == 0:
             max_visits = -1
@@ -315,13 +323,14 @@ class MCTS:
                  # Fallback: choose randomly among considered children if best_move wasn't set
                  best_move = random.choice(list(children_to_consider.keys()))
 
-            # --- Convert move to ID ---
-            root_board = root_node.get_board()
-            piece_details = root_board.get_piece_instance_id_at(best_move.from_square)
-            if piece_details is None: return None
-            color, p_type, p_idx = piece_details
-            return get_action_id_for_piece_abs(best_move.uci(), color, p_type, p_idx)
-            # --- End conversion ---
+            if self.action_space_mode == "4672":
+                return root_node.board.move_to_action_id(best_move)
+            else:
+                root_board = root_node.get_board()
+                piece_details = root_board.get_piece_instance_id_at(best_move.from_square)
+                if piece_details is None: return None
+                color, p_type, p_idx = piece_details
+                return get_action_id_for_piece_abs(best_move.uci(), color, p_type, p_idx)
         else:
             moves = list(children_to_consider.keys())
             visit_counts = np.array([children_to_consider[m].N for m in moves], dtype=float)
@@ -342,13 +351,14 @@ class MCTS:
 
             chosen_move = np.random.choice(moves, p=probabilities)
 
-            # --- Convert move to ID ---
-            root_board = root_node.get_board()
-            piece_details = root_board.get_piece_instance_id_at(chosen_move.from_square)
-            if piece_details is None: return None
-            color, p_type, p_idx = piece_details
-            return get_action_id_for_piece_abs(chosen_move.uci(), color, p_type, p_idx)
-            # --- End conversion ---
+            if self.action_space_mode == "4672":
+                return root_node.board.move_to_action_id(chosen_move)
+            else:
+                root_board = root_node.get_board()
+                piece_details = root_board.get_piece_instance_id_at(chosen_move.from_square)
+                if piece_details is None: return None
+                color, p_type, p_idx = piece_details
+                return get_action_id_for_piece_abs(chosen_move.uci(), color, p_type, p_idx)
 
     def get_policy_distribution(self, root_node: MCTSNode, temperature: float = 1.0) -> np.ndarray:
         """

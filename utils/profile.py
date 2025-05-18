@@ -5,7 +5,7 @@ def profile_model(model, inputs):
     import sys
     macs, params = profile(model, inputs=inputs, verbose=False)
     print('Network initialized! (Input {} MB : MACs: {} M | Params: {} M)'.format(
-        sys.getsizeof(inputs[0].untyped_storage())/1000/1000,
+        round(sys.getsizeof(inputs[0].untyped_storage())/1000/1000, 3),
         round(macs/1000/1000, 2), 
         round(params/1000/1000, 2),
     ))

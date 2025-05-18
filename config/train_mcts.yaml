@@ -20,7 +20,7 @@ network:
   # Target the specific NetworkConfig dataclass
   _target_: MCTS.config_schema.NetworkConfig
   # Values here override defaults in the dataclass
-  input_channels: 26
+  input_channels: 10
   dim_piece_type: 16
   board_size: 8
   num_residual_layers: 0
@@ -29,6 +29,7 @@ network:
   action_space_size: 1700
   num_pieces: 32
   value_head_hidden_size: 64
+  action_space_mode: "4672"  # Use 4672 action space with LegacyChessBoard
 
 # New Env section
 env:
