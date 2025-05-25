@@ -42,207 +42,201 @@ class MoveSpace(spaces.Space):
             return False
 
     def _action_to_move(self, action: Union[int, np.ndarray, list]) -> chess.Move:
-        # Check if action is an integer ID
+        # AlphaZero 4672 action space: 64 squares × 73 actions per square
         if isinstance(action, (int, np.integer)):
             if self.action_space_mode == "4672":
-                # Convert from 4672 action space to chess move
                 square = (action - 1) // 73
-                relative_action = (action - 1) % 73 + 1  # Convert to 1-based
-                
-                # Handle special cases
-                if relative_action >= 70:  # Castling
-                    if relative_action == 70:  # Kingside
-                        return chess.Move.from_uci('e1g1' if self.board.turn == chess.WHITE else 'e8g8')
-                    else:  # Queenside
-                        return chess.Move.from_uci('e1c1' if self.board.turn == chess.WHITE else 'e8c8')
-                elif relative_action >= 64:  # Promotion
-                    promo_pieces = ['q', 'n', 'b', 'r']
-                    promo_idx = relative_action - 64
-                    promo_char = promo_pieces[promo_idx]
-                    # Get the source square and calculate target square
-                    start_sq = chess.square_name(square)
-                    # For promotions, we need to determine the target square
-                    rank = chess.square_rank(square)
-                    file = chess.square_file(square)
-                    if self.board.turn == chess.WHITE:
-                        end_sq = chess.square_name(chess.square(file, 7))
-                    else:
-                        end_sq = chess.square_name(chess.square(file, 0))
-                    return chess.Move.from_uci(f"{start_sq}{end_sq}{promo_char}")
-                else:  # Regular move
-                    # Calculate direction (0-7) and distance (1-7)
-                    if 1 <= relative_action <= 56:  # Queen-like moves
-                        direction = (relative_action - 1) // 7
-                        distance = (relative_action - 1) % 7 + 1
-                        
-                        # Calculate file and rank changes based on direction
-                        file_change = 0
-                        rank_change = 0
-                        if direction == 0:  # N
-                            rank_change = distance
-                        elif direction == 1:  # NE
-                            file_change = distance
-                            rank_change = distance
-                        elif direction == 2:  # E
-                            file_change = distance
-                        elif direction == 3:  # SE
-                            file_change = distance
-                            rank_change = -distance
-                        elif direction == 4:  # S
-                            rank_change = -distance
-                        elif direction == 5:  # SW
-                            file_change = -distance
-                            rank_change = -distance
-                        elif direction == 6:  # W
-                            file_change = -distance
-                        elif direction == 7:  # NW
-                            file_change = -distance
-                            rank_change = distance
-                    elif 57 <= relative_action <= 64:  # Knight moves
-                        knight_patterns = {
-                            1: (2, 1), 2: (1, 2), 3: (-1, 2), 4: (-2, 1),
-                            5: (-2, -1), 6: (-1, -2), 7: (1, -2), 8: (2, -1)
-                        }
-                        file_change, rank_change = knight_patterns[relative_action - 56]
-                    else:
-                        return chess.Move.null()
-                    
+                relative_action = (action - 1) % 73  # 0-based: 0-72
+
+                # 0-55: Queen-like moves (8 directions × 7 distances)
+                if 0 <= relative_action <= 55:
+                    direction = relative_action // 7
+                    distance = (relative_action % 7) + 1
+                    file_change = 0
+                    rank_change = 0
+                    if direction == 0:  # N
+                        rank_change = distance
+                    elif direction == 1:  # NE
+                        file_change = distance
+                        rank_change = distance
+                    elif direction == 2:  # E
+                        file_change = distance
+                    elif direction == 3:  # SE
+                        file_change = distance
+                        rank_change = -distance
+                    elif direction == 4:  # S
+                        rank_change = -distance
+                    elif direction == 5:  # SW
+                        file_change = -distance
+                        rank_change = -distance
+                    elif direction == 6:  # W
+                        file_change = -distance
+                    elif direction == 7:  # NW
+                        file_change = -distance
+                        rank_change = distance
                     start_file = chess.square_file(square)
                     start_rank = chess.square_rank(square)
                     end_file = start_file + file_change
                     end_rank = start_rank + rank_change
-                    
                     if 0 <= end_file < 8 and 0 <= end_rank < 8:
                         start_sq = chess.square_name(square)
                         end_sq = chess.square_name(chess.square(end_file, end_rank))
                         return chess.Move.from_uci(f"{start_sq}{end_sq}")
                     else:
-                        # Invalid move - return a no-op move
                         return chess.Move.null()
+                # 56-63: Knight moves (8 possible)
+                elif 56 <= relative_action <= 63:
+                    knight_offsets = [
+                        (1, 2), (2, 1), (2, -1), (1, -2),
+                        (-1, -2), (-2, -1), (-2, 1), (-1, 2)
+                    ]
+                    idx = relative_action - 56
+                    file_change, rank_change = knight_offsets[idx]
+                    start_file = chess.square_file(square)
+                    start_rank = chess.square_rank(square)
+                    end_file = start_file + file_change
+                    end_rank = start_rank + rank_change
+                    if 0 <= end_file < 8 and 0 <= end_rank < 8:
+                        start_sq = chess.square_name(square)
+                        end_sq = chess.square_name(chess.square(end_file, end_rank))
+                        return chess.Move.from_uci(f"{start_sq}{end_sq}")
+                    else:
+                        return chess.Move.null()
+                # 64-72: Promotions (3 directions × 3 pieces)
+                elif 64 <= relative_action <= 72:
+                    # Promotion mapping:
+                    # 0: forward to Q, 1: left-capture to Q, 2: right-capture to Q
+                    # 3: forward to R, 4: left-capture to R, 5: right-capture to R
+                    # 6: forward to B, 7: left-capture to B, 8: right-capture to B
+                    promo_map = [
+                        (0, 'q'), (1, 'q'), (2, 'q'),
+                        (0, 'r'), (1, 'r'), (2, 'r'),
+                        (0, 'n'), (1, 'n'), (2, 'n')
+                    ]
+                    promo_idx = relative_action - 64
+                    direction, promo_char = promo_map[promo_idx]
+                    start_file = chess.square_file(square)
+                    start_rank = chess.square_rank(square)
+                    if self.board.turn == chess.WHITE:
+                        end_rank = 7
+                        if direction == 0:
+                            end_file = start_file
+                        elif direction == 1:
+                            end_file = start_file - 1
+                        else:
+                            end_file = start_file + 1
+                    else:
+                        end_rank = 0
+                        if direction == 0:
+                            end_file = start_file
+                        elif direction == 1:
+                            end_file = start_file + 1
+                        else:
+                            end_file = start_file - 1
+                    if 0 <= end_file < 8:
+                        start_sq = chess.square_name(square)
+                        end_sq = chess.square_name(chess.square(end_file, end_rank))
+                        return chess.Move.from_uci(f"{start_sq}{end_sq}{promo_char}")
+                    else:
+                        return chess.Move.null()
+                else:
+                    return chess.Move.null()
             else:
                 if not self.board.is_theoretically_possible_state:
                     raise ValueError("Cannot convert action ID to move for a theoretically impossible board state.")
                 return self.board.action_id_to_move(action)
-        
-        # Check if action is a list or numpy array (legacy format)
         elif isinstance(action, (list, np.ndarray)):
-            # Ensure legacy format has the correct shape if it's a numpy array
+            # Legacy format (unchanged)
             if isinstance(action, np.ndarray) and action.shape != self._shape:
-                 raise ValueError(f"Invalid action shape for legacy format: expected {self._shape}, got {action.shape}")
-            # Ensure legacy format has the correct length if it's a list
+                raise ValueError(f"Invalid action shape for legacy format: expected {self._shape}, got {action.shape}")
             if isinstance(action, list) and len(action) != self._shape[0]:
-                 raise ValueError(f"Invalid action length for legacy format: expected {self._shape[0]}, got {len(action)}")
-            
-            # Convert from legacy 6-element array
+                raise ValueError(f"Invalid action length for legacy format: expected {self._shape[0]}, got {len(action)}")
             from_square = chess.Square(action[0])
             to_square = chess.Square(action[1])
-            
-            # Handle promotion
-            if action[2] != 0:  # If there's a promotion
+            if action[2] != 0:
                 promotion = chess.PieceType(action[2])
             else:
                 promotion = None
-                
-            # Handle drop
-            if action[3] != 0:  # If there's a drop
+            if action[3] != 0:
                 drop_piece_type = chess.PieceType(action[3])
                 drop_color = chess.WHITE if action[5] == 1 else chess.BLACK
                 drop = chess.Piece(drop_piece_type, drop_color)
             else:
                 drop = None
-                
             return chess.Move(from_square, to_square, promotion, drop)
         else:
-            # Raise error for unsupported action type
             raise TypeError(f"Unsupported action type: {type(action)}")
 
     def _move_to_action(self, move: chess.Move, return_id: bool = False) -> Union[np.ndarray, int]:
         if return_id:
             if self.action_space_mode == "4672":
-                # Convert move to 4672 action space
                 start_sq = move.from_square
-                file_change = chess.square_file(move.to_square) - chess.square_file(start_sq)
-                rank_change = chess.square_rank(move.to_square) - chess.square_rank(start_sq)
-                
-                # Handle special cases
+                end_sq = move.to_square
+                file_change = chess.square_file(end_sq) - chess.square_file(start_sq)
+                rank_change = chess.square_rank(end_sq) - chess.square_rank(start_sq)
+                # Queen-like moves
+                for direction in range(8):
+                    for distance in range(1, 8):
+                        df = [0, 1, 1, 1, 0, -1, -1, -1][direction] * distance
+                        dr = [1, 1, 0, -1, -1, -1, 0, 1][direction] * distance
+                        if file_change == df and rank_change == dr:
+                            rel_action = direction * 7 + (distance - 1)
+                            return start_sq * 73 + rel_action + 1
+                # Knight moves
+                knight_offsets = [
+                    (1, 2), (2, 1), (2, -1), (1, -2),
+                    (-1, -2), (-2, -1), (-2, 1), (-1, 2)
+                ]
+                for idx, (df, dr) in enumerate(knight_offsets):
+                    if file_change == df and rank_change == dr:
+                        rel_action = 56 + idx
+                        return start_sq * 73 + rel_action + 1
+                # Promotions
                 if move.promotion is not None:
-                    # Promotion moves (65-68)
-                    promo_pieces = ['q', 'n', 'b', 'r']
-                    promo_idx = promo_pieces.index(move.promotion.symbol().lower())
-                    return start_sq * 73 + 65 + promo_idx
-                elif abs(file_change) == 2 and rank_change == 0 and move.from_square in [chess.E1, chess.E8]:
-                    # Castling (69-70)
-                    if file_change == 2:  # Kingside
-                        return start_sq * 73 + 69
-                    else:  # Queenside
-                        return start_sq * 73 + 70
-                else:
-                    # Check if it's a knight move
-                    is_knight_move = (abs(file_change) == 2 and abs(rank_change) == 1) or (abs(file_change) == 1 and abs(rank_change) == 2)
-                    
-                    if is_knight_move:
-                        # Knight moves are encoded as 57-64
-                        knight_patterns = {
-                            (2, 1): 1, (1, 2): 2, (-1, 2): 3, (-2, 1): 4,
-                            (-2, -1): 5, (-1, -2): 6, (1, -2): 7, (2, -1): 8
-                        }
-                        move_index = 56 + knight_patterns.get((file_change, rank_change), 0)
+                    promo_piece = move.promotion.symbol().lower()
+                    promo_map = {'q': 0, 'r': 1, 'n': 2}
+                    if promo_piece not in promo_map:
+                        raise ValueError(f"Unsupported promotion piece: {promo_piece}")
+                    # Determine direction
+                    if self.board.turn == chess.WHITE:
+                        if chess.square_file(end_sq) == chess.square_file(start_sq):
+                            direction = 0  # forward
+                        elif chess.square_file(end_sq) < chess.square_file(start_sq):
+                            direction = 1  # left-capture
+                        else:
+                            direction = 2  # right-capture
                     else:
-                        # Queen-like moves are encoded as 1-56
-                        # Determine direction (0-7)
-                        if rank_change > 0:  # North
-                            if file_change > 0: direction = 1  # NE
-                            elif file_change < 0: direction = 7  # NW
-                            else: direction = 0  # N
-                        elif rank_change < 0:  # South
-                            if file_change > 0: direction = 3  # SE
-                            elif file_change < 0: direction = 5  # SW
-                            else: direction = 4  # S
-                        else:  # East or West
-                            if file_change > 0: direction = 2  # E
-                            else: direction = 6  # W
-                            
-                        # Calculate distance (1-7)
-                        distance = max(abs(file_change), abs(rank_change))
-                        if distance > 7:
-                            raise ValueError(f"Invalid move distance: {distance}")
-                            
-                        # direction * 7 + distance
-                        move_index = direction * 7 + distance
-                    
-                    if 1 <= move_index <= 73:  # Total of 73 move types per square
-                        return start_sq * 73 + move_index
-                    else:
-                        raise ValueError(f"Invalid move index: {move_index}")
+                        if chess.square_file(end_sq) == chess.square_file(start_sq):
+                            direction = 0  # forward
+                        elif chess.square_file(end_sq) > chess.square_file(start_sq):
+                            direction = 1  # left-capture
+                        else:
+                            direction = 2  # right-capture
+                    # Promotion action index: 64 + (promo_piece * 3) + direction
+                    promo_piece_idx = {'q': 0, 'r': 1, 'n': 2}[promo_piece]
+                    rel_action = 64 + promo_piece_idx * 3 + direction
+                    return start_sq * 73 + rel_action + 1
+                # If not found, return invalid
+                return -1
             else:
                 if not self.board.is_theoretically_possible_state:
                     raise ValueError("Cannot return action ID for a theoretically impossible board state.")
                 return self.board.move_to_action_id(move)
-        
-        # Otherwise, return the legacy 6-element array
+        # Otherwise, legacy format (unchanged)
         from_square = move.from_square
         to_square = move.to_square
-        
-        # Handle promotion
         if move.promotion is not None:
             promotion = move.promotion
-            # For promotions, the color is determined by the current turn
             promotion_color = 1 if self.board.turn else 0
         else:
             promotion = 0
             promotion_color = 0
-            
-        # Handle drop
         if move.drop is not None:
-            # Note: python-chess Move objects don't store the *color* of the dropped piece directly,
-            # only its type. The color is inferred from the turn. We need the PieceType.
-            drop = move.drop # This gives the PieceType for drops
-            # For drops, the color is determined by the current turn
+            drop = move.drop
             drop_color = 1 if self.board.turn else 0
         else:
             drop = 0
             drop_color = 0
-            
         return np.array([from_square, to_square, promotion, drop, promotion_color, drop_color], dtype=self.dtype)
 
 class ChessEnv(gym.Env):
