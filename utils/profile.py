@@ -12,7 +12,7 @@ def profile_model(model, inputs):
 
     return macs, params
 
-def get_optimal_worker_count(total_cores, num_workers_config=None):
+def get_optimal_worker_count(total_cores, num_workers_config=None, use_multiprocessing=False):
     """Determine the optimal number of workers for multiprocessing.
     
     Args:
@@ -28,7 +28,7 @@ def get_optimal_worker_count(total_cores, num_workers_config=None):
         num_workers = min(num_workers_config, total_cores)
     else:
         # Default to total_cores - 1, optimized to even number for high core counts
-        num_workers = 1
+        num_workers = 1 if not use_multiprocessing else 2 ** (total_cores.bit_length() - 1)
     
     return num_workers
 

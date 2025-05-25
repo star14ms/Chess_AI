@@ -27,10 +27,10 @@ from mcts_algorithm import MCTS
 from utils.profile import get_optimal_worker_count, profile_model, format_time
 
 # Environment factory
-def create_environment(cfg, use_multiprocessing=False):
+def create_environment(cfg, render=False):
     """Create the appropriate environment based on config."""
     if cfg.env.type == "chess":
-        return create_chess_env(cfg, use_multiprocessing)
+        return create_chess_env(cfg, render=render)
     elif cfg.env.type == "gomoku":
         # TODO: Implement gomoku environment creation
         raise NotImplementedError("Gomoku environment not yet implemented")
@@ -97,13 +97,6 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     else:
         network = None
 
-    # Re-initialize Environment in the worker process
-    # Use environment factory to create the appropriate environment
-    env = create_environment(cfg, use_multiprocessing=True)  # Always disable rendering in workers
-    
-    # Progress is tricky with multiprocessing pools directly updating Rich progress.
-    # Usually, you track completion externally or use shared state (more complex).
-    # For simplicity, we'll omit the fine-grained progress updates from within the worker.
     game_data = run_self_play_game(
         cfg,
         network,
@@ -111,7 +104,6 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
         progress=None, # Pass None for progress within worker
         device=device
     )
-    env.close() # Close env instance in worker
     return game_data
 
 # Wrapper for imap_unordered
@@ -157,7 +149,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                        progress: Progress | None = None, device: torch.device | None = None):
     """Plays one game of self-play using MCTS and returns the game data."""
     if env is None:
-        env = create_environment(cfg)
+        env = create_environment(cfg, render=device.type == 'cpu' and not cfg.training.get('use_multiprocessing', False))
     options = {
         'fen': cfg.training.initial_board_fen
     } if cfg.training.initial_board_fen else None
@@ -239,7 +231,10 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # --- Setup ---
     if cfg.training.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        if not cfg.training.use_multiprocessing:
+            device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        else:
+            device = torch.device("cpu")
     else:
         device = torch.device(cfg.training.device)
     log_str_trining_device = f"{device} for training"
@@ -255,14 +250,17 @@ def run_training_loop(cfg: DictConfig) -> None:
     num_workers = get_optimal_worker_count(
         total_cores=total_cores,
         num_workers_config=num_workers_config,
+        use_multiprocessing=cfg.training.use_multiprocessing
     )
 
     # Check config flag to decide execution mode
     use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
 
     if use_multiprocessing_flag and num_workers > 1:
+        device = "cpu"
         progress.print(f"Using {num_workers} workers for self-play (out of {total_cores} CPU cores),", log_str_trining_device)
     else:
+        use_multiprocessing_flag = False
         progress.print(f"Using {device} for self-play, {log_str_trining_device}")
     
     # Initialize Network using network factory
@@ -305,7 +303,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     os.makedirs(checkpoint_dir, exist_ok=True)
     progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
 
-    env = create_environment(cfg, use_multiprocessing_flag)
+    env = create_environment(cfg, render=not use_multiprocessing_flag)
 
     # --- Main Training Loop ---
     start_iter = 0 # Initialize start_iter
@@ -347,11 +345,11 @@ def run_training_loop(cfg: DictConfig) -> None:
             network.to('cpu').eval()
         else:
             network.to(device).eval()
-            
+
         games_data_collected = []
         iteration_start_time_selfplay = time.time()
 
-        if use_multiprocessing_flag and num_workers > 1:
+        if use_multiprocessing_flag:
             # Prepare arguments for workers
             # Pass network state_dict directly since it's clean
             network_state_dict = network.state_dict()
@@ -386,6 +384,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
             except Exception as e:
                 print(f"Error during parallel self-play: {e}")
+                import traceback
+                traceback.print_exc()
                 # Handle error, maybe skip iteration or exit
                 if pool is not None:
                     pool.terminate() # Terminate pool on error

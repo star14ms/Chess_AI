@@ -41,12 +41,12 @@ def create_chess_network(cfg, device):
         ).to(device)
     return network
 
-def create_chess_env(cfg, use_multiprocessing=False):
+def create_chess_env(cfg, render=False):
     """Create and initialize the chess environment."""
     return ChessEnv(
         observation_mode=cfg.env.observation_mode,
-        render_mode=cfg.env.render_mode if not use_multiprocessing else None,
-        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing else None,
+        render_mode=cfg.env.render_mode if render else None,
+        save_video_folder=cfg.env.save_video_folder if render else None,
         action_space_mode=cfg.network.action_space_mode
     )
 
