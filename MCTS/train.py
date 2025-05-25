@@ -8,24 +8,78 @@ import time
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from hydra.utils import get_class # Use instantiate later if needed
-import sys
 import multiprocessing # Keep for potential parallel execution
-import chess
 import torch.nn.functional as F
 from torch import nn
 
+# Import environment-specific components
+from chess_training import (
+    create_chess_network,
+    create_chess_env,
+    get_chess_game_result,
+    is_white_turn,
+    get_chess_legal_actions,
+)
+
 # Assuming files are in the MCTS directory relative to the project root
-from models.network import ChessNetwork
-from models.network_4672 import ChessNetwork4672
-from chess_gym.chess_custom import LegacyChessBoard, FullyTrackedBoard
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
-from chess_gym.envs import ChessEnv
 from utils.profile import get_optimal_worker_count, profile_model, format_time
 
-sys.path.append('.')
-# Dynamically import board class later using get_class
+# Environment factory
+def create_environment(cfg, use_multiprocessing=False):
+    """Create the appropriate environment based on config."""
+    if cfg.env.type == "chess":
+        return create_chess_env(cfg, use_multiprocessing)
+    elif cfg.env.type == "gomoku":
+        # TODO: Implement gomoku environment creation
+        raise NotImplementedError("Gomoku environment not yet implemented")
+    else:
+        raise ValueError(f"Unsupported environment type: {cfg.env.type}")
+
+# Network factory
+def create_network(cfg, device):
+    """Create the appropriate network based on config."""
+    if cfg.env.type == "chess":
+        return create_chess_network(cfg, device)
+    elif cfg.env.type == "gomoku":
+        # TODO: Implement gomoku network creation
+        raise NotImplementedError("Gomoku network not yet implemented")
+    else:
+        raise ValueError(f"Unsupported environment type: {cfg.env.type}")
+
+# Game result factory
+def get_game_result(env_type, board):
+    """Get the game result based on environment type."""
+    if env_type == "chess":
+        return get_chess_game_result(board)
+    elif env_type == "gomoku":
+        # TODO: Implement gomoku game result
+        raise NotImplementedError("Gomoku game result not yet implemented")
+    else:
+        raise ValueError(f"Unsupported environment type: {env_type}")
+
+# Turn check factory
+def is_first_player_turn(env_type, board):
+    """Check if it's the first player's turn based on environment type."""
+    if env_type == "chess":
+        return is_white_turn(board)
+    elif env_type == "gomoku":
+        # TODO: Implement gomoku turn check
+        raise NotImplementedError("Gomoku turn check not yet implemented")
+    else:
+        raise ValueError(f"Unsupported environment type: {env_type}")
+
+# Legal moves factory
+def get_legal_actions(env_type, board):
+    """Get legal moves based on environment type."""
+    if env_type == "chess":
+        return get_chess_legal_actions(board)
+    elif env_type == "gomoku":
+        # TODO: Implement gomoku legal moves
+        raise NotImplementedError("Gomoku legal moves not yet implemented")
+    else:
+        raise ValueError(f"Unsupported environment type: {env_type}")
 
 # Helper function for parallel execution
 # NOTE: Passing large network objects might be slow or problematic.
@@ -36,51 +90,17 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     device = torch.device(device_str)
 
     # Re-initialize Network in the worker process
-    # (Ensure parameters match your network's __init__)
     if cfg.mcts.iterations > 0:
-        if cfg.network.action_space_mode == "4672":
-            network = ChessNetwork4672(
-                input_channels=cfg.network.input_channels,
-                board_size=cfg.network.board_size,
-                num_residual_layers=cfg.network.num_residual_layers,
-                num_filters=cfg.network.num_filters,
-                conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-                action_space_size=cfg.network.action_space_size,
-                num_pieces=cfg.network.num_pieces,
-                value_head_hidden_size=cfg.network.value_head_hidden_size
-            ).to(device)
-        else:
-            network = ChessNetwork(
-                input_channels=cfg.network.input_channels,
-                dim_piece_type=cfg.network.dim_piece_type,
-                board_size=cfg.network.board_size,
-                num_residual_layers=cfg.network.num_residual_layers,
-                num_filters=cfg.network.num_filters,
-                conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-                action_space_size=cfg.network.action_space_size,
-                num_pieces=cfg.network.num_pieces,
-                value_head_hidden_size=cfg.network.value_head_hidden_size
-            ).to(device)
+        network = create_network(cfg, device)
         network.load_state_dict(network_state_dict)
         network.eval() # Ensure it's in eval mode
     else:
         network = None
 
     # Re-initialize Environment in the worker process
-    # Assumes env config is part of the main cfg
-    env = ChessEnv(
-        observation_mode=cfg.env.observation_mode,
-        render_mode=None, # Avoid rendering in workers
-        save_video_folder=None,
-        use_4672_action_space=cfg.network.action_space_mode == "4672"
-    )
+    # Use environment factory to create the appropriate environment
+    env = create_environment(cfg, use_multiprocessing=True)  # Always disable rendering in workers
     
-    # Choose board class based on action space mode
-    if cfg.network.action_space_mode == "4672":
-        env.board = LegacyChessBoard(fen=env.board.fen())
-    else:  # "1700"
-        env.board = FullyTrackedBoard(fen=env.board.fen())
-
     # Progress is tricky with multiprocessing pools directly updating Rich progress.
     # Usually, you track completion externally or use shared state (more complex).
     # For simplicity, we'll omit the fine-grained progress updates from within the worker.
@@ -133,14 +153,11 @@ class ReplayBuffer:
 
 
 # --- Self-Play Function (Update args to use config subsections) ---
-def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv | None = None,
+def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                        progress: Progress | None = None, device: torch.device | None = None):
     """Plays one game of self-play using MCTS and returns the game data."""
-    # If running sequentially, ensure env is reset at the start of each game
-    # If running in parallel, the worker resets its own env copy
-    # This reset is safe for both cases
     if env is None:
-        env = ChessEnv(use_4672_action_space=cfg.network.action_space_mode == "4672")
+        env = create_environment(cfg)
     options = {
         'fen': cfg.training.initial_board_fen
     } if cfg.training.initial_board_fen else None
@@ -148,7 +165,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv 
     if network is not None:
         network.eval()
 
-    game_history = [] # Will store (state_obs, mcts_policy, board_at_state)
+    game_history = []
     move_count = 0
     terminated = False
     truncated = False
@@ -162,18 +179,14 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv 
 
     task_id_game = None
     if progress is not None:
-        # Create task only if progress object is provided
         task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
         progress.start_task(task_id_game)
 
     while not terminated and not truncated and move_count < max_moves:
-        # --- Get Policy and Store History --- 
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
         
         if cfg.mcts.iterations > 0:
-            # --- Create MCTS root node with FEN and board_cls --- 
             root_node = MCTSNode(env.board.copy())
-            # --- Create MCTS instance --- 
             mcts_env = env if not cfg.training.get('use_multiprocessing', False) else None
             mcts_player = MCTS(
                 network,
@@ -182,28 +195,20 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv 
                 C_puct=c_puct,
                 action_space_mode=cfg.network.action_space_mode
             )
-            # --- Run MCTS Search --- 
             mcts_player.search(root_node, mcts_iterations, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
             action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
         else:
-            # 1 for all legal moves, 0 for all illegal moves
             mcts_policy = np.zeros(cfg.network.action_space_size)
-            legal_actions = env.board.get_legal_moves_with_action_ids()
+            legal_actions = get_legal_actions(cfg.env.type, env.board)
             for action_id in legal_actions:
                 mcts_policy[action_id - 1] = 1
-            # Randomly select from legal moves
             action_to_take = np.random.choice(legal_actions)
 
-        # visualize_policy_on_board(env.board, mcts_policy, board_size=400, return_pil_image=True).show()
-        # visualize_policy_distribution(mcts_policy, move_count, env.board)
-        # breakpoint()
-
-        current_obs = obs # Observation *before* the move
-        board_copy_at_state = env.board.copy() # Store a copy of the board
+        current_obs = obs
+        board_copy_at_state = env.board.copy()
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
-        # Step the *main* environment (or worker's copy)
         obs, reward, terminated, truncated, info = env.step(action_to_take)
 
         if progress is not None:
@@ -211,28 +216,13 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env: ChessEnv 
 
         move_count += 1
 
-    # --- Determine final game outcome (from White's perspective) ---
-    final_value = 0.0 # Default to draw
-    if terminated:
-        result_str = env.board.result(claim_draw=True)
-        if result_str == "1-0": final_value = 1.0 # White won
-        elif result_str == "0-1": final_value = -1.0 # Black won 
-        else: final_value = 0.0 # Draw (covers "1/2-1/2")
+    final_value = get_game_result(cfg.env.type, env.board)
 
-    # Assign value targets based on the final_value (set either by game end or illegal move)
-    full_game_data = [] # Will store (state_obs, policy_target, board_object_at_state, value_target)
+    full_game_data = []
     for i, (state_obs, policy_target, board_at_state) in enumerate(game_history):
-        # Determine whose turn it was at the state where the MCTS policy was calculated
-        # If state i was White's turn to play, the value target is final_value
-        # If state i was Black's turn to play, the value target is -final_value
-        # Assuming White plays at even indices (0, 2, ...) if game starts with White
-        # More robust: check board turn from FEN if needed, but this is common for self-play
-
-        # Determine turn from the copied board object's active color
-        is_white_turn_at_state = board_at_state.turn == chess.WHITE
-        
-        value_target = final_value if is_white_turn_at_state else -final_value
-        full_game_data.append((state_obs, policy_target, board_at_state, value_target)) # Store board_at_state object
+        is_first_player = is_first_player_turn(cfg.env.type, board_at_state)
+        value_target = final_value if is_first_player else -final_value
+        full_game_data.append((state_obs, policy_target, board_at_state, value_target))
     
     if progress is not None and task_id_game is not None:
         progress.update(task_id_game, visible=False)
@@ -275,57 +265,12 @@ def run_training_loop(cfg: DictConfig) -> None:
     else:
         progress.print(f"Using {device} for self-play, {log_str_trining_device}")
     
-    # Initialize Network using network config
-    # Make sure network's __init__ signature matches the parameters passed
-    if cfg.network.action_space_mode == "4672":
-        network = ChessNetwork4672(
-            input_channels=cfg.network.input_channels,
-            board_size=cfg.network.board_size,
-            num_residual_layers=cfg.network.num_residual_layers,
-            num_filters=cfg.network.num_filters,
-            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-            action_space_size=cfg.network.action_space_size,
-            num_pieces=cfg.network.num_pieces,
-            value_head_hidden_size=cfg.network.value_head_hidden_size
-        ).to(device)
-    else:
-        network = ChessNetwork(
-            input_channels=cfg.network.input_channels,
-            dim_piece_type=cfg.network.dim_piece_type,
-            board_size=cfg.network.board_size,
-            num_residual_layers=cfg.network.num_residual_layers,
-            num_filters=cfg.network.num_filters,
-            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-            action_space_size=cfg.network.action_space_size,
-            num_pieces=cfg.network.num_pieces,
-            value_head_hidden_size=cfg.network.value_head_hidden_size
-        ).to(device)
+    # Initialize Network using network factory
+    network = create_network(cfg, device)
     network.eval()
 
     # Create a separate network instance for profiling
-    if cfg.network.action_space_mode == "4672":
-        profile_network = ChessNetwork4672(
-            input_channels=cfg.network.input_channels,
-            board_size=cfg.network.board_size,
-            num_residual_layers=cfg.network.num_residual_layers,
-            num_filters=cfg.network.num_filters,
-            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-            action_space_size=cfg.network.action_space_size,
-            num_pieces=cfg.network.num_pieces,
-            value_head_hidden_size=cfg.network.value_head_hidden_size
-        ).to(device)
-    else:
-        profile_network = ChessNetwork(
-            input_channels=cfg.network.input_channels,
-            dim_piece_type=cfg.network.dim_piece_type,
-            board_size=cfg.network.board_size,
-            num_residual_layers=cfg.network.num_residual_layers,
-            num_filters=cfg.network.num_filters,
-            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
-            action_space_size=cfg.network.action_space_size,
-            num_pieces=cfg.network.num_pieces,
-            value_head_hidden_size=cfg.network.value_head_hidden_size
-        ).to(device)
+    profile_network = create_network(cfg, device)
     profile_network.eval()
 
     # Profile the network
@@ -360,18 +305,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     os.makedirs(checkpoint_dir, exist_ok=True)
     progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
 
-    env = ChessEnv(
-        observation_mode=cfg.env.observation_mode,
-        render_mode=cfg.env.render_mode if not use_multiprocessing_flag and device.type == 'cpu' else None,
-        save_video_folder=cfg.env.save_video_folder if not use_multiprocessing_flag and device.type == 'cpu' else None,
-        use_4672_action_space=cfg.network.action_space_mode == "4672"
-    )
-    
-    # Choose board class based on action space mode
-    if cfg.network.action_space_mode == "4672":
-        env.board = LegacyChessBoard(fen=env.board.fen())
-    else:  # "1700"
-        env.board = FullyTrackedBoard(fen=env.board.fen())
+    env = create_environment(cfg, use_multiprocessing_flag)
 
     # --- Main Training Loop ---
     start_iter = 0 # Initialize start_iter
@@ -549,14 +483,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                     current_board = boards_batch[i]
                     
                     # Calculate illegal probability mass
-                    legal_moves = set(current_board.get_legal_moves_with_action_ids())
+                    legal_moves = set(get_legal_actions(cfg.env.type, current_board))
                     legal_indices = torch.tensor([move_id - 1 for move_id in legal_moves], device=device)
                     illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
                     batch_illegal_prob_mass += illegal_prob
                     
                     # Check if argmax move is legal
                     predicted_action_id = predicted_action_indices[i].item() + 1
-                    if current_board.action_id_to_move(predicted_action_id) is None:
+                    if predicted_action_id not in legal_moves:
                         batch_illegal_moves += 1
                 
                 avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)

@@ -35,6 +35,7 @@ class OptimizerConfig:
 # New dataclass for environment settings
 @dataclass
 class EnvConfig:
+    type: str = "chess"  # "chess" or "gomoku" - specifies which environment to use
     observation_mode: str = "vector"
     render_mode: Optional[str] = None # Default to None
     save_video_folder: Optional[str] = None # Default to None

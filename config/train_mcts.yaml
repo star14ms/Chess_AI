@@ -34,6 +34,7 @@ network:
 # New Env section
 env:
   _target_: MCTS.config_schema.EnvConfig
+  type: chess  # "chess" or "gomoku" - specifies which environment to use
   observation_mode: vector
   render_mode: rgb_array # Set to null or remove for no rendering
   save_video_folder: './videos' # Set to null or remove for no video saving

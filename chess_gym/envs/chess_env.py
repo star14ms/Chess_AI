@@ -17,10 +17,10 @@ from chess_gym.chess_custom import LegacyChessBoard, FullyTrackedBoard
 from utils.visualize import draw_possible_actions_on_board
 
 class MoveSpace(spaces.Space):
-    def __init__(self, board: FullyTrackedBoard | LegacyChessBoard, use_4672_action_space: bool = False):
+    def __init__(self, board: FullyTrackedBoard | LegacyChessBoard, action_space_mode: str = "1700"):
         super().__init__(dtype=np.int32)
         self.board = board
-        self.use_4672_action_space = use_4672_action_space
+        self.action_space_mode = action_space_mode
         self._shape = (6,)  # [from_square, to_square, promotion, drop, promotion_color, drop_color]
 
     @property
@@ -44,7 +44,7 @@ class MoveSpace(spaces.Space):
     def _action_to_move(self, action: Union[int, np.ndarray, list]) -> chess.Move:
         # Check if action is an integer ID
         if isinstance(action, (int, np.integer)):
-            if self.use_4672_action_space:
+            if self.action_space_mode == "4672":
                 # Convert from 4672 action space to chess move
                 square = (action - 1) // 73
                 relative_action = (action - 1) % 73 + 1  # Convert to 1-based
@@ -158,7 +158,7 @@ class MoveSpace(spaces.Space):
 
     def _move_to_action(self, move: chess.Move, return_id: bool = False) -> Union[np.ndarray, int]:
         if return_id:
-            if self.use_4672_action_space:
+            if self.action_space_mode == "4672":
                 # Convert move to 4672 action space
                 start_sq = move.from_square
                 file_change = chess.square_file(move.to_square) - chess.square_file(start_sq)
@@ -260,7 +260,7 @@ class ChessEnv(gym.Env):
                  render_mode=None, 
                  show_possible_actions=False, 
                  save_video_folder: Optional[str] = None,
-                 use_4672_action_space: bool = False,
+                 action_space_mode: str = "1700",
                  **kwargs):
         super(ChessEnv, self).__init__()
 
@@ -278,7 +278,7 @@ class ChessEnv(gym.Env):
 
         self.observation_mode = observation_mode
         self.render_mode = render_mode
-        self.use_4672_action_space = use_4672_action_space
+        self.action_space_mode = action_space_mode
 
         if observation_mode == 'rgb_array':
             self.observation_space = spaces.Box(
@@ -305,7 +305,8 @@ class ChessEnv(gym.Env):
             raise ValueError(f"Invalid observation_mode: {observation_mode}. Must be one of {self.metadata['observation_modes']}")
 
         self.chess960 = kwargs.get('chess960', False)
-        if use_4672_action_space:
+        # --- Board selection logic moved here ---
+        if self.action_space_mode == "4672":
             self.board = LegacyChessBoard(chess960=self.chess960)
         else:
             self.board = FullyTrackedBoard(chess960=self.chess960)
@@ -319,8 +320,8 @@ class ChessEnv(gym.Env):
         self.window = None
         self.clock = None
         
-        # Set action space based on the use_4672_action_space flag
-        self.action_space = MoveSpace(self.board, use_4672_action_space=use_4672_action_space)
+        # Set action space based on the action_space_mode
+        self.action_space = MoveSpace(self.board, action_space_mode=self.action_space_mode)
 
     def _get_image(self):
         out = BytesIO()
