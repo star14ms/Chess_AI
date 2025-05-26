@@ -13,12 +13,19 @@ import torch.nn.functional as F
 from torch import nn
 
 # Import environment-specific components
-from chess_training import (
+from training_modules.chess import (
     create_chess_network,
     create_chess_env,
     get_chess_game_result,
     is_white_turn,
     get_chess_legal_actions,
+)
+from training_modules.gomoku import (
+    create_gomoku_network,
+    create_gomoku_env,
+    get_gomoku_game_result,
+    is_first_player_turn,
+    get_gomoku_legal_actions,
 )
 
 # Assuming files are in the MCTS directory relative to the project root
@@ -32,8 +39,7 @@ def create_environment(cfg, render=False):
     if cfg.env.type == "chess":
         return create_chess_env(cfg, render=render)
     elif cfg.env.type == "gomoku":
-        # TODO: Implement gomoku environment creation
-        raise NotImplementedError("Gomoku environment not yet implemented")
+        return create_gomoku_env(cfg, render=render)
     else:
         raise ValueError(f"Unsupported environment type: {cfg.env.type}")
 
@@ -43,8 +49,7 @@ def create_network(cfg, device):
     if cfg.env.type == "chess":
         return create_chess_network(cfg, device)
     elif cfg.env.type == "gomoku":
-        # TODO: Implement gomoku network creation
-        raise NotImplementedError("Gomoku network not yet implemented")
+        return create_gomoku_network(cfg, device)
     else:
         raise ValueError(f"Unsupported environment type: {cfg.env.type}")
 
@@ -54,8 +59,7 @@ def get_game_result(env_type, board):
     if env_type == "chess":
         return get_chess_game_result(board)
     elif env_type == "gomoku":
-        # TODO: Implement gomoku game result
-        raise NotImplementedError("Gomoku game result not yet implemented")
+        return get_gomoku_game_result(board)
     else:
         raise ValueError(f"Unsupported environment type: {env_type}")
 
@@ -65,8 +69,7 @@ def is_first_player_turn(env_type, board):
     if env_type == "chess":
         return is_white_turn(board)
     elif env_type == "gomoku":
-        # TODO: Implement gomoku turn check
-        raise NotImplementedError("Gomoku turn check not yet implemented")
+        return is_first_player_turn(board)
     else:
         raise ValueError(f"Unsupported environment type: {env_type}")
 
@@ -76,8 +79,7 @@ def get_legal_actions(env_type, board):
     if env_type == "chess":
         return get_chess_legal_actions(board)
     elif env_type == "gomoku":
-        # TODO: Implement gomoku legal moves
-        raise NotImplementedError("Gomoku legal moves not yet implemented")
+        return get_gomoku_legal_actions(board)
     else:
         raise ValueError(f"Unsupported environment type: {env_type}")
 
@@ -537,8 +539,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
 
 # --- Hydra Entry Point --- 
-# Ensure config_path points to the directory containing train_mcts.yaml
-@hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
+# Ensure config_path points to the directory containing train_gomoku.yaml
+@hydra.main(config_path="../config", config_name="train_gomoku", version_base=None)
 def main(cfg: DictConfig) -> None:
     print("Configuration:\n")
     # Use OmegaConf.to_yaml for structured printing
