@@ -24,7 +24,7 @@ from training_modules.gomoku import (
     create_gomoku_network,
     create_gomoku_env,
     get_gomoku_game_result,
-    is_first_player_turn,
+    is_gomoku_first_player_turn,
     get_gomoku_legal_actions,
 )
 
@@ -69,7 +69,7 @@ def is_first_player_turn(env_type, board):
     if env_type == "chess":
         return is_white_turn(board)
     elif env_type == "gomoku":
-        return is_first_player_turn(board)
+        return is_gomoku_first_player_turn(board)
     else:
         raise ValueError(f"Unsupported environment type: {env_type}")
 

@@ -12,11 +12,12 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.append(project_root)
 from chess_gym.chess_custom import FullyTrackedBoard, LegacyChessBoard
+from gym_gomoku.envs.gomoku import Board as GomokuBoard
 
 # --- MCTS Node ---
 class MCTSNode:
     """Node in the MCTS tree. Stores state via FEN string."""
-    def __init__(self, board: FullyTrackedBoard | LegacyChessBoard,
+    def __init__(self, board: FullyTrackedBoard | LegacyChessBoard | GomokuBoard,
                  parent: Optional['MCTSNode'] = None, 
                  prior_p: float = 0.0, 
                  action_id_leading_here: Optional[int] = None
@@ -33,7 +34,7 @@ class MCTSNode:
         self._is_terminal = None 
         self.is_expanded = False # Tracks if children have been added
 
-    def get_board(self) -> chess.Board:
+    def get_board(self) -> FullyTrackedBoard | LegacyChessBoard | GomokuBoard:
         """Creates and returns a board object from the stored FEN string."""
         return self.board
 

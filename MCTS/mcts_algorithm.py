@@ -1,6 +1,7 @@
 import random
 import torch
 import torch.nn.functional as F
+import gymnasium as gym
 from rich.progress import Progress
 import numpy as np
 from typing import Tuple, List
@@ -14,18 +15,15 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from chess_gym.envs import ChessEnv
-from MCTS.models.network import ChessNetwork
 from mcts_node import MCTSNode
-from utils.analyze import get_action_id_for_piece_abs
 
 
 # --- MCTS Algorithm ---
 class MCTS:
     def __init__(self,
-                 network: ChessNetwork,
+                 network: torch.nn.Module,
                  device: torch.device | str,
-                 env: ChessEnv | None = None, # Keep main env for selection/initial state
+                 env: gym.Env | None = None, # Keep main env for selection/initial state
                  C_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3,
                  dirichlet_epsilon: float = 0.25,
