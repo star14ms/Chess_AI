@@ -4,10 +4,9 @@
 '''
 
 import numpy as np
-import gym
-from gym import spaces
-from gym import error
-from gym.utils import seeding
+import gymnasium as gym
+from gymnasium import spaces
+from gymnasium.utils import seeding
 from six import StringIO
 import sys
 import six
@@ -98,7 +97,7 @@ class GomokuUtil(object):
         white_win, _ = self.check_pattern(board_state, white_pattern)
         
         if (black_win and white_win):
-            raise error.Error('Both Black and White has 5-in-row, rules conflicts')
+            raise gym.error.Error('Both Black and White has 5-in-row, rules conflicts')
         # Check if there is any one party wins
         if not (black_win or white_win):
             return exist_final, "empty"

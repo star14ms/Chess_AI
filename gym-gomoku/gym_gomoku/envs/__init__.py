@@ -1,1 +1,1 @@
-from gym_gomoku.envs.gomoku import GomokuEnv
+from gym_gomoku.envs.gomoku import GomokuEnv, Board

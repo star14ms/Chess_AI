@@ -1,11 +1,11 @@
 import numpy as np
-import gym
-from gym import spaces
-from gym import error
-from gym.utils import seeding
+import gymnasium as gym
+from gymnasium import spaces
+from gymnasium.utils import seeding
 from six import StringIO
 import sys, os
 import six
+import pygame
 
 from gym_gomoku.envs.util import gomoku_util
 from gym_gomoku.envs.util import make_random_policy
@@ -49,7 +49,7 @@ class GomokuState(object):
 # sample() method will only sample from valid spaces
 class DiscreteWrapper(spaces.Discrete):
     def __init__(self, n):
-        self.n = n
+        super().__init__(n)
         self.valid_spaces = list(range(n))
     
     def sample(self):
@@ -59,7 +59,7 @@ class DiscreteWrapper(spaces.Discrete):
             print ("Space is empty")
             return None
         np_random, _ = seeding.np_random()
-        randint = np_random.randint(len(self.valid_spaces))
+        randint = np_random.integers(0, len(self.valid_spaces))
         return self.valid_spaces[randint]
     
     def remove(self, s):
@@ -71,6 +71,14 @@ class DiscreteWrapper(spaces.Discrete):
             self.valid_spaces.remove(s)
         else:
             print ("space %d is not in valid spaces" % s)
+    
+    def contains(self, x):
+        """Return boolean specifying if x is a valid member of this space."""
+        return x in self.valid_spaces
+    
+    def __repr__(self):
+        """Gives a string representation of this space."""
+        return f"DiscreteWrapper({self.n})"
 
 
 ### Environment
@@ -78,165 +86,151 @@ class GomokuEnv(gym.Env):
     '''
     GomokuEnv environment. Play against a fixed opponent.
     '''
-    metadata = {"render.modes": ["human", "ansi"]}
+    metadata = {"render_modes": ["human", "ansi"], "render_fps": 30}
     
-    def __init__(self, player_color, opponent, board_size):
-        """
-        Args:
-            player_color: Stone color for the agent. Either 'black' or 'white'
-            opponent: Name of the opponent policy, e.g. random, beginner, medium, expert
-            board_size: board_size of the board to use
-        """
+    def __init__(self, board_size):
         self.board_size = board_size
-        self.player_color = player_color
-        
-        self._seed()
-        
-        # opponent
-        self.opponent_policy = None
-        self.opponent = opponent
-        
-        # Observation space on board
-        shape = (self.board_size, self.board_size) # board_size * board_size
-        self.observation_space = spaces.Box(np.zeros(shape), np.ones(shape))
-        
-        # One action for each board position
+        shape = (self.board_size, self.board_size)
+        self.observation_space = spaces.Box(low=-1, high=1, shape=shape, dtype=np.int8)
         self.action_space = DiscreteWrapper(self.board_size**2)
-        
-        # Keep track of the moves
         self.moves = []
-        
-        # Empty State
         self.state = None
-        
-        # reset the board during initialization
-        self._reset()
+        self.done = False
+        self.reset()
+
+        self._pygame_initialized = False
+        self._pygame_screen = None
+        self._pygame_images = {}
+        self._pygame_board_size = 600  # pixels
+        self._pygame_margin = 40       # margin for the board
+        self._pygame_cell_size = (self._pygame_board_size - 2 * self._pygame_margin) // (self.board_size - 1)
     
     def _seed(self, seed=None):
-        self.np_random, seed1 = seeding.np_random(seed)
-        # Derive a random seed.
-        seed2 = seeding.hash_seed(seed1 + 1) % 2**32
-        return [seed1, seed2]
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
     
-    def _reset(self):
-        self.state = GomokuState(Board(self.board_size), gomoku_util.BLACK) # Black Plays First
-        self._reset_opponent(self.state.board) # (re-initialize) the opponent,
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        
+        board = Board(self.board_size)
+        if options is not None:
+            if 'fen' in options:
+                board.set_fen(options['fen'])
+
+        self.state = GomokuState(board, gomoku_util.BLACK)  # Always black to play
         self.moves = []
-        
-        # Let the opponent play if it's not the agent's turn, there is no resign in Gomoku
-        if self.state.color != self.player_color:
-            self.state, _ = self._exec_opponent_play(self.state, None, None)
-            opponent_action_coord = self.state.board.last_coord
-            self.moves.append(opponent_action_coord)
-        
-        # We should be back to the agent color
-        assert self.state.color == self.player_color
-        
-        # reset action_space
         self.action_space = DiscreteWrapper(self.board_size**2)
-        
         self.done = self.state.board.is_terminal()
-        return self.state.board.encode()
+        obs = self.state.board.get_board_vector()
+        return obs, {}
     
-    def _close(self):
-        self.opponent_policy = None
+    def close(self):
         self.state = None
     
-    def _render(self, mode="human", close=False):
-        if close:
-            return
-        outfile = StringIO() if mode == 'ansi' else sys.stdout
-        outfile.write(repr(self.state) + '\n')
-        return outfile
+    def render(self, mode="human"):
+        if mode != "human":
+            outfile = StringIO() if mode == 'ansi' else sys.stdout
+            outfile.write(repr(self.state) + '\n')
+            return outfile
+
+        # --- Pygame initialization ---
+        if not self._pygame_initialized:
+            pygame.init()
+            self._pygame_board_size = 750  # match omok_pygame
+            self._pygame_screen = pygame.display.set_mode((self._pygame_board_size, self._pygame_board_size))
+            pygame.display.set_caption("Gomoku")
+            # Load images from source/img
+            base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'source', 'img')
+            self._pygame_images['board'] = pygame.image.load(os.path.join(base_path, 'game_board.png'))
+            self._pygame_images['black'] = pygame.image.load(os.path.join(base_path, 'wblack_stone.png'))
+            self._pygame_images['white'] = pygame.image.load(os.path.join(base_path, 'white_stone.png'))
+            self._pygame_initialized = True
+
+        # Draw the board background
+        self._pygame_screen.blit(
+            pygame.transform.scale(self._pygame_images['board'], (self._pygame_board_size, self._pygame_board_size)),
+            (0, 0)
+        )
+
+        # --- Omok pixel reference ---
+        dis = 47
+        board_size = self.board_size
+        x0 = 625 - 18 - 250
+        y0 = 375 - 19
+
+        # Draw stones
+        for a in range(board_size):
+            for b in range(board_size):
+                val = self.state.board.board_state[a][b]
+                if val == 1:  # Black
+                    stone_img = self._pygame_images['black']
+                elif val == -1:  # White
+                    stone_img = self._pygame_images['white']
+                else:
+                    continue
+                x = x0 + (b - (board_size // 2)) * dis
+                y = y0 + (a - (board_size // 2)) * dis
+                stone_size = int(dis * 5 / 6)
+                stone_img_scaled = pygame.transform.smoothscale(stone_img, (stone_size, stone_size))
+                self._pygame_screen.blit(stone_img_scaled, (x, y))
+
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
     
-    def _step(self, action):
-        '''
-        Args: 
-            action: int
-        Return: 
-            observation: board encoding, 
-            reward: reward of the game, 
-            done: boolean, 
-            info: state dict
-        Raise:
-            Illegal Move action, basically the position on board is not empty
-        '''
-        assert self.state.color == self.player_color # it's the player's turn
-        
-        # If already terminal, then don't do anything
-        if self.done:
-            return self.state.board.encode(), 0., True, {'state': self.state}
-        
-        # Player play
+    def step(self, action):
+        assert not self.done, "Game is already over"
         prev_state = self.state
         self.state = self.state.act(action)
         self.moves.append(self.state.board.last_coord)
-        self.action_space.remove(action) # remove current action from action_space
-        
-        # Opponent play
-        if not self.state.board.is_terminal():
-            self.state, opponent_action = self._exec_opponent_play(self.state, prev_state, action)
-            self.moves.append(self.state.board.last_coord)
-            self.action_space.remove(opponent_action)   # remove opponent action from action_space
-            # After opponent play, we should be back to the original color
-            assert self.state.color == self.player_color
-        
-        # Reward: if nonterminal, there is no 5 in a row, then the reward is 0
-        if not self.state.board.is_terminal():
-            self.done = False
-            return self.state.board.encode(), 0., False, {'state': self.state}
-        
-        # We're in a terminal state. Reward is 1 if won, -1 if lost
-        assert self.state.board.is_terminal(), 'The game is terminal'
-        self.done = True
-        
-        # Check Fianl wins
-        exist, win_color = gomoku_util.check_five_in_row(self.state.board.board_state) # 'empty', 'black', 'white'
+        self.action_space.remove(action)
+        self.done = self.state.board.is_terminal()
+        obs = self.state.board.get_board_vector()
         reward = 0.
-        if win_color == "empty": # draw
-            reward = 0.
-        else:
-            player_wins = (self.player_color == win_color) # check if player_color is the win_color
-            reward = 1. if player_wins else -1.
-        return self.state.board.encode(), reward, True, {'state': self.state}
-    
-    def _exec_opponent_play(self, curr_state, prev_state, prev_action):
-        '''There is no resign in gomoku'''
-        assert curr_state.color != self.player_color
-        opponent_action = self.opponent_policy(curr_state, prev_state, prev_action)
-        return curr_state.act(opponent_action), opponent_action
-    
+        terminated = False
+        truncated = False
+        if self.done:
+            exist, win_color = gomoku_util.check_five_in_row(self.state.board.board_state)
+            if win_color == "empty":
+                reward = 0.
+            else:
+                player_color = prev_state.color
+                # player_color: 'black' or 'white'
+                player_val = 1 if player_color == 'black' else -1
+                # win_color: 'black' or 'white'
+                win_val = 1 if win_color == 'black' else -1
+                player_wins = (player_val == win_val)
+                reward = 1. if player_wins else -1.
+            terminated = True
+        return obs, reward, terminated, truncated, {'state': self.state}
+
     @property
-    def _state(self):
-        return self.state
-    
-    @property
-    def _moves(self):
-        return self.moves
-    
-    def _reset_opponent(self, board):
-        if self.opponent == 'random':
-            self.opponent_policy = make_random_policy(self.np_random)
-        elif self.opponent == 'beginner':
-            self.opponent_policy = make_beginner_policy(self.np_random)
-        elif self.opponent == 'medium':
-            self.opponent_policy = make_medium_policy(self.np_random)
-        elif self.opponent == 'expert':
-            self.opponent_policy = make_expert_policy(self.np_random)
-        else:
-            raise error.Error('Unrecognized opponent policy {}'.format(self.opponent))
+    def board(self):
+        return self.state.board
 
 class Board(object):
     '''
     Basic Implementation of a Go Board, natural action are int [0,board_size**2)
     '''
     
-    def __init__(self, board_size):
+    def __init__(self, board_size, fen=None):
         self.size = board_size
-        self.board_state = [[gomoku_util.color_dict['empty']] * board_size for i in range(board_size)] # initialize board states to empty
+        self.board_state = [[0] * board_size for _ in range(board_size)] # 0 for empty
         self.move = 0                 # how many move has been made
         self.last_coord = (-1,-1)     # last action coord
         self.last_action = None       # last action made
+        self.foul = False             # flag for illegal move
+        if fen is not None:
+            self.set_fen(fen)
+    
+    def is_game_over(self, claim_draw=False):
+        if self.foul:
+            return True
+        if claim_draw:
+            return all(self.board_state[i][j] != 0 for i in range(self.size) for j in range(self.size))
+        return self.is_terminal()
     
     def coord_to_action(self, i, j):
         ''' convert coordinate i, j to action a in [0, board_size**2)
@@ -248,66 +242,45 @@ class Board(object):
         coord = (a // self.size, a % self.size)
         return coord
     
-    def get_legal_move(self):
-        ''' Get all the next legal move, namely empty space that you can place your 'color' stone
-            Return: Coordinate of all the empty space, [(x1, y1), (x2, y2), ...]
-        '''
-        legal_move = []
-        for i in range(self.size):
-            for j in range(self.size):
-                if (self.board_state[i][j] == 0):
-                    legal_move.append((i, j))
-        return legal_move
-    
-    def get_legal_action(self):
-        ''' Get all the next legal action, namely empty space that you can place your 'color' stone
-            Return: Coordinate of all the empty space, [(x1, y1), (x2, y2), ...]
-        '''
-        legal_action = []
-        for i in range(self.size):
-            for j in range(self.size):
-                if (self.board_state[i][j] == 0):
-                    legal_action.append(self.coord_to_action(i, j))
-        return legal_action
-    
-    def copy(self, board_state):
-        '''update board_state of current board values from input 2D list
-        '''
-        input_size_x = len(board_state)
-        input_size_y = len(board_state[0])
-        assert input_size_x == input_size_y, 'input board_state two axises size mismatch'
-        assert len(self.board_state) == input_size_x, 'input board_state size mismatch'
-        for i in range(self.size):
-            for j in range(self.size):
-                self.board_state[i][j] = board_state[i][j]
+    def copy(self, *args, **kwargs):
+        '''Create a new Board instance with the same state as the current board'''
+        new_board = Board(self.size)
+        new_board.board_state = [row[:] for row in self.board_state]  # Deep copy of board state
+        new_board.move = self.move
+        new_board.last_coord = self.last_coord
+        new_board.last_action = self.last_action
+        return new_board
     
     def play(self, action, color):
-        '''
-            Args: input action, current player color
-            Return: new copy of board object
-        '''
-        b = Board(self.size)
-        b.copy(self.board_state) # create a board copy of current board_state
-        b.move = self.move
-        
+        self.copy(self.board_state) # create a board copy of current board_state
+        self.move = self.move
         coord = self.action_to_coord(action)
         # check if it's legal move
-        if (b.board_state[coord[0]][coord[1]] != 0): # the action coordinate is not empty
-            raise error.Error("Action is illegal, position [%d, %d] on board is not empty" % ((coord[0]+1),(coord[1]+1)))
-        
-        b.board_state[coord[0]][coord[1]] = gomoku_util.color_dict[color]
-        b.move += 1 # move counter add 1
-        b.last_coord = coord # save last coordinate
-        b.last_action = action
-        return b
+        if (self.board_state[coord[0]][coord[1]] != 0): # the action coordinate is not empty
+            self.foul = True
+            self.last_coord = coord
+            self.last_action = action
+            return self
+        # Place stone: 1 for black, -1 for white
+        if color == 'black':
+            self.board_state[coord[0]][coord[1]] = 1
+        else:
+            self.board_state[coord[0]][coord[1]] = -1
+        self.move += 1 # move counter add 1
+        self.last_coord = coord # save last coordinate
+        self.last_action = action
+        return self
     
     def is_terminal(self):
-        exist, color = gomoku_util.check_five_in_row(self.board_state)
-        is_full = gomoku_util.check_board_full(self.board_state)
-        if (is_full): # if the board if full of stones and no extra empty spaces, game is finished
+        if self.foul:
             return True
-        else:
-            return exist
+        # First check if the board is full
+        is_full = all(self.board_state[i][j] != 0 for i in range(self.size) for j in range(self.size))
+        if is_full:
+            return True
+        # Then check for five in a row
+        exist, _ = gomoku_util.check_five_in_row(self.board_state)
+        return exist
     
     def __repr__(self):
         ''' representation of the board class
@@ -331,7 +304,12 @@ class Board(object):
             line += (str("%2d" % (i+1)) + " |" + " ")
             for j in range(size):
                 # check if it's the last move
-                line += gomoku_util.color_shape[self.board_state[i][j]]
+                if self.board_state[i][j] == 1:
+                    line += 'X'
+                elif self.board_state[i][j] == -1:
+                    line += 'O'
+                else:
+                    line += '.'
                 if (i,j) == self.last_coord:
                     line += ")"
                 else:
@@ -345,5 +323,114 @@ class Board(object):
         '''Return: np array
             np.array(board_size, board_size): state observation of the board
         '''
-        img = np.array(self.board_state) # shape [board_size, board_size]
+        img = np.array(self.board_state, dtype=np.int8)
         return img
+
+    def get_board_vector(self):
+        '''Return a tensor representation of the board state.
+        Returns:
+            np.ndarray: A 2x15x15 tensor where:
+                - Channel 0: Stone positions (1 for black, -1 for white, 0 for empty)
+                - Channel 1: Current player color (1 for black, -1 for white)
+        '''
+        # Create a 2x15x15 tensor
+        board_tensor = np.zeros((2, self.size, self.size), dtype=np.float32)
+        
+        # Channel 0: Stone positions
+        board_tensor[0] = np.array(self.board_state, dtype=np.float32)
+        
+        # Channel 1: Current player color (1 for black, -1 for white)
+        # This is determined by the number of moves (even = black, odd = white)
+        current_player = 1 if self.move % 2 == 0 else -1
+        board_tensor[1].fill(current_player)
+        
+        return board_tensor
+    
+    @property
+    def legal_moves(self):
+        ''' Get all the next legal move, namely empty space that you can place your 'color' stone
+            Return: Coordinate of all the empty space, [(x1, y1), (x2, y2), ...]
+        '''
+        legal_move = []
+        for i in range(self.size):
+            for j in range(self.size):
+                if (self.board_state[i][j] == 0):
+                    legal_move.append((i, j))
+        return legal_move
+
+    @property
+    def legal_actions(self):
+        '''Get all legal action IDs for the current board state.
+        Returns:
+            List[int]: List of valid action IDs for empty positions
+        '''
+        legal_action = []
+        for i in range(self.size):
+            for j in range(self.size):
+                if (self.board_state[i][j] == 0):
+                    legal_action.append(self.coord_to_action(i, j))
+        return sorted(legal_action)
+
+    @property
+    def turn(self):
+        """
+        Return the current player's color as a string: 'black' or 'white'.
+        """
+        return 'black' if self.move % 2 == 0 else 'white'
+
+    def get_square_to_ids_map(self):
+        '''Get a mapping of board positions to their corresponding action IDs.
+        Returns:
+            Dict[Tuple[int, int], List[int]]: Dictionary mapping board coordinates to lists of action IDs
+        '''
+        square_to_ids = {}
+        for i in range(self.size):
+            for j in range(self.size):
+                if (self.board_state[i][j] == 0):
+                    action_id = self.coord_to_action(i, j)
+                    square_to_ids[(i, j)] = [action_id]  # In Gomoku, each square maps to exactly one action ID
+        return square_to_ids
+    
+    def move_to_action_id(self, move):
+        '''Convert a move (i, j) to an action id.'''
+        return self.coord_to_action(move[0], move[1])
+    
+    def action_id_to_move(self, action_id):
+        '''Convert an action id to a move (i, j).'''
+        return self.action_to_coord(action_id)
+    
+    def fen(self):
+        """
+        Serialize the board state to a FEN-like string for Gomoku.
+        Format: <flat_board>/<move>/<last_i>,<last_j>
+        Example: '000...0/0/-1,-1'
+        """
+        flat_board = ''.join(str(self.board_state[i][j]) for i in range(self.size) for j in range(self.size))
+        last_i, last_j = self.last_coord
+        return f"{flat_board}/{self.move}/{last_i},{last_j}"
+
+    def set_fen(self, fen_str):
+        """
+        Restore the board state from a FEN-like string for Gomoku.
+        """
+        try:
+            flat_board, move_str, last_coord_str = fen_str.split('/')
+            self.move = int(move_str)
+            last_i, last_j = map(int, last_coord_str.split(','))
+            self.last_coord = (last_i, last_j)
+            # Restore board_state
+            k = 0
+            for i in range(self.size):
+                for j in range(self.size):
+                    self.board_state[i][j] = int(flat_board[k])
+                    k += 1
+        except Exception as e:
+            raise ValueError(f"Invalid Gomoku FEN string: {fen_str}") from e
+
+    def push(self, move):
+        """
+        Apply a move to the board state.
+        Args:
+            move (Tuple[int, int]): The move to apply
+        """
+        return self.play(self.move_to_action_id(move), color='black' if self.move % 2 == 0 else 'white')
