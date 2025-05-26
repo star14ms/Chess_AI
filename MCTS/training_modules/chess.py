@@ -11,6 +11,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from chess_gym.envs import ChessEnv
+from chess_gym.chess_custom import BaseChessBoard
 from models.network import ChessNetwork
 from models.network_4672 import ChessNetwork4672
 
@@ -50,7 +51,7 @@ def create_chess_env(cfg, render=False):
         action_space_mode=cfg.network.action_space_mode
     )
 
-def get_chess_game_result(board):
+def get_chess_game_result(board: BaseChessBoard):
     """Get the game result from a chess board."""
     result_str = board.result(claim_draw=True)
     if result_str == "1-0": return 1.0  # White won
@@ -61,10 +62,10 @@ def is_white_turn(board):
     """Check if it's white's turn on the chess board."""
     return board.turn == chess.WHITE
 
-def get_chess_legal_actions(board):
+def get_chess_legal_actions(board: BaseChessBoard):
     """Get legal moves from a chess board."""
-    return board.get_legal_moves_with_action_ids()
+    return board.legal_actions
 
-def action_id_to_move(board, action_id):
+def action_id_to_move(board: BaseChessBoard, action_id):
     """Convert action ID to move on chess board."""
     return board.action_id_to_move(action_id) 

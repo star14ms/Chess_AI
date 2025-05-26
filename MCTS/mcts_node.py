@@ -19,11 +19,11 @@ class MCTSNode:
     def __init__(self, board: FullyTrackedBoard | LegacyChessBoard,
                  parent: Optional['MCTSNode'] = None, 
                  prior_p: float = 0.0, 
-                 move_leading_here: Optional[chess.Move] = None
+                 action_id_leading_here: Optional[int] = None
                 ): # Default to standard board
         self.parent = parent
-        self.move_leading_here = move_leading_here # Move that led to this node from parent
-        self.children: Dict[chess.Move, MCTSNode] = {}
+        self.action_id_leading_here = action_id_leading_here # Action ID that led to this node from parent
+        self.children: Dict[int, MCTSNode] = {}  # Keyed by action_id
         self.N = 0  # Visit count
         self.W = 0.0  # Total action value
         self.prior_p = prior_p
@@ -56,47 +56,26 @@ class MCTSNode:
         return C_puct * self.prior_p * (math.sqrt(parent_N) / (1 + self.N))
 
     def select_child_uct(self, C_puct: float) -> 'MCTSNode':
-        """Selects the child with the highest UCT score."""
+        """Selects the child with the highest UCT score (by action_id)."""
         best_score = -float('inf')
         best_child = None
-        best_move = None
+        best_action_id = None
 
-        # Need a temporary board to get legal moves for selection
         current_board = self.get_board()
-        
-        for move in current_board.legal_moves:
-            child = self.children.get(move)
+        for action_id in current_board.legal_actions:
+            child = self.children.get(action_id)
             if child: # Only consider expanded children
                 score = child.Q() + child.U(C_puct)
                 if score > best_score:
                     best_score = score
                     best_child = child
-                    best_move = move # Keep track of best move too if needed
-            # else: If move not in children, it hasn't been expanded/created yet
-
+                    best_action_id = action_id
         if best_child is None:
-            # This can happen if no children are expanded or if all legal moves were pruned
-            # Fallback: Maybe return self? Or raise error? 
-            # Let's handle potential lack of children in the calling MCTS search logic.
-            # For now, return self indicates selection cannot proceed down.
-            # Or, if we *know* children exist but selection failed, randomly choose? Requires care.
-            print(f"Warning: No best child found via UCT for node {self.board.fen()}. Moves considered: {list(current_board.legal_moves)}. Children keys: {list(self.children.keys())}")
-            # Fallback: choose random legal move's child if available? Risky if not all children created.
-            legal_children = [self.children.get(m) for m in current_board.legal_moves if m in self.children]
-            if legal_children: return random.choice(legal_children) # Random choice among existing children
-            return self # Cannot select further
-             
+            print(f"Warning: No best child found via UCT for node {self.board.fen()}. Actions considered: {list(current_board.legal_actions)}. Children keys: {list(self.children.keys())}")
+            legal_children = [self.children.get(aid) for aid in current_board.legal_actions if aid in self.children]
+            if legal_children: return random.choice(legal_children)
+            return self
         return best_child
-
-    def get_observation(self, env_cls: Type, observation_mode: str) -> np.ndarray:
-        """Generates the network observation for this node's state."""
-        # Instantiate a temporary environment to get the observation
-        # Ensure the env doesn't require complex state beyond the board FEN
-        temp_env = env_cls(observation_mode=observation_mode, render_mode=None)
-        temp_env.board = self.get_board() # Set the board state
-        obs, _ = temp_env.reset(fen=self.board.fen()) # Use reset with FEN if available, otherwise relies on board set
-        temp_env.close() # Optional, depending on env implementation
-        return obs
 
     # Maybe add __repr__ for debugging
     def __repr__(self):

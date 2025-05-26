@@ -170,7 +170,7 @@ def draw_possible_actions_on_board(
     squares_to_labels = {}
     if draw_action_ids:
         # Calculate the action ID map internally
-        squares_to_labels = board.get_legal_moves_with_action_ids(return_squares_to_ids=True)
+        squares_to_labels = board.get_squares_to_action_ids_map()
         # Handle case where action IDs couldn't be generated
         if squares_to_labels is None:
             return None

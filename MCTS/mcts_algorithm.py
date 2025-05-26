@@ -70,42 +70,36 @@ class MCTS:
              raise RuntimeError("_expand_sequential called but self.env is None.")
 
         leaf_board = leaf_node.get_board()
-        # Store FEN/tracker *once* before the loop
         original_fen = leaf_board.fen()
-        original_tracker = leaf_board.piece_tracker
-        legal_moves_list = list(leaf_board.legal_moves)
+        original_tracker = getattr(leaf_board, 'piece_tracker', None)
+        legal_action_ids = list(leaf_board.legal_actions)
 
-        for move in legal_moves_list:
-            if move not in leaf_node.children:
-                # 1. Reset env to original leaf state *before* this move
+        for action_id in legal_action_ids:
+            if action_id not in leaf_node.children:
                 self.env.board.set_fen(original_fen, original_tracker)
-                action_id = leaf_board.move_to_action_id(move)
-                if action_id is None: continue
+                move = leaf_board.action_id_to_move(action_id)
+                if move is None: continue
 
-                # 2. Step primary move
                 try:
                     self.env.step(action_id)
                 except Exception as e:
-                    print(f"Error stepping primary move {move.uci()} from FEN {original_fen}: {e}")
-                    continue # Skip this move
+                    print(f"Error stepping primary action_id {action_id} from FEN {original_fen}: {e}")
+                    continue
 
-                # 4. Get prior probability for the primary move
                 prior_p = 0.0
                 action_id_0based = action_id - 1
                 if 0 <= action_id_0based < probs_to_use.shape[0]:
                     prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
 
-                # 5. Create child node with the final board state from env (needs copy)
                 child_board = self.env.board.copy()
                 child_node = MCTSNode(
                     board=child_board,
                     parent=leaf_node,
                     prior_p=prior_p,
-                    move_leading_here=move
+                    action_id_leading_here=action_id
                 )
-                leaf_node.children[move] = child_node
+                leaf_node.children[action_id] = child_node
 
-        # Restore env to original leaf state after loop
         self.env.board.set_fen(original_fen, original_tracker)
 
     def _expand_parallel(self, leaf_node: MCTSNode, probs_to_use: torch.Tensor,
@@ -115,30 +109,27 @@ class MCTS:
         Assumes leaf_node is not terminal.
         """
         leaf_board = leaf_node.get_board()
-        legal_moves_list = list(leaf_board.legal_moves)
-
-        for move in legal_moves_list:
-            action_id = leaf_board.move_to_action_id(move)
-            if action_id is None: continue
+        for action_id in leaf_board.legal_actions:
             action_id_0based = action_id - 1
             prior_p = 0.0
             if 0 <= action_id_0based < probs_to_use.shape[0]:
                 prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
-
-            if move not in leaf_node.children:
+            if action_id not in leaf_node.children:
                 try:
                     sim_board = leaf_board.copy()
+                    move = sim_board.action_id_to_move(action_id)
+                    if move is None:
+                        continue
                     sim_board.push(move)
-
                     child_node = MCTSNode(
                         board=sim_board,
                         parent=leaf_node,
                         prior_p=prior_p,
-                        move_leading_here=move
+                        action_id_leading_here=action_id
                     )
-                    leaf_node.children[move] = child_node
+                    leaf_node.children[action_id] = child_node
                 except Exception as e:
-                    print(f"Error during MCTS board.push expansion for move {move.uci()} from FEN {leaf_board.fen()}: {e}")
+                    print(f"Error during MCTS board.push expansion for action_id {action_id} from FEN {leaf_board.fen()}: {e}")
 
     # --- Main Expansion & Evaluation Method ---
 
@@ -174,8 +165,8 @@ class MCTS:
                 use_uniform_fallback = False
                 uniform_prob = 0.0
                 if torch.isnan(full_probs).any():
-                    num_legal_moves = len(list(leaf_board.legal_moves))
-                    uniform_prob = 1.0 / num_legal_moves if num_legal_moves > 0 else 0.0
+                    num_legal_actions = len(list(leaf_board.legal_actions))
+                    uniform_prob = 1.0 / num_legal_actions if num_legal_actions > 0 else 0.0
                     use_uniform_fallback = True
                     # Keep value = 0.0 if network output unreliable? Or use predicted value?
                     # Let's keep the predicted value unless it's NaN itself (unlikely)
@@ -184,13 +175,12 @@ class MCTS:
                 # Add Dirichlet Noise (only if root node)
                 if leaf_node.parent is None and not use_uniform_fallback:
                     # --- Dirichlet Noise Logic --- (Same as before)
-                    legal_moves = list(leaf_board.legal_moves)
-                    num_legal = len(legal_moves)
+                    legal_actions = list(leaf_board.legal_actions)
+                    num_legal = len(legal_actions)
                     if num_legal > 1:
                         legal_indices = []
                         legal_probs = []
-                        for move in legal_moves:
-                            action_id = leaf_board.move_to_action_id(move)
+                        for action_id in legal_actions:
                             if action_id is not None:
                                 idx = action_id - 1
                                 if 0 <= idx < full_probs.shape[0]:
@@ -262,7 +252,7 @@ class MCTS:
 
     # --- Get Best Move / Policy --- 
     # Returns Action ID corresponding to the best move
-    def get_best_move(self, root_node: MCTSNode, temperature=0.0) -> int | None:
+    def get_best_action(self, root_node: MCTSNode, temperature=0.0) -> int | None:
         """
         Selects the best **action ID** corresponding to a legal move from the
         root node after search, based on visit counts.
@@ -278,164 +268,101 @@ class MCTS:
             if no legal moves exist or the action ID cannot be determined.
         """
         if not root_node.children:
-            legal = list(root_node.board.legal_moves)
-            # If no children, return ID of a random legal move (if any)
-            if not legal: return None
-            selected_move = random.choice(legal)
-            
-            if self.action_space_mode == "4672":
-                # For 4672 action space, just use move_to_action_id
-                return root_node.board.move_to_action_id(selected_move)
-            else:
-                # For 1700 action space, use piece instance tracking
-                root_board = root_node.get_board()
-                piece_details = root_board.get_piece_instance_id_at(selected_move.from_square)
-                if piece_details is None: return None
-                color, p_type, p_idx = piece_details
-                return get_action_id_for_piece_abs(selected_move.uci(), color, p_type, p_idx)
+            legal_action_ids = list(root_node.board.legal_actions)
+            if not legal_action_ids: return None
+            selected_action_id = random.choice(legal_action_ids)
+            return selected_action_id
 
-        # Consider only visited children corresponding to legal moves
-        legal_moves = list(root_node.board.legal_moves)
-        children_to_consider = {m: c for m, c in root_node.children.items() if m in legal_moves and c.N > 0}
+        children_to_consider = {aid: c for aid, c in root_node.children.items() if aid in root_node.board.legal_actions and c.N > 0}
 
         if not children_to_consider:
-            # If no legal children were visited, return ID of a random legal move
-            if not legal_moves: return None
-            selected_move = random.choice(legal_moves)
-            
-            if self.action_space_mode == "4672":
-                return root_node.board.move_to_action_id(selected_move)
-            else:
-                root_board = root_node.get_board()
-                piece_details = root_board.get_piece_instance_id_at(selected_move.from_square)
-                if piece_details is None: return None
-                color, p_type, p_idx = piece_details
-                return get_action_id_for_piece_abs(selected_move.uci(), color, p_type, p_idx)
+            legal_action_ids = list(root_node.board.legal_actions)
+            if not legal_action_ids: return None
+            selected_action_id = random.choice(legal_action_ids)
+            return selected_action_id
 
         if temperature == 0:
             max_visits = -1
-            best_move = None
-            for move, child in children_to_consider.items():
+            best_action_id = None
+            for aid, child in children_to_consider.items():
                 if child.N > max_visits:
                     max_visits = child.N
-                    best_move = move
-            if best_move is None:
-                 # Fallback: choose randomly among considered children if best_move wasn't set
-                 best_move = random.choice(list(children_to_consider.keys()))
-
-            if self.action_space_mode == "4672":
-                return root_node.board.move_to_action_id(best_move)
-            else:
-                root_board = root_node.get_board()
-                piece_details = root_board.get_piece_instance_id_at(best_move.from_square)
-                if piece_details is None: return None
-                color, p_type, p_idx = piece_details
-                return get_action_id_for_piece_abs(best_move.uci(), color, p_type, p_idx)
+                    best_action_id = aid
+            if best_action_id is None:
+                best_action_id = random.choice(list(children_to_consider.keys()))
+            return best_action_id
         else:
-            moves = list(children_to_consider.keys())
-            visit_counts = np.array([children_to_consider[m].N for m in moves], dtype=float)
-
+            action_ids = list(children_to_consider.keys())
+            visit_counts = np.array([children_to_consider[aid].N for aid in action_ids], dtype=float)
             if temperature < 1e-6: temperature = 1e-6
             visit_counts_temp = visit_counts**(1.0 / temperature)
-
             sum_counts_temp = np.sum(visit_counts_temp)
             if np.isinf(sum_counts_temp) or sum_counts_temp <= 1e-9 or np.isnan(sum_counts_temp):
-                 probabilities = np.ones_like(visit_counts) / len(visit_counts)
+                probabilities = np.ones_like(visit_counts) / len(visit_counts)
             else:
-                 probabilities = visit_counts_temp / sum_counts_temp
-            
+                probabilities = visit_counts_temp / sum_counts_temp
             sum_probs = np.sum(probabilities)
             if not np.isclose(sum_probs, 1.0):
-                 if sum_probs > 1e-9: probabilities /= sum_probs
-                 else: probabilities = np.ones_like(visit_counts) / len(visit_counts)
-
-            chosen_move = np.random.choice(moves, p=probabilities)
-
-            if self.action_space_mode == "4672":
-                return root_node.board.move_to_action_id(chosen_move)
-            else:
-                root_board = root_node.get_board()
-                piece_details = root_board.get_piece_instance_id_at(chosen_move.from_square)
-                if piece_details is None: return None
-                color, p_type, p_idx = piece_details
-                return get_action_id_for_piece_abs(chosen_move.uci(), color, p_type, p_idx)
+                if sum_probs > 1e-9: probabilities /= sum_probs
+                else: probabilities = np.ones_like(visit_counts) / len(visit_counts)
+            chosen_action_id = np.random.choice(action_ids, p=probabilities)
+            return chosen_action_id
 
     def get_policy_distribution(self, root_node: MCTSNode, temperature: float = 1.0) -> np.ndarray:
         """
         Calculates the MCTS policy distribution (pi) based on visit counts.
         """
-        # --- This function remains unchanged ---
         policy_pi = np.zeros(self.network.action_space_size, dtype=np.float32)
-
         if not root_node.children:
-            legal_moves = list(root_node.board.legal_moves)
-            num_legal = len(legal_moves)
+            legal_action_ids = list(root_node.board.legal_actions)
+            num_legal = len(legal_action_ids)
             if num_legal > 0:
                 uniform_prob = 1.0 / num_legal
-                for move in legal_moves:
-                    action_id = root_node.board.move_to_action_id(move)
+                for action_id in legal_action_ids:
                     if action_id is not None and 1 <= action_id <= self.network.action_space_size:
                         policy_pi[action_id - 1] = uniform_prob
             return policy_pi
-
-        children_moves = list(root_node.children.keys())
-        visit_counts = np.array([root_node.children[m].N for m in children_moves], dtype=float)
-        total_visits = root_node.N # Use root node's N for total
-
-        # Check if total_visits is zero or no children considered
-        if total_visits == 0 or not children_moves:
-             legal_moves = list(root_node.board.legal_moves)
-             num_legal = len(legal_moves)
-             if num_legal > 0:
-                 uniform_prob = 1.0 / num_legal
-                 for move in legal_moves:
-                     action_id = root_node.board.move_to_action_id(move)
-                     if action_id is not None and 1 <= action_id <= self.network.action_space_size:
-                         policy_pi[action_id - 1] = uniform_prob
-             return policy_pi
-
+        children_action_ids = list(root_node.children.keys())
+        visit_counts = np.array([root_node.children[aid].N for aid in children_action_ids], dtype=float)
+        total_visits = root_node.N
+        if total_visits == 0 or not children_action_ids:
+            legal_action_ids = list(root_node.board.legal_actions)
+            num_legal = len(legal_action_ids)
+            if num_legal > 0:
+                uniform_prob = 1.0 / num_legal
+                for action_id in legal_action_ids:
+                    if action_id is not None and 1 <= action_id <= self.network.action_space_size:
+                        policy_pi[action_id - 1] = uniform_prob
+            return policy_pi
         if temperature == 0:
             max_visits = np.max(visit_counts)
-            # Handle potential case where max_visits is 0
             if max_visits == 0:
-                best_moves = children_moves # Treat all as equally 'best' if none visited
+                best_action_ids = children_action_ids
             else:
-                best_moves = [move for move, count in zip(children_moves, visit_counts) if count == max_visits]
-
-            prob = 1.0 / len(best_moves) if best_moves else 0.0
-            for move in best_moves:
-                 action_id = root_node.board.move_to_action_id(move)
-                 if action_id is not None and 1 <= action_id <= self.network.action_space_size:
-                     policy_pi[action_id - 1] = prob
+                best_action_ids = [aid for aid, count in zip(children_action_ids, visit_counts) if count == max_visits]
+            prob = 1.0 / len(best_action_ids) if best_action_ids else 0.0
+            for action_id in best_action_ids:
+                if action_id is not None and 1 <= action_id <= self.network.action_space_size:
+                    policy_pi[action_id - 1] = prob
         else:
-            # Use total_visits from root node for normalization power
             visit_counts_temp = visit_counts**(1.0 / temperature)
             sum_counts_temp = np.sum(visit_counts_temp)
-
             if np.isinf(visit_counts_temp).any() or sum_counts_temp == 0:
-                 # Fallback to simple visit proportion if temp calc fails
-                 probabilities = visit_counts / total_visits if total_visits > 0 else np.ones_like(visit_counts) / len(visit_counts)
+                probabilities = visit_counts / total_visits if total_visits > 0 else np.ones_like(visit_counts) / len(visit_counts)
             else:
-                 probabilities = visit_counts_temp / sum_counts_temp
-
-            for move, prob in zip(children_moves, probabilities):
-                action_id = root_node.board.move_to_action_id(move)
+                probabilities = visit_counts_temp / sum_counts_temp
+            for action_id, prob in zip(children_action_ids, probabilities):
                 if action_id is not None and 1 <= action_id <= self.network.action_space_size:
-                     policy_pi[action_id - 1] = prob
-
-        # Final normalization check
+                    policy_pi[action_id - 1] = prob
         current_sum = np.sum(policy_pi)
-        if current_sum > 1e-6: # Use tolerance for floating point
+        if current_sum > 1e-6:
             policy_pi /= current_sum
-        elif len(children_moves) > 0: # Fallback if sum is zero but moves exist
-            uniform_prob = 1.0 / len(children_moves)
-            for move in children_moves:
-                 action_id = root_node.board.move_to_action_id(move)
-                 if action_id is not None and 1 <= action_id <= self.network.action_space_size:
+        elif len(children_action_ids) > 0:
+            uniform_prob = 1.0 / len(children_action_ids)
+            for action_id in children_action_ids:
+                if action_id is not None and 1 <= action_id <= self.network.action_space_size:
                     policy_pi[action_id - 1] = uniform_prob
-            # Renormalize just in case
             final_sum = np.sum(policy_pi)
             if final_sum > 1e-6:
-                 policy_pi /= final_sum
-
+                policy_pi /= final_sum
         return policy_pi 

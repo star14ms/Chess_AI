@@ -191,7 +191,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             )
             mcts_player.search(root_node, mcts_iterations, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
-            action_to_take = mcts_player.get_best_move(root_node, temperature=temperature)
+            action_to_take = mcts_player.get_best_action(root_node, temperature=temperature)
         else:
             mcts_policy = np.zeros(cfg.network.action_space_size)
             legal_actions = get_legal_actions(cfg.env.type, env.board)
