@@ -4,6 +4,7 @@ import gymnasium as gym
 import sys
 import os
 import numpy as np
+from contextlib import contextmanager
 
 # Ensure project root is in sys.path for model imports
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -50,6 +51,22 @@ class CroppedBreakoutEnv(gym.Wrapper):
     def restore_state(self, state):
         return self.env.unwrapped.restore_state(state)
 
+@contextmanager
+def suppress_stdout_stderr():
+    """Suppress all stdout/stderr (including C/C++ prints) within the context."""
+    with open(os.devnull, 'w') as devnull:
+        old_stdout_fd = os.dup(1)
+        old_stderr_fd = os.dup(2)
+        os.dup2(devnull.fileno(), 1)
+        os.dup2(devnull.fileno(), 2)
+        try:
+            yield
+        finally:
+            os.dup2(old_stdout_fd, 1)
+            os.dup2(old_stderr_fd, 2)
+            os.close(old_stdout_fd)
+            os.close(old_stderr_fd)
+
 def create_breakout_network(cfg, device) -> nn.Module:
     """Create and initialize the Breakout network based on config."""
     network = BreakoutNetwork(
@@ -62,14 +79,20 @@ def create_breakout_network(cfg, device) -> nn.Module:
     ).to(device)
     return network
 
+def register_envs():
+    with suppress_stdout_stderr():
+        import gymnasium as gym
+        import ale_py
+        gym.register_envs(ale_py)
+
 def create_breakout_env(cfg, render=False) -> gym.Env:
     """Create and initialize the Breakout environment."""
-    gym.register_envs(ale_py)
-    env = gym.make(
-        "ALE/Breakout-v5",
-        render_mode=cfg.env.render_mode if render else None,
-        obs_type=cfg.env.observation_mode
-    )
+    with suppress_stdout_stderr():
+        env = gym.make(
+            "ALE/Breakout-v5",
+            render_mode=cfg.env.render_mode if render else None,
+            obs_type=cfg.env.observation_mode
+        )
     env = CroppedBreakoutEnv(env)
     return env
 

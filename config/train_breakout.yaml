@@ -16,17 +16,12 @@ _target_: MCTS.config_schema.Config
 
 network:
   _target_: MCTS.config_schema.NetworkConfig
-  # BreakoutNetwork defaults
   input_channels: 2
-  # dim_piece_type: 0  # Not used for Breakout
-  # board_size: 0      # Not used for Breakout
   num_residual_layers: 8
   num_filters: [32, 32]
   conv_blocks_channel_lists: [[32], [32], [32], [32], [32], [32], [32], [32]]
   action_space_size: 4
-  # num_pieces: 0      # Not used for Breakout
   value_head_hidden_size: 64
-  # action_space_mode: "breakout"  # Custom string for Breakout
 
 # Environment configuration
 env:
@@ -38,7 +33,7 @@ env:
 
 mcts:
   _target_: MCTS.config_schema.MCTSConfig
-  iterations: 1
+  iterations: 4
   c_puct: 1.41
   temperature_start: 1.0
   temperature_end: 0.1
@@ -57,10 +52,9 @@ training:
   num_training_iterations: 1000
   training_epochs: 50
   batch_size: 64
-  use_multiprocessing: false
+  use_multiprocessing: true
   self_play_workers: null
   self_play_games_per_epoch: 24
   max_game_moves: 1000  # Typical for Breakout
   checkpoint_dir: ./checkpoints
   save_interval: 10
-  # initial_board_fen: null  # Not used for Breakout 
