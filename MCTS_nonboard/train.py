@@ -16,6 +16,7 @@ from training_modules.breakout import (
 )
 from collections import deque
 from utils.profile import profile_model, get_optimal_worker_count
+import torch.nn.functional as F
 
 
 class ReplayBuffer:
@@ -197,7 +198,9 @@ def train(cfg: DictConfig):
             policy_batch = torch.tensor(np.stack([x[1] for x in batch]), dtype=torch.float32, device=device)
             value_batch = torch.tensor(np.array([x[2] for x in batch]), dtype=torch.float32, device=device)
             policy_logits, value_pred = network(obs_batch)
-            policy_loss = torch.nn.functional.cross_entropy(policy_logits, policy_batch)
+            # KL-divergence loss for policy
+            policy_log_probs = F.log_softmax(policy_logits, dim=1)
+            policy_loss = F.kl_div(policy_log_probs, policy_batch, reduction='batchmean')
             value_loss = torch.nn.functional.mse_loss(value_pred.squeeze(), value_batch)
             loss = policy_loss + value_loss
             optimizer.zero_grad()
