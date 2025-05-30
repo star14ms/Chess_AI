@@ -17,11 +17,12 @@ _target_: MCTS.config_schema.Config
 network:
   _target_: MCTS.config_schema.NetworkConfig
   input_channels: 2
-  num_residual_layers: 8
-  num_filters: [32, 32]
-  conv_blocks_channel_lists: [[32], [32], [32], [32], [32], [32], [32], [32]]
+  num_residual_layers: 4
+  num_filters: [16, 32, 64]
+  conv_blocks_channel_lists: [[64], [64], [64], [64]]
   action_space_size: 4
-  value_head_hidden_size: 64
+  policy_head_out_channels: 2
+  value_head_hidden_size: 32
 
 # Environment configuration
 env:
@@ -48,7 +49,7 @@ optimizer:
 training:
   _target_: MCTS.config_schema.TrainingConfig
   replay_buffer_size: 8192
-  device: mps
+  device: auto
   num_training_iterations: 1000
   training_epochs: 50
   batch_size: 64

@@ -8,8 +8,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from MCTS_nonboard.training_modules.breakout import CroppedBreakoutEnv
 
 gym.register_envs(ale_py)
-env = gym.make("ALE/Breakout-v5", render_mode=None, obs_type="rgb")
-# env = gym.make("ALE/Breakout-v5", render_mode='human', obs_type="rgb")
+env = gym.make("ALE/Breakout-v5", render_mode=None, obs_type="grayscale")
+# env = gym.make("ALE/Breakout-v5", render_mode='human', obs_type="grayscale")
 
 # Create wrapped environment
 env = CroppedBreakoutEnv(env)
@@ -22,12 +22,12 @@ for _ in range(1000):
     if terminated or truncated:
         observation, info = env.reset()
 
-    # print(observation.shape)
+    print(observation[-1].shape)
 
-    # plt.imshow(observation, cmap='gray')
-    # plt.xticks(range(0, observation.shape[1], 20))
-    # plt.yticks(range(0, observation.shape[0], 20))
-    # plt.axis('on')
-    # plt.show()
+    plt.imshow(observation[-1], cmap='gray')
+    plt.xticks(range(0, observation[-1].shape[1], 20))
+    plt.yticks(range(0, observation[-1].shape[0], 20))
+    plt.axis('on')
+    plt.show()
 
 env.close()

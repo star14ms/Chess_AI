@@ -12,19 +12,19 @@ import torch.nn.functional as F
 
 
 DEFAULT_INPUT_CHANNELS = 2
-DEFAULT_BOARD_HEIGHT = 164
+DEFAULT_BOARD_HEIGHT = 160
 DEFAULT_BOARD_WIDTH = 144
 DEFAULT_NUM_RESIDUAL_LAYERS = 8
-DEFAULT_NUM_FILTERS = [32, 32]
+DEFAULT_NUM_FILTERS = [16, 32, 32, 32]
 DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[32]] * DEFAULT_NUM_RESIDUAL_LAYERS
 DEFAULT_ACTION_SPACE = 4
-DEFAULT_POLICY_HIDDEN_SIZE = 64
-DEFAULT_VALUE_HEAD_HIDDEN_SIZE = 64
+DEFAULT_POLICY_OUT_CHANNELS = 2
+DEFAULT_VALUE_HEAD_HIDDEN_SIZE = 32
 
 
 class ConvBlockInitial(nn.Module):
     """A multi-scale convolutional block that captures both local and long-range patterns."""
-    def __init__(self, in_channels, num_filters=[16, 16, 32, 32]):
+    def __init__(self, in_channels, num_filters=[16, 32, 32, 32]):
         super().__init__()
         self.conv_paths = nn.ModuleList()
         self.bn_paths = nn.ModuleList()
@@ -66,7 +66,7 @@ class BreakoutNetwork(nn.Module):
                  num_filters=DEFAULT_NUM_FILTERS,
                  conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
                  action_space_size=DEFAULT_ACTION_SPACE,
-                 policy_hidden_size=DEFAULT_POLICY_HIDDEN_SIZE,
+                 policy_head_out_channels=DEFAULT_POLICY_OUT_CHANNELS,
                  value_head_hidden_size=DEFAULT_VALUE_HEAD_HIDDEN_SIZE
                 ):
         super().__init__()
@@ -101,8 +101,8 @@ class BreakoutNetwork(nn.Module):
             self.final_conv_channels = self.num_filters_last_stage
 
         # --- Instantiate Head Modules (using C_final) --- 
-        self.policy_head = PolicyHead(self.final_conv_channels, self.action_space_size, self.board_height//4, self.board_width//4, hidden_size=policy_hidden_size)
-        self.value_head = ValueHead(self.final_conv_channels, self.board_height//4, self.board_width//4, hidden_size=value_head_hidden_size)
+        self.policy_head = PolicyHead(self.final_conv_channels, policy_head_out_channels, self.action_space_size, self.board_height//(2**len(num_filters)), self.board_width//(2**len(num_filters)))
+        self.value_head = ValueHead(self.final_conv_channels, self.board_height//(2**len(num_filters)), self.board_width//(2**len(num_filters)), hidden_size=value_head_hidden_size)
 
     def forward(self, x):
         """Forward pass through the network.
@@ -153,7 +153,8 @@ def test_network(cfg):
         num_filters=cfg.network.num_filters,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
-        policy_hidden_size=cfg.network.value_head_hidden_size
+        policy_head_out_channels=cfg.network.policy_head_out_channels,
+        value_head_hidden_size=cfg.network.value_head_hidden_size
     )
     print("Network Initialized.")
     print(f"Using: num_residual_layers={network.num_residual_layers}, final_conv_channels={network.final_conv_channels}, action_space={network.action_space_size}")

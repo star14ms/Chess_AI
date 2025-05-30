@@ -26,6 +26,7 @@ network:
   conv_blocks_channel_lists: []
   action_space_size: 225  # 15x15 board
   num_pieces: 2  # Only black and white pieces
+  policy_head_out_channels: 4
   value_head_hidden_size: 64
   action_space_mode: "gomoku"  # Use Gomoku action space
 

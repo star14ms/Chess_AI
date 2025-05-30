@@ -5,9 +5,8 @@ import sys, os
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 if project_root not in sys.path:
     sys.path.append(project_root)
-from chess_gym.chess_custom import LegacyChessBoard
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 # Default values based on common AlphaZero implementations for chess
 DEFAULT_INPUT_CHANNELS = 10  # 10 features (Color, Piece Type, EnPassant, Castling, Current Player)
@@ -17,7 +16,7 @@ DEFAULT_NUM_FILTERS = [32, 32, 64, 64, 128, 128, 128]
 DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [] * DEFAULT_NUM_RESIDUAL_LAYERS
 DEFAULT_ACTION_SPACE = 1700 # User-specified action space size
 DEFAULT_NUM_PIECES = 32
-DEFAULT_POLICY_HIDDEN_SIZE = 4
+DEFAULT_POLICY_OUT_CHANNELS = 4
 DEFAULT_VALUE_HIDDEN_SIZE = 4
 
 class ConvBlock(nn.Module):
@@ -65,11 +64,11 @@ class ResidualConvBlock(nn.Module):
 # --- Policy Head Module ---
 class PolicyHead(nn.Module):
     """Calculates policy logits from the final piece vector."""
-    def __init__(self, num_channels: int, action_space_size: int, vec_height: int, vec_width: int, hidden_size: int = 128):
+    def __init__(self, in_chennels: int, out_channels: int, action_space_size: int, vec_height: int, vec_width: int):
         super().__init__()
-        self.conv = ConvBlock(num_channels, hidden_size)  # Directly reduce channels
+        self.conv = ConvBlock(in_chennels, out_channels)  # Directly reduce channels
         self.fc = nn.Sequential(
-            nn.Linear(hidden_size*vec_height*vec_width, action_space_size),
+            nn.Linear(out_channels*vec_height*vec_width, action_space_size),
         )
 
     def forward(self, conv_features: torch.Tensor) -> torch.Tensor:
@@ -124,7 +123,7 @@ class ChessNetwork4672(nn.Module):
                  conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
-                 policy_hidden_size=DEFAULT_POLICY_HIDDEN_SIZE,
+                 policy_head_out_channels=DEFAULT_POLICY_OUT_CHANNELS,
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
                 ):
         super().__init__()
@@ -160,7 +159,7 @@ class ChessNetwork4672(nn.Module):
             self.final_conv_channels = self.num_filters_last_stage
 
         # --- Instantiate Head Modules (using C_final) --- 
-        self.policy_head = PolicyHead(self.final_conv_channels, self.action_space_size, self.board_height, self.board_width, hidden_size=policy_hidden_size)
+        self.policy_head = PolicyHead(self.final_conv_channels, policy_head_out_channels, self.action_space_size, self.board_height, self.board_width)
         self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size)
 
     def forward(self, x):
@@ -209,6 +208,7 @@ def test_network(cfg: DictConfig):
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
+        policy_head_out_channels=cfg.network.policy_head_out_channels,
         value_head_hidden_size=cfg.network.value_head_hidden_size
     )
     print("Network Initialized.")

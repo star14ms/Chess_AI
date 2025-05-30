@@ -15,6 +15,7 @@ def create_gomoku_network(cfg, device) -> nn.Module:
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
+        policy_head_out_channels=cfg.network.policy_head_out_channels,
         value_head_hidden_size=cfg.network.value_head_hidden_size
     ).to(device)
 

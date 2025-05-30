@@ -28,6 +28,7 @@ network:
   conv_blocks_channel_lists: []
   action_space_size: 1700
   num_pieces: 32
+  policy_head_out_channels: 4 # Only used for action space size 4672
   value_head_hidden_size: 64
   action_space_mode: "4672"  # Use 4672 action space with LegacyChessBoard
 

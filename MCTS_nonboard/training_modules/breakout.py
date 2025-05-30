@@ -18,7 +18,7 @@ class CroppedBreakoutEnv(gym.Wrapper):
     crop_left = 8
     crop_right = 8
     crop_top = 32
-    crop_bottom = 14
+    crop_bottom = 18
     
     def __init__(self, env):
         super().__init__(env)
@@ -75,7 +75,8 @@ def create_breakout_network(cfg, device) -> nn.Module:
         num_filters=cfg.network.num_filters,
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
-        policy_hidden_size=cfg.network.value_head_hidden_size
+        policy_head_out_channels=cfg.network.policy_head_out_channels,
+        value_head_hidden_size=cfg.network.value_head_hidden_size
     ).to(device)
     return network
 
