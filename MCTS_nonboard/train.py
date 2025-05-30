@@ -50,11 +50,10 @@ def run_self_play_game(cfg, network, device):
     temp_start = cfg.mcts.get('temperature_start', 1.0)
     temp_end = cfg.mcts.get('temperature_end', 0.1)
     temp_decay_moves = cfg.mcts.get('temperature_decay_moves', 30)
+    total_reward = 0.0
 
     while not done and move_count < max_moves:
-        # Compute temperature for this move
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
-
         root_node = MCTSNode(obs)
         mcts = MCTS(network, device, env)
         mcts.search(root_node, cfg.mcts.iterations)
@@ -62,11 +61,12 @@ def run_self_play_game(cfg, network, device):
         action = mcts.get_best_action(root_node, temperature=temperature)
         game_history.append((obs, policy))
         obs, reward, terminated, truncated, info = env.step(action)
+        total_reward += reward
         done = terminated or truncated
         move_count += 1
 
     value = reward
-    return [(obs, policy, value) for obs, policy in game_history]
+    return [(obs, policy, value) for obs, policy in game_history], total_reward
 
 
 def self_play_worker(args):
@@ -151,29 +151,41 @@ def train(cfg: DictConfig):
             TextColumn("[progress.description]{task.description}"), BarColumn(),
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(), TimeElapsedColumn(),
+            TextColumn("[AvgScore: {task.fields[avg_score]:.4f}]")
         )
         progress.columns = self_play_columns
         games_data_collected = []
-        task_id_selfplay = progress.add_task(f"Self-Play", total=cfg.training.self_play_games_per_epoch)
-        
+        final_rewards = []
+        task_id_selfplay = progress.add_task(f"Self-Play", total=cfg.training.self_play_games_per_epoch, avg_score=float('nan'))
+
+        def update_avg_score():
+            avg_score = float(np.mean(final_rewards)) if final_rewards else float('nan')
+            progress.update(task_id_selfplay, avg_score=avg_score)
+
         if use_multiprocessing and num_workers > 1:
             network_state_dict = network.state_dict()
             device_str = 'cpu'
             worker_args = [(cfg, network_state_dict, device_str) for _ in range(cfg.training.self_play_games_per_epoch)]
             with multiprocessing.get_context("spawn").Pool(processes=num_workers) as pool:
-                for i, game_data in enumerate(pool.imap_unordered(self_play_worker, worker_args)):
+                for i, result in enumerate(pool.imap_unordered(self_play_worker, worker_args)):
+                    game_data, total_reward = result
                     games_data_collected.extend(game_data)
+                    final_rewards.append(total_reward)
+                    update_avg_score()
                     progress.update(task_id_selfplay, advance=1)
         else:
             for i in range(cfg.training.self_play_games_per_epoch):
-                game_data = run_self_play_game(cfg, network, device)
+                game_data, total_reward = run_self_play_game(cfg, network, device)
                 games_data_collected.extend(game_data)
+                final_rewards.append(total_reward)
+                update_avg_score()
                 progress.update(task_id_selfplay, advance=1)
 
         progress.update(task_id_selfplay, visible=False)
         replay_buffer.extend(games_data_collected)
         self_play_duration = int(time.time() - iteration_start_time_selfplay)
-        progress.print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration//60}m {self_play_duration%60}s. Buffer size: {len(replay_buffer)}")
+        avg_score = float(np.mean(final_rewards)) if final_rewards else float('nan')
+        progress.print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {self_play_duration//60}m {self_play_duration%60}s. Buffer size: {len(replay_buffer)} | Avg Score: {avg_score:.4f}")
 
         # --- Training Phase ---
         training_columns = (
@@ -216,7 +228,7 @@ def train(cfg: DictConfig):
             )
 
         progress.update(task_id_train, visible=False)
-        progress.print(f"Iteration {iteration+1} finished. Buffer size: {len(replay_buffer)} | Avg Policy Loss: {current_avg_policy_loss:.4f} | Avg Value Loss: {current_avg_value_loss:.4f}")
+        progress.print(f"Iteration {iteration+1} finished. Buffer size: {len(replay_buffer)} | Avg Policy Loss: {current_avg_policy_loss:.4f} | Avg Value Loss: {current_avg_value_loss:.4f} | Avg Score: {avg_score:.4f}")
 
         # --- Checkpointing ---
         if (iteration + 1) % save_interval == 0 or (iteration + 1) == cfg.training.num_training_iterations:
