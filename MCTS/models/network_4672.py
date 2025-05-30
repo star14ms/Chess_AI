@@ -65,13 +65,11 @@ class ResidualConvBlock(nn.Module):
 # --- Policy Head Module ---
 class PolicyHead(nn.Module):
     """Calculates policy logits from the final piece vector."""
-    def __init__(self, num_channels: int, action_space_size: int, board_height: int, board_width: int, hidden_size: int = 128):
+    def __init__(self, num_channels: int, action_space_size: int, vec_height: int, vec_width: int, hidden_size: int = 128):
         super().__init__()
         self.conv = ConvBlock(num_channels, hidden_size)  # Directly reduce channels
         self.fc = nn.Sequential(
-            nn.Linear(hidden_size*board_height*board_width, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, action_space_size)
+            nn.Linear(hidden_size*vec_height*vec_width, action_space_size),
         )
 
     def forward(self, conv_features: torch.Tensor) -> torch.Tensor:
@@ -203,7 +201,7 @@ def test_network(cfg: DictConfig):
     # from utils.analyze import interpret_tile
 
     # Example instantiation with new config
-    network = ChessNetwork(
+    network = ChessNetwork4672(
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
         num_residual_layers=cfg.network.num_residual_layers,

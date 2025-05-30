@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import chess
 import sys
@@ -15,7 +14,7 @@ from chess_gym.chess_custom import BaseChessBoard
 from models.network import ChessNetwork
 from models.network_4672 import ChessNetwork4672
 
-def create_chess_network(cfg, device):
+def create_chess_network(cfg, device) -> nn.Module:
     """Create and initialize the appropriate chess network based on config."""
     if cfg.network.action_space_mode == "4672":
         network = ChessNetwork4672(
@@ -42,7 +41,7 @@ def create_chess_network(cfg, device):
         ).to(device)
     return network
 
-def create_chess_env(cfg, render=False):
+def create_chess_env(cfg, render=False) -> ChessEnv:
     """Create and initialize the chess environment."""
     return ChessEnv(
         observation_mode=cfg.env.observation_mode,
@@ -51,21 +50,21 @@ def create_chess_env(cfg, render=False):
         action_space_mode=cfg.network.action_space_mode
     )
 
-def get_chess_game_result(board: BaseChessBoard):
+def get_chess_game_result(board: BaseChessBoard) -> float:
     """Get the game result from a chess board."""
     result_str = board.result(claim_draw=True)
     if result_str == "1-0": return 1.0  # White won
     elif result_str == "0-1": return -1.0  # Black won
     else: return 0.0  # Draw
 
-def is_white_turn(board):
+def is_white_turn(board: BaseChessBoard) -> bool:
     """Check if it's white's turn on the chess board."""
     return board.turn == chess.WHITE
 
-def get_chess_legal_actions(board: BaseChessBoard):
+def get_chess_legal_actions(board: BaseChessBoard) -> list[int]:
     """Get legal moves from a chess board."""
     return board.legal_actions
 
-def action_id_to_move(board: BaseChessBoard, action_id):
+def action_id_to_move(board: BaseChessBoard, action_id: int) -> chess.Move:
     """Convert action ID to move on chess board."""
     return board.action_id_to_move(action_id) 

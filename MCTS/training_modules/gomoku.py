@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 from gym_gomoku.envs import GomokuEnv, Board
 from gym_gomoku.envs.util import gomoku_util
