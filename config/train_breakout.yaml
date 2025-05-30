@@ -1,0 +1,66 @@
+# @package _global_
+# config/train_breakout.yaml
+
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: outputs/breakout_train/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/breakout_train/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+
+# Target the main Config dataclass
+_target_: MCTS.config_schema.Config
+
+network:
+  _target_: MCTS.config_schema.NetworkConfig
+  # BreakoutNetwork defaults
+  input_channels: 2
+  # dim_piece_type: 0  # Not used for Breakout
+  # board_size: 0      # Not used for Breakout
+  num_residual_layers: 8
+  num_filters: [32, 32]
+  conv_blocks_channel_lists: [[32], [32], [32], [32], [32], [32], [32], [32]]
+  action_space_size: 4
+  # num_pieces: 0      # Not used for Breakout
+  value_head_hidden_size: 64
+  # action_space_mode: "breakout"  # Custom string for Breakout
+
+# Environment configuration
+env:
+  _target_: MCTS.config_schema.EnvConfig
+  type: breakout  # Specify Breakout environment
+  observation_mode: grayscale
+  render_mode: human
+  save_video_folder: './videos'
+
+mcts:
+  _target_: MCTS.config_schema.MCTSConfig
+  iterations: 1
+  c_puct: 1.41
+  temperature_start: 1.0
+  temperature_end: 0.1
+  temperature_decay_moves: 30
+
+optimizer:
+  _target_: MCTS.config_schema.OptimizerConfig
+  type: Adam
+  learning_rate: 0.1
+  weight_decay: 1e-4
+
+training:
+  _target_: MCTS.config_schema.TrainingConfig
+  replay_buffer_size: 8192
+  device: mps
+  num_training_iterations: 1000
+  training_epochs: 50
+  batch_size: 64
+  use_multiprocessing: false
+  self_play_workers: null
+  self_play_games_per_epoch: 24
+  max_game_moves: 1000  # Typical for Breakout
+  checkpoint_dir: ./checkpoints
+  save_interval: 10
+  # initial_board_fen: null  # Not used for Breakout 
