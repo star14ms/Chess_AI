@@ -150,6 +150,9 @@ class BaseChessBoard(chess.Board):
     
     def get_squares_to_action_ids_map(self) -> Dict[chess.Square, List[int]]:
         raise NotImplementedError("Subclasses must implement get_squares_to_action_ids_map")
+    
+    def set_fen(self, fen: str, *args, **kwargs):
+        super().set_fen(fen)
 
 class LegacyChessBoard(BaseChessBoard):
     """Chess board class for the 4672 action space without piece tracking."""

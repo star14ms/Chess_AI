@@ -16,7 +16,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from mcts_node import MCTSNode
-
+from chess_gym.chess_custom import FullyTrackedBoard
 
 # --- MCTS Algorithm ---
 class MCTS:
@@ -220,7 +220,8 @@ class MCTS:
         
         if progress is not None:
             root_fen = self.env.board.fen()
-            root_piece_tracker = self.env.board.piece_tracker
+            if isinstance(self.env.board, FullyTrackedBoard):
+                root_piece_tracker = self.env.board.piece_tracker
 
         mcts_task_id = None
         if progress is not None:
@@ -245,7 +246,7 @@ class MCTS:
             progress.stop_task(mcts_task_id)
             progress.update(mcts_task_id, visible=False)
 
-        if progress is not None:
+        if progress is not None and isinstance(self.env.board, FullyTrackedBoard):
             self.env.board.set_fen(root_fen, root_piece_tracker)
 
     # --- Get Best Move / Policy --- 
