@@ -40,8 +40,8 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-def run_self_play_game(cfg, network, device):
-    env = create_breakout_env(cfg)
+def run_self_play_game(cfg, network, device, multiprocessing=False):
+    env = create_breakout_env(cfg, render=True if cfg.env.render_mode == "human" and not multiprocessing and device.type == "cpu" else False)
     obs, _ = env.reset()
     done = False
     game_history = []
@@ -75,7 +75,7 @@ def self_play_worker(args):
     network = create_breakout_network(cfg, device)
     network.load_state_dict(network_state_dict)
     network.eval()
-    return run_self_play_game(cfg, network, device)
+    return run_self_play_game(cfg, network, device, multiprocessing=True)
 
 
 def train(cfg: DictConfig):

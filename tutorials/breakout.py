@@ -1,33 +1,25 @@
-import ale_py
 import gymnasium as gym
-import matplotlib.pyplot as plt
-
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from MCTS_nonboard.training_modules.breakout import CroppedBreakoutEnv
+import ale_py # Import ale_py to register Atari environments
 
 gym.register_envs(ale_py)
-env = gym.make("ALE/Breakout-v5", render_mode=None, obs_type="grayscale")
-# env = gym.make("ALE/Breakout-v5", render_mode='human', obs_type="grayscale")
 
-# Create wrapped environment
-env = CroppedBreakoutEnv(env)
-observation, info = env.reset()
+# Create the Breakout environment
+env = gym.make("ALE/Breakout-v5", render_mode="rgb_array") # Use render_mode="human" to visualize
+# env = gym.make("BreakoutNoFrameskip-v4", render_mode="rgb_array") # Use render_mode="human" to visualize
+env.reset()
 
-for _ in range(1000):
-    action = env.action_space.sample()  # Random action
+# Let's see some basic info about the environment
+print("Observation Space:", env.observation_space)
+print("Action Space:", env.action_space)
+
+# Example of taking random actions
+num_steps = 100
+for _ in range(num_steps):
+    action = env.action_space.sample() # sample random action
     observation, reward, terminated, truncated, info = env.step(action)
+    print(f"Action: {action}, Reward: {reward}, Terminated: {terminated}, Truncated: {truncated}")
     
     if terminated or truncated:
         observation, info = env.reset()
-
-    print(observation[-1].shape)
-
-    plt.imshow(observation[-1], cmap='gray')
-    plt.xticks(range(0, observation[-1].shape[1], 20))
-    plt.yticks(range(0, observation[-1].shape[0], 20))
-    plt.axis('on')
-    plt.show()
 
 env.close()

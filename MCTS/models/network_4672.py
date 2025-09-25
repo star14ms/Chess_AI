@@ -7,6 +7,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 import hydra
 from omegaconf import DictConfig
+from chess_gym.chess_custom import LegacyChessBoard
 
 # Default values based on common AlphaZero implementations for chess
 DEFAULT_INPUT_CHANNELS = 10  # 10 features (Color, Piece Type, EnPassant, Castling, Current Player)
@@ -215,6 +216,8 @@ def test_network(cfg: DictConfig):
     print(f"Using: num_residual_layers={network.num_residual_layers}, final_conv_channels={network.final_conv_channels}, action_space={network.action_space_size}")
 
     board = LegacyChessBoard('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')
+    # from gym_gomoku.envs import Board
+    # board = Board(15)
     dummy_input_tensor = torch.from_numpy(board.get_board_vector()).to(dtype=torch.float32)
     dummy_input_tensor = dummy_input_tensor.unsqueeze(0).repeat(2, 1, 1, 1)
     # for i in range(dummy_input_tensor.shape[2]):

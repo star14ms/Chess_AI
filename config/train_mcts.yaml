@@ -24,9 +24,9 @@ network:
   dim_piece_type: 16
   board_size: 8
   num_residual_layers: 0
-  num_filters: [32, 32, 64, 64, 128, 128, 128]
+  num_filters: [32, 32, 32, 32, 32, 32, 32]
   conv_blocks_channel_lists: []
-  action_space_size: 1700
+  action_space_size: 4672
   num_pieces: 32
   policy_head_out_channels: 4 # Only used for action space size 4672
   value_head_hidden_size: 64
@@ -42,7 +42,7 @@ env:
 
 mcts:
   _target_: MCTS.config_schema.MCTSConfig
-  iterations: 100
+  iterations: 1
   c_puct: 1.41
   temperature_start: 1.0
   temperature_end: 0.1
@@ -57,14 +57,14 @@ optimizer:
 
 training:
   _target_: MCTS.config_schema.TrainingConfig
-  replay_buffer_size: 65536
+  replay_buffer_size: 8192
   device: auto # If device is cpu and multiprocessing is false and render_mode is not null, you can see the pygame window
   num_training_iterations: 1000
-  training_epochs: 100
-  batch_size: 128
-  use_multiprocessing: false # Set to false for sequential self-play
+  training_epochs: 50
+  batch_size: 64
+  use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
-  self_play_games_per_epoch: 128
+  self_play_games_per_epoch: 24
   max_game_moves: 200
   checkpoint_dir: ./checkpoints
   save_interval: 10

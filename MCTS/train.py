@@ -540,7 +540,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
 # --- Hydra Entry Point --- 
 # Ensure config_path points to the directory containing train_gomoku.yaml
-@hydra.main(config_path="../config", config_name="train_gomoku", version_base=None)
+@hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
 def main(cfg: DictConfig) -> None:
     print("Configuration:\n")
     # Use OmegaConf.to_yaml for structured printing
