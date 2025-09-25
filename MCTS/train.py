@@ -23,11 +23,32 @@ get_game_result = None
 is_first_player_turn = None
 get_legal_actions = None
 
-# Helper function for parallel execution
-# NOTE: Passing large network objects might be slow or problematic.
-# Consider loading the network state_dict in the worker if issues arise.
+def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
+    global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions
+    if cfg.env.type == "chess":
+        from training_modules.chess import (
+            create_chess_env as create_environment,
+            create_chess_network as create_network,
+            get_chess_game_result as get_game_result,
+            is_white_turn as is_first_player_turn,
+            get_chess_legal_actions as get_legal_actions,
+        )
+    elif cfg.env.type == "gomoku":
+        from training_modules.gomoku import (
+            create_gomoku_env as create_environment,
+            create_gomoku_network as create_network,
+            get_gomoku_game_result as get_game_result,
+            is_gomoku_first_player_turn as is_first_player_turn,
+            get_gomoku_legal_actions as get_legal_actions,
+        )
+    else:
+        raise ValueError(f"Unsupported environment type: {cfg.env.type}")
+
+# Helper function for parallel execution (module scope for pickling)
 def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: str):
     """Worker function to run a single self-play game."""
+    # Ensure factories are initialized inside spawned workers
+    initialize_factories_from_cfg(cfg)
     # Determine device for this worker
     device = torch.device(device_str)
 
@@ -48,7 +69,7 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     )
     return game_data
 
-# Wrapper for imap_unordered
+# Wrapper for imap_unordered (module scope for pickling)
 def worker_wrapper(args):
     """Unpacks arguments for self_play_worker when using imap."""
     game_id, network_state_dict, cfg, device_str = args
@@ -85,7 +106,6 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-
 # --- Self-Play Function (Update args to use config subsections) ---
 def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                        progress: Progress | None = None, device: torch.device | None = None):
@@ -118,6 +138,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 
     while not terminated and not truncated and move_count < max_moves:
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
+        fen = env.board.fen()
         
         if cfg.mcts.iterations > 0:
             root_node = MCTSNode(env.board.copy())
@@ -143,6 +164,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         board_copy_at_state = env.board.copy()
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
+        env.board.set_fen(fen)
         obs, reward, terminated, truncated, info = env.step(action_to_take)
 
         if progress is not None:
@@ -172,6 +194,8 @@ def run_training_loop(cfg: DictConfig) -> None:
     progress.start()
 
     # --- Setup ---
+    # Ensure factories are initialized in the main process
+    initialize_factories_from_cfg(cfg)
     if cfg.training.device == "auto":
         if not cfg.training.use_multiprocessing:
             device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
@@ -482,27 +506,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 # Ensure config_path points to the directory containing train_gomoku.yaml
 @hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
 def main(cfg: DictConfig) -> None:
-    global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions
-
-    if cfg.env.type == "chess":
-        # Import environment-specific components
-        from training_modules.chess import (
-            create_chess_env as create_environment,
-            create_chess_network as create_network,
-            get_chess_game_result as get_game_result,
-            is_white_turn as is_first_player_turn,
-            get_chess_legal_actions as get_legal_actions,
-        )
-    elif cfg.env.type == "gomoku":
-        from training_modules.gomoku import (
-            create_gomoku_env as create_environment,
-            create_gomoku_network as create_network,
-            get_gomoku_game_result as get_game_result,
-            is_gomoku_first_player_turn as is_first_player_turn,
-            get_gomoku_legal_actions as get_legal_actions,
-        )
-    else:
-        raise ValueError(f"Unsupported environment type: {cfg.env.type}")
+    # Initialize factories in the main process
+    initialize_factories_from_cfg(cfg)
     
     print("Configuration:\n")
     # Use OmegaConf.to_yaml for structured printing

@@ -1,16 +1,18 @@
 
 def profile_model(model, inputs):
-    from thop import profile
-    from rich import print
-    import sys
-    macs, params = profile(model, inputs=inputs, verbose=False)
-    print('Network initialized! (Input {} MB : MACs: {} M | Params: {} M)'.format(
-        round(sys.getsizeof(inputs[0].untyped_storage())/1000/1000, 3),
-        round(macs/1000/1000, 2), 
-        round(params/1000/1000, 2),
-    ))
+    from torchinfo import summary
+    summary(model, inputs=inputs, verbose=1)
+    # from thop import profile
+    # from rich import print
+    # import sys
+    # macs, params = profile(model, inputs=inputs, verbose=False)
+    # print('Network initialized! (Input {} MB : MACs: {} M | Params: {} M)'.format(
+    #     round(sys.getsizeof(inputs[0].untyped_storage())/1000/1000, 3),
+    #     round(macs/1000/1000, 2), 
+    #     round(params/1000/1000, 2),
+    # ))
 
-    return macs, params
+    # return macs, params
 
 def get_optimal_worker_count(total_cores, num_workers_config=None, use_multiprocessing=False):
     """Determine the optimal number of workers for multiprocessing.
