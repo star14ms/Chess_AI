@@ -12,76 +12,16 @@ import multiprocessing # Keep for potential parallel execution
 import torch.nn.functional as F
 from torch import nn
 
-# Import environment-specific components
-from training_modules.chess import (
-    create_chess_network,
-    create_chess_env,
-    get_chess_game_result,
-    is_white_turn,
-    get_chess_legal_actions,
-)
-from training_modules.gomoku import (
-    create_gomoku_network,
-    create_gomoku_env,
-    get_gomoku_game_result,
-    is_gomoku_first_player_turn,
-    get_gomoku_legal_actions,
-)
-
 # Assuming files are in the MCTS directory relative to the project root
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from utils.profile import get_optimal_worker_count, profile_model, format_time
 
-# Environment factory
-def create_environment(cfg, render=False):
-    """Create the appropriate environment based on config."""
-    if cfg.env.type == "chess":
-        return create_chess_env(cfg, render=render)
-    elif cfg.env.type == "gomoku":
-        return create_gomoku_env(cfg, render=render)
-    else:
-        raise ValueError(f"Unsupported environment type: {cfg.env.type}")
-
-# Network factory
-def create_network(cfg, device):
-    """Create the appropriate network based on config."""
-    if cfg.env.type == "chess":
-        return create_chess_network(cfg, device)
-    elif cfg.env.type == "gomoku":
-        return create_gomoku_network(cfg, device)
-    else:
-        raise ValueError(f"Unsupported environment type: {cfg.env.type}")
-
-# Game result factory
-def get_game_result(env_type, board):
-    """Get the game result based on environment type."""
-    if env_type == "chess":
-        return get_chess_game_result(board)
-    elif env_type == "gomoku":
-        return get_gomoku_game_result(board)
-    else:
-        raise ValueError(f"Unsupported environment type: {env_type}")
-
-# Turn check factory
-def is_first_player_turn(env_type, board):
-    """Check if it's the first player's turn based on environment type."""
-    if env_type == "chess":
-        return is_white_turn(board)
-    elif env_type == "gomoku":
-        return is_gomoku_first_player_turn(board)
-    else:
-        raise ValueError(f"Unsupported environment type: {env_type}")
-
-# Legal moves factory
-def get_legal_actions(env_type, board):
-    """Get legal moves based on environment type."""
-    if env_type == "chess":
-        return get_chess_legal_actions(board)
-    elif env_type == "gomoku":
-        return get_gomoku_legal_actions(board)
-    else:
-        raise ValueError(f"Unsupported environment type: {env_type}")
+create_network = None
+create_environment = None
+get_game_result = None
+is_first_player_turn = None
+get_legal_actions = None
 
 # Helper function for parallel execution
 # NOTE: Passing large network objects might be slow or problematic.
@@ -194,7 +134,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             action_to_take = mcts_player.get_best_action(root_node, temperature=temperature)
         else:
             mcts_policy = np.zeros(cfg.network.action_space_size)
-            legal_actions = get_legal_actions(cfg.env.type, env.board)
+            legal_actions = get_legal_actions(env.board)
             for action_id in legal_actions:
                 mcts_policy[action_id - 1] = 1
             action_to_take = np.random.choice(legal_actions)
@@ -210,11 +150,11 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 
         move_count += 1
 
-    final_value = get_game_result(cfg.env.type, env.board)
+    final_value = get_game_result(env.board)
 
     full_game_data = []
     for i, (state_obs, policy_target, board_at_state) in enumerate(game_history):
-        is_first_player = is_first_player_turn(cfg.env.type, board_at_state)
+        is_first_player = is_first_player_turn(board_at_state)
         value_target = final_value if is_first_player else -final_value
         full_game_data.append((state_obs, policy_target, board_at_state, value_target))
     
@@ -485,7 +425,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     current_board = boards_batch[i]
                     
                     # Calculate illegal probability mass
-                    legal_moves = set(get_legal_actions(cfg.env.type, current_board))
+                    legal_moves = set(get_legal_actions(current_board))
                     legal_indices = torch.tensor([move_id - 1 for move_id in legal_moves], device=device)
                     illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
                     batch_illegal_prob_mass += illegal_prob
@@ -542,6 +482,28 @@ def run_training_loop(cfg: DictConfig) -> None:
 # Ensure config_path points to the directory containing train_gomoku.yaml
 @hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
 def main(cfg: DictConfig) -> None:
+    global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions
+
+    if cfg.env.type == "chess":
+        # Import environment-specific components
+        from training_modules.chess import (
+            create_chess_env as create_environment,
+            create_chess_network as create_network,
+            get_chess_game_result as get_game_result,
+            is_white_turn as is_first_player_turn,
+            get_chess_legal_actions as get_legal_actions,
+        )
+    elif cfg.env.type == "gomoku":
+        from training_modules.gomoku import (
+            create_gomoku_env as create_environment,
+            create_gomoku_network as create_network,
+            get_gomoku_game_result as get_game_result,
+            is_gomoku_first_player_turn as is_first_player_turn,
+            get_gomoku_legal_actions as get_legal_actions,
+        )
+    else:
+        raise ValueError(f"Unsupported environment type: {cfg.env.type}")
+    
     print("Configuration:\n")
     # Use OmegaConf.to_yaml for structured printing
     print(OmegaConf.to_yaml(cfg))
