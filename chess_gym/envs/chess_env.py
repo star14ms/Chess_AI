@@ -87,8 +87,8 @@ class MoveSpace(spaces.Space):
                 # 56-63: Knight moves (8 possible)
                 elif 56 <= relative_action <= 63:
                     knight_offsets = [
-                        (1, 2), (2, 1), (2, -1), (1, -2),
-                        (-1, -2), (-2, -1), (-2, 1), (-1, 2)
+                        (2, 1), (1, 2), (-1, 2), (-2, 1),
+                        (-2, -1), (-1, -2), (1, -2), (2, -1)
                     ]
                     idx = relative_action - 56
                     file_change, rank_change = knight_offsets[idx]
@@ -348,7 +348,10 @@ class ChessEnv(gym.Env):
 
     def step(self, action):
         # Convert the action to a chess move using MoveSpace
-        move = self.action_space._action_to_move(action)
+        if action in self.board.legal_actions:
+            move = self.action_space._action_to_move(action)
+        else:
+            move = None
 
         # Push the move regardless of legality
         self.board.push(move)

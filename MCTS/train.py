@@ -258,11 +258,8 @@ def run_training_loop(cfg: DictConfig) -> None:
     replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
 
     # Loss Functions
-    if cfg.mcts.iterations > 0:
-        policy_loss_fn = nn.CrossEntropyLoss()
-    else:
-        policy_loss_fn = nn.BCEWithLogitsLoss()  # BCE with logits combines sigmoid and BCE loss
-    value_loss_fn = nn.MSELoss()
+    policy_loss_fn = nn.CrossEntropyLoss()
+    value_loss_fn = nn.CrossEntropyLoss()
 
     # Checkpoint directory (relative to hydra run dir)
     checkpoint_dir = cfg.training.checkpoint_dir 
@@ -479,7 +476,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         avg_policy_loss = total_policy_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
         avg_value_loss = total_value_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
         avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
-        progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, Avg Illegal Move Prob Mass: {avg_illegal_prob_mass:.2%}")
+        progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%}")
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
         progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)})")
