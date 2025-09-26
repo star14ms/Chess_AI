@@ -16,6 +16,7 @@ from training_modules.breakout import (
 )
 from collections import deque
 from utils.profile import profile_model, get_optimal_worker_count
+from utils.progress import NullProgress
 import torch.nn.functional as F
 
 
@@ -82,9 +83,8 @@ def train(cfg: DictConfig):
     if cfg.env.type == "breakout":
         register_envs()
 
-    # Progress bar setup (as before)
-    progress = Progress(transient=False)
-    progress.start()
+    # Initialize a placeholder progress; may be replaced with real one later
+    progress = NullProgress()
 
     # --- Setup ---
     if cfg.training.device == "auto":
@@ -109,6 +109,14 @@ def train(cfg: DictConfig):
 
     # Check config flag to decide execution mode
     use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
+
+    # Determine whether to show progress bars
+    show_progress = bool(cfg.training.get('progress_bar', True)) and not (use_multiprocessing_flag and num_workers > 1)
+
+    # Create real progress renderer only if showing progress
+    if show_progress:
+        progress = Progress(transient=False)
+        progress.start()
 
     if use_multiprocessing_flag and num_workers > 1:
         device = "cpu"

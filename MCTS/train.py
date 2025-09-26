@@ -16,6 +16,7 @@ from torch import nn
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from utils.profile import get_optimal_worker_count, profile_model, format_time
+from utils.progress import NullProgress
 
 create_network = None
 create_environment = None
@@ -189,9 +190,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 # Use DictConfig for type hint from Hydra
 def run_training_loop(cfg: DictConfig) -> None: 
     """Main function to run the training loop using Hydra config."""
-    # Progress bar setup (as before)
-    progress = Progress(transient=False)
-    progress.start()
+    # Defer real progress creation until we know whether to display
+    progress = NullProgress()
 
     # --- Setup ---
     # Ensure factories are initialized in the main process
@@ -221,6 +221,14 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # Check config flag to decide execution mode
     use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
+
+    # Determine whether to show progress bars
+    show_progress = bool(cfg.training.get('progress_bar', True))
+
+    # Initialize real progress renderer only if showing progress
+    if show_progress:
+        progress = Progress(transient=False)
+        progress.start()
 
     if use_multiprocessing_flag and num_workers > 1:
         device = "cpu"
@@ -371,7 +379,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     cfg,
                     network if cfg.mcts.iterations > 0 else None,
                     env if device.type == 'cpu' else None,  # Use the main env instance
-                    progress=progress if device.type == 'cpu' else None,
+                    progress=progress if (device.type == 'cpu' and show_progress) else None,
                     device=device
                 )
                 games_data_collected.extend(game_data)

@@ -54,6 +54,7 @@ class TrainingConfig:
     max_game_moves: int = 200
     checkpoint_dir: str = "checkpoints" # Will be relative to hydra output dir
     checkpoint_dir_load: Optional[str] = None # Optional separate directory to load checkpoints from (defaults to checkpoint_dir if None or empty)
+    progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
     save_interval: int = 10
     initial_board_fen: str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" #except pawns
 

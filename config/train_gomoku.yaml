@@ -67,3 +67,4 @@ training:
   checkpoint_dir_load: null  # If set, load checkpoints from here; otherwise use checkpoint_dir
   save_interval: 10
   initial_board_fen: null  # Not used for Gomoku 
+  progress_bar: true
