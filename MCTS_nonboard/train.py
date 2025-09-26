@@ -137,12 +137,43 @@ def train(cfg: DictConfig):
 
     replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
     use_multiprocessing = cfg.training.get('use_multiprocessing', False)
+    # Checkpoint directories
     checkpoint_dir = cfg.training.checkpoint_dir
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_dir_load = cfg.training.get('checkpoint_dir_load', None)
+    load_dir = checkpoint_dir_load if checkpoint_dir_load not in (None, "", "null") else checkpoint_dir
+    os.makedirs(checkpoint_dir, exist_ok=True)  # Ensure save directory exists
     save_interval = cfg.training.save_interval
     total_training_start_time = time.time()
 
-    for iteration in range(cfg.training.num_training_iterations):
+    # Attempt to resume from the latest checkpoint in load_dir
+    start_iter = 0
+    try:
+        if os.path.isdir(load_dir):
+            checkpoint_files = [f for f in os.listdir(load_dir) if f.startswith("model_") and f.endswith(".pth")]
+            if checkpoint_files:
+                # Parse iteration numbers like model_12.pth
+                def parse_iter(filename):
+                    try:
+                        base = os.path.splitext(filename)[0]
+                        return int(base.split("_")[-1])
+                    except Exception:
+                        return -1
+                latest_file = max(checkpoint_files, key=parse_iter)
+                latest_iter = parse_iter(latest_file)
+                if latest_iter > 0:
+                    checkpoint_path = os.path.join(load_dir, latest_file)
+                    print(f"Found existing checkpoint at {checkpoint_path}")
+                    checkpoint = torch.load(checkpoint_path, map_location=device)
+                    network.load_state_dict(checkpoint['model_state_dict'])
+                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    # Continue from the loaded iteration
+                    start_iter = checkpoint.get('iteration', latest_iter)
+                    print(f"Successfully loaded checkpoint from iteration {start_iter}")
+    except Exception as e:
+        print(f"Error loading checkpoint from '{load_dir}': {e}")
+        print("Starting training from scratch...")
+
+    for iteration in range(start_iter, cfg.training.num_training_iterations):
         progress.print(f"\n--- Training Iteration {iteration+1}/{cfg.training.num_training_iterations} ---")
         iteration_start_time_selfplay = time.time()
 

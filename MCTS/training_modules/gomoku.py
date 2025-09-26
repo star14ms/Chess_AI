@@ -1,7 +1,7 @@
 import torch.nn as nn
 from gym_gomoku.envs import GomokuEnv, Board
 from gym_gomoku.envs.util import gomoku_util
-from models.network_4672 import ChessNetwork4672
+from MCTS.models.network_4672 import ChessNetwork4672
 
 def create_gomoku_network(cfg, device) -> nn.Module:
     """Create and initialize the Gomoku network based on config."""

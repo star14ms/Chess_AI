@@ -261,8 +261,11 @@ def run_training_loop(cfg: DictConfig) -> None:
     policy_loss_fn = nn.CrossEntropyLoss()
     value_loss_fn = nn.CrossEntropyLoss()
 
-    # Checkpoint directory (relative to hydra run dir)
-    checkpoint_dir = cfg.training.checkpoint_dir 
+    # Checkpoint directories (relative to hydra run dir)
+    checkpoint_dir = cfg.training.checkpoint_dir
+    # Allow loading from a different directory if specified
+    checkpoint_dir_load = cfg.training.get('checkpoint_dir_load', None)
+    load_dir = checkpoint_dir_load if checkpoint_dir_load not in (None, "", "null") else checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
     progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
 
@@ -274,7 +277,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     total_training_start_time = time.time()
 
     # Check for existing checkpoint
-    checkpoint_path = os.path.join(checkpoint_dir, "model.pth")
+    checkpoint_path = os.path.join(load_dir, "model.pth")
     if os.path.exists(checkpoint_path):
         progress.print(f"\nFound existing checkpoint at {checkpoint_path}")
         try:

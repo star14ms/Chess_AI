@@ -11,8 +11,8 @@ if project_root not in sys.path:
 
 from chess_gym.envs import ChessEnv
 from chess_gym.chess_custom import BaseChessBoard
-from models.network import ChessNetwork
-from models.network_4672 import ChessNetwork4672
+from MCTS.models.network import ChessNetwork
+from MCTS.models.network_4672 import ChessNetwork4672
 
 def create_chess_network(cfg, device) -> nn.Module:
     """Create and initialize the appropriate chess network based on config."""
