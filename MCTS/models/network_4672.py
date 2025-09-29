@@ -67,7 +67,7 @@ class PolicyHead(nn.Module):
     """Calculates policy logits from the final piece vector."""
     def __init__(self, in_chennels: int, out_channels: int, action_space_size: int, vec_height: int, vec_width: int):
         super().__init__()
-        self.conv = ConvBlock(in_chennels, out_channels)  # Directly reduce channels
+        self.conv = ConvBlock(in_chennels, out_channels, kernel_size=1, padding=0)  # Directly reduce channels
         self.fc = nn.Sequential(
             nn.Linear(out_channels*vec_height*vec_width, action_space_size),
         )
