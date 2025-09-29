@@ -267,7 +267,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # Loss Functions
     policy_loss_fn = nn.CrossEntropyLoss()
-    value_loss_fn = nn.CrossEntropyLoss()
+    value_loss_fn = nn.MSELoss()
 
     # Checkpoint directories (relative to hydra run dir)
     checkpoint_dir = cfg.training.checkpoint_dir
