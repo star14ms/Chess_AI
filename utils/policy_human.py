@@ -3,15 +3,16 @@ import random
 import chess
 import numpy as np
 import gymnasium as gym # Assuming gym is imported
-from typing import Optional, List, Tuple, Union, overload, Literal
+from typing import Optional, List, Tuple, Union, overload, Literal, Dict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # --- Piece Values ---
 PIECE_VALUES = {
     chess.PAWN: 1,
-    chess.KNIGHT: 3,
-    chess.BISHOP: 3,
-    chess.ROOK: 5,
-    chess.QUEEN: 9,
+    chess.KNIGHT: 3.05,
+    chess.BISHOP: 3.33,
+    chess.ROOK: 5.63,
+    chess.QUEEN: 9.5,
     chess.KING: 0 # King value is effectively infinite, 0 works for comparisons here
 }
 # ---
@@ -29,6 +30,59 @@ POLICY_TITLES = {
     8: "Fallback (Random from Considered)"
 }
 # ---
+
+# --- Simple transposition cache for sample_action_v2 (negamax) ---
+# Keyed by (transposition_key, depth, color)
+_V2_TT: Dict[Tuple[int, int, int], float] = {}
+_V2_TT_MAX_ENTRIES = 200_000
+
+
+def _material_score_board(b: chess.Board) -> float:
+    score = 0.0
+    for pt in chess.PIECE_TYPES:
+        score += len(b.pieces(pt, chess.WHITE)) * float(PIECE_VALUES.get(pt, 0))
+        score -= len(b.pieces(pt, chess.BLACK)) * float(PIECE_VALUES.get(pt, 0))
+    return score
+
+
+def _evaluate_terminal_board(b: chess.Board, root_color: chess.Color) -> float:
+    if b.is_checkmate():
+        return -1e12 if b.turn == root_color else 1e12
+    return _material_score_board(b)
+
+
+def _negamax_worker(fen: str, move_uci: str, depth: int, color: int, root_color_is_white: bool) -> Tuple[str, float]:
+    b = chess.Board(fen)
+    mv = chess.Move.from_uci(move_uci)
+
+    def negamax_local(board: chess.Board, d: int, c: int, alpha: float, beta: float) -> float:
+        if d == 0 or board.is_game_over():
+            rc = chess.WHITE if root_color_is_white else chess.BLACK
+            return c * _evaluate_terminal_board(board, rc)
+        best_val = -1e15
+        for m in list(board.legal_moves):
+            try:
+                board.push(m)
+                v = -negamax_local(board, d - 1, -c, -beta, -alpha)
+                board.pop()
+            except Exception:
+                if board.move_stack and board.peek() == m:
+                    board.pop()
+                continue
+            if v > best_val:
+                best_val = v
+            if best_val > alpha:
+                alpha = best_val
+            if alpha >= beta:
+                break
+        return best_val
+
+    try:
+        b.push(mv)
+        val = -negamax_local(b, max(0, depth), -color, -1e15, 1e15)
+    except Exception:
+        val = -1e15
+    return move_uci, val
 
 def get_piece_value(piece: Optional[chess.Piece]) -> int:
     """Gets the defined value of a piece, returns 0 if None."""
@@ -375,3 +429,203 @@ def sample_action(board: chess.Board, avoid_attacks: bool = True, return_id: boo
         return action_repr, policy_id, POLICY_TITLES[policy_id]
     else:
         return action_repr 
+
+
+# Overloads for v2 lookahead sampler
+@overload
+def sample_action_v2(board: chess.Board, lookahead_moves: int = 2, return_id: bool = False, return_move: bool = False, return_info: Literal[True] = True) -> Tuple[Union[int, chess.Move, None], int, str]: ...
+
+@overload
+def sample_action_v2(board: chess.Board, lookahead_moves: int = 2, return_id: bool = False, return_move: bool = False, return_info: Literal[False] = False) -> Union[int, chess.Move, None]: ...
+
+
+def sample_action_v2(board: chess.Board,
+                     lookahead_moves: int = 3,
+                     return_id: bool = False,
+                     return_move: bool = False,
+                     return_info: bool = False,
+                     use_multiprocessing: bool = False,
+                     max_workers: int = 0) -> Union[Tuple[Union[int, chess.Move, None], int, str], Union[int, chess.Move, None]]:
+    """
+    Depth-limited lookahead policy that chooses the move maximizing material sum
+    after simulating the next N plies (half-moves), assuming the opponent also
+    plays optimally.
+
+    - State value = sum(piece values for White) - sum(piece values for Black)
+    - Avoids checkmate by treating own-checkmate lines as -infinity and
+      delivering checkmate as +infinity.
+
+    Args:
+        board: Current chess.Board
+        lookahead_moves: Number of plies to search (default 2)
+        return_id: If True, return action id via board.move_to_action_id
+        return_move: If True, return chess.Move instead of id
+        return_info: If True, return (action, policy_id, policy_title)
+
+    Returns:
+        action or (action, policy_id, policy_title)
+    """
+    n_cases = 0
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        action: Union[int, chess.Move, None] = None
+        if return_id and not return_move:
+            action = 0
+        if return_info:
+            return action, 9, POLICY_TITLES.get(9, "Lookahead")
+        return action
+
+    def material_score(b: chess.Board) -> float:
+        return _material_score_board(b)
+
+    root_color = chess.WHITE if board.turn == chess.WHITE else chess.BLACK
+
+    def evaluate_terminal(b: chess.Board) -> float:
+        return _evaluate_terminal_board(b, root_color)
+
+    def negamax(b: chess.Board, depth: int, color: int, alpha: float, beta: float, mvs_str: str) -> float:
+        nonlocal n_cases
+        if depth == 0:
+            n_cases += 1
+        if depth == 0 or b.is_game_over():
+            return color * evaluate_terminal(b)
+        # Transposition cache lookup
+        cache_key = None
+        try:
+            cache_key = (b.transposition_key(), depth, color)
+        except Exception:
+            cache_key = None
+        if cache_key is not None:
+            cached = _V2_TT.get(cache_key)
+            if cached is not None:
+                return cached
+        best = -1e15
+        for mv in list(b.legal_moves):
+            try:
+                b.push(mv)
+                val = -negamax(b, depth - 1, -color, -beta, -alpha, mvs_str + " " + mv.uci())
+                # print("Depth:", search_depth-depth, " Moves, ", n_cases, "val: ", round(val, 2), "mvs_str: ", mvs_str + " " + mv.uci())
+                b.pop()
+            except Exception:
+                if b.move_stack and b.peek() == mv:
+                    b.pop()
+                continue
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        # Store in cache with simple size cap
+        if cache_key is not None:
+            if len(_V2_TT) >= _V2_TT_MAX_ENTRIES:
+                # Remove approximately 10%
+                for _ in range(_V2_TT_MAX_ENTRIES // 10):
+                    _V2_TT.pop(next(iter(_V2_TT)))
+            _V2_TT[cache_key] = best
+        return best
+
+    best_val = -1e15
+    best_move: Optional[chess.Move] = None
+    color = 1 if board.turn == chess.WHITE else -1
+    search_depth = max(0, lookahead_moves)
+    scored_moves: List[Tuple[chess.Move, float]] = []
+    if use_multiprocessing and search_depth > 0 and len(legal_moves) > 1:
+        fen = board.fen()
+        root_color_is_white = (board.turn == chess.WHITE)
+        worker_args = [(fen, mv.uci(), search_depth, color, root_color_is_white) for mv in legal_moves]
+        workers = max_workers if max_workers and max_workers > 0 else None
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            future_to_move = {ex.submit(_negamax_worker, *args): args[1] for args in worker_args}
+            for future in as_completed(future_to_move):
+                move_uci, val = future.result()
+                mv = chess.Move.from_uci(move_uci)
+                scored_moves.append((mv, val))
+                if val > best_val:
+                    best_val = val
+                    best_move = mv
+    else:
+        for mv in legal_moves:
+            try:
+                board.push(mv)
+                val = -negamax(board, max(0, search_depth), -color, -1e15, 1e15, mv.uci())
+                board.pop()
+            except Exception:
+                if board.move_stack and board.peek() == mv:
+                    board.pop()
+                continue
+            scored_moves.append((mv, val))
+            if val > best_val:
+                best_val = val
+                best_move = mv
+            
+    # Tie-break by maximizing min mobility after opponent reply
+    if scored_moves:
+        eps = 1e-9
+        top_moves = [mv for mv, v in scored_moves if abs(v - best_val) <= eps]
+
+        if len(top_moves) > 1:
+            def min_mobility_after_opponent(b: chess.Board, moved_to_sq: int, moved_piece_val: float) -> int:
+                # b is position where opponent to move
+                opp_legal = list(b.legal_moves)
+                if not opp_legal:
+                    # Checkmate: prefer this move by returning huge mobility
+                    if b.is_checkmate():
+                        return 10**9
+                    # Stalemate: treat as very low
+                    return -10**9
+                min_mob = 10**9
+                any_considered = False
+                for opp_mv in opp_legal:
+                    try:
+                        b.push(opp_mv)
+                        my_mob = len(list(b.legal_moves))
+                        b.pop()
+                    except Exception:
+                        if b.move_stack and b.peek() == opp_mv:
+                            b.pop()
+                        my_mob = 0
+                    any_considered = True
+                    if my_mob < min_mob:
+                        min_mob = my_mob
+                if not any_considered:
+                    # If every opponent reply was filtered out, treat as very favorable
+                    return 10**9
+                return min_mob
+
+            best_mob = -10**9
+            best_tb_move = best_move
+            for mv in top_moves:
+                try:
+                    board.push(mv)
+                    moved_piece = board.piece_at(mv.to_square)
+                    moved_val = float(PIECE_VALUES.get(moved_piece.piece_type, 0)) if moved_piece else 0.0
+                    mob = min_mobility_after_opponent(board, mv.to_square, moved_val)
+                    board.pop()
+                except Exception:
+                    if board.move_stack and board.peek() == mv:
+                        board.pop()
+                    mob = -10**9
+                if mob > best_mob:
+                    best_mob = mob
+                    best_tb_move = mv
+            best_move = best_tb_move
+
+    # Build return
+    if return_move:
+        action_out: Union[int, chess.Move, None] = best_move
+    elif return_id:
+        action_id: Optional[int] = None
+        try:
+            # Requires chess_gym board with move_to_action_id
+            action_id = board.move_to_action_id(best_move) if best_move is not None else None
+        except Exception:
+            action_id = None
+        action_out = action_id if action_id is not None else 0
+    else:
+        # Default to returning move object if neither id nor move is specified
+        action_out = best_move
+
+    if return_info:
+        return action_out, 9, POLICY_TITLES.get(9, "Lookahead")
+    return action_out
