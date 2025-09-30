@@ -327,6 +327,10 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         games_data_collected = []
         iteration_start_time_selfplay = time.time()
+        # Track game-level outcomes from the first player's perspective
+        num_wins = 0
+        num_losses = 0
+        num_draws = 0
 
         if use_multiprocessing_flag:
             # Prepare arguments for workers
@@ -354,6 +358,20 @@ def run_training_loop(cfg: DictConfig) -> None:
                 for game_data in results_iterator:
                     if game_data: # Check if worker returned valid data
                         games_data_collected.extend(game_data)
+                        # Infer final game result from the first tuple's value target (first player's perspective)
+                        try:
+                            result_value = game_data[0][3]
+                            if result_value is None:
+                                num_draws += 1
+                            elif result_value > 0:
+                                num_wins += 1
+                            elif result_value < 0:
+                                num_losses += 1
+                            else:
+                                num_draws += 1
+                        except Exception:
+                            # If unexpected structure, skip counting for this game
+                            pass
                     # Update progress for each completed game
                     progress.update(task_id_selfplay, advance=1)
                 progress.update(task_id_selfplay, visible=False)
@@ -388,6 +406,20 @@ def run_training_loop(cfg: DictConfig) -> None:
                     device=device
                 )
                 games_data_collected.extend(game_data)
+                # Infer final game result from the first tuple's value target (first player's perspective)
+                if game_data:
+                    try:
+                        result_value = game_data[0][3]
+                        if result_value is None:
+                            num_draws += 1
+                        elif result_value > 0:
+                            num_wins += 1
+                        elif result_value < 0:
+                            num_losses += 1
+                        else:
+                            num_draws += 1
+                    except Exception:
+                        pass
                 progress.update(task_id_selfplay, advance=1)
             progress.update(task_id_selfplay, visible=False)
 
@@ -397,6 +429,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         self_play_duration = int(time.time() - iteration_start_time_selfplay)
         progress.print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
+        progress.print(f"Self-play results: Wins: {num_wins}, Losses: {num_losses}, Draws: {num_draws}")
 
         # --- Training Phase ---
         if len(replay_buffer) < cfg.training.batch_size:
