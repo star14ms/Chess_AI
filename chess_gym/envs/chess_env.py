@@ -274,36 +274,43 @@ class ChessEnv(gym.Env):
         self.render_mode = render_mode
         self.action_space_mode = action_space_mode
 
-        if observation_mode == 'rgb_array':
-            self.observation_space = spaces.Box(
-                low=0, 
-                high=255,
-                shape=(render_size, render_size, 3),
-                dtype=np.uint8
-            )
-        elif observation_mode == 'piece_map':
-            self.observation_space = spaces.Box(
-                low=-6, 
-                high=6,
-                shape=(8, 8),
-                dtype=np.int8
-            )
-        elif observation_mode == 'vector':
-            self.observation_space = spaces.Box(
-                low=-1,
-                high=1,
-                shape=(26, 8, 8),
-                dtype=np.int8
-            )
-        else:
-            raise ValueError(f"Invalid observation_mode: {observation_mode}. Must be one of {self.metadata['observation_modes']}")
-
         self.chess960 = kwargs.get('chess960', False)
         # --- Board selection logic moved here ---
         if self.action_space_mode == "4672":
             self.board = LegacyChessBoard(chess960=self.chess960)
         else:
             self.board = FullyTrackedBoard(chess960=self.chess960)
+
+        # --- Observation space depends on observation_mode and board ---
+        if observation_mode == 'rgb_array':
+            self.observation_space = spaces.Box(
+                low=0,
+                high=255,
+                shape=(render_size, render_size, 3),
+                dtype=np.uint8
+            )
+        elif observation_mode == 'piece_map':
+            self.observation_space = spaces.Box(
+                low=-6,
+                high=6,
+                shape=(8, 8),
+                dtype=np.int8
+            )
+        elif observation_mode == 'vector':
+            try:
+                vec = self.board.get_board_vector()
+                vec_shape = vec.shape
+            except Exception:
+                # Fallback to 26x8x8 if board not ready
+                vec_shape = (26, 8, 8)
+            self.observation_space = spaces.Box(
+                low=-1.0,
+                high=1.0,
+                shape=vec_shape,
+                dtype=np.float32
+            )
+        else:
+            raise ValueError(f"Invalid observation_mode: {observation_mode}. Must be one of {self.metadata['observation_modes']}")
 
         if self.chess960:
             self.board.set_chess960_pos(np.random.randint(0, 960))
@@ -339,7 +346,7 @@ class ChessEnv(gym.Env):
             observation = self._get_piece_configuration()
         elif self.observation_mode == 'vector':
             if hasattr(self.board, 'get_board_vector'):
-                observation = self.board.get_board_vector()
+                observation = self.board.get_board_vector().astype(np.float32, copy=False)
             else:
                 raise AttributeError("Board object does not have method 'get_board_vector'. Required for observation_mode='vector'.")
         else:

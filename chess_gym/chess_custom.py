@@ -278,82 +278,114 @@ class LegacyChessBoard(BaseChessBoard):
 
     def get_board_vector(self) -> np.ndarray:
         """
-        Generates a 10x8x8 numpy array representing the board state.
+        Generates a 119x8x8 numpy array following AlphaZero-style input planes.
 
-        Output shape: (10, 8, 8) -> (Channels, Rank, File)
-
-        Channels (10 dimensions):
-        Features (10 channels):
-        0:   Color (-1 Black, 0 Empty, 1 White)
-        1-6: Piece Type / BehaviorType (One-hot: P, N, B, R, Q, K for piece on square)
-        7:   EnPassantTarget (1 if this square is the EP target for the next move, 0 otherwise)
-        8:   CastlingTarget (1 if King could land on this square via castling this turn, 0 otherwise)
-        9:   Current Player (-1 Black, 1 White - constant across the plane)
+        Layout: 112 history planes (8 steps × [6 own + 6 opp + 1 repetition + 1 color])
+                + 7 constant meta planes (current color, 4 castling rights, halfmove/100, bias).
         """
-        # Initialize with shape (Channels, Height, Width) -> (Channels, Rank, File)
-        board_vector = np.zeros((10, 8, 8), dtype=np.int8)
+        HISTORY_STEPS = 8
+        PLANES_PER_STEP = 14  # 6 own + 6 opp + 1 repetition + 1 color
+        TOTAL_CHANNELS = HISTORY_STEPS * PLANES_PER_STEP + 7  # = 119
 
-        # Global states needed
-        ep_square = self.ep_square
-        current_turn = self.turn
-        castling_rights = self.castling_rights
+        obs = np.zeros((TOTAL_CHANNELS, 8, 8), dtype=np.float32)
 
-        # Channel 9: Current Player (Constant plane)
-        player_val = 1 if current_turn == chess.WHITE else -1
-        board_vector[9, :, :] = player_val
+        # --- Build history snapshots using a copy we can pop safely ---
+        board_copy: chess.Board = self.copy(stack=True)
+        history_keys: List[str] = []  # keys in backward order: T, T-1, ...
+        snapshots: List[Tuple[bool, List[Tuple[int, int, chess.Piece]]]] = []
+        # Each snapshot: (turn_is_white, list of (rank, file, piece))
 
-        # Potential castling destination squares for the current player
-        castling_target_squares = set()
-        if current_turn == chess.WHITE:
-            if castling_rights & chess.BB_A1: # White Queenside
-                if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
-                   self.piece_at(chess.B1) is None and self.piece_at(chess.C1) is None and self.piece_at(chess.D1) is None:
-                    if self.has_queenside_castling_rights(chess.WHITE):
-                        castling_target_squares.add(chess.C1)
-            if castling_rights & chess.BB_H1: # White Kingside
-                if self.piece_at(chess.E1) == chess.Piece(chess.KING, chess.WHITE) and \
-                   self.piece_at(chess.F1) is None and self.piece_at(chess.G1) is None:
-                    if self.has_kingside_castling_rights(chess.WHITE):
-                        castling_target_squares.add(chess.G1)
-        else: # BLACK's turn
-            if castling_rights & chess.BB_A8: # Black Queenside
-                if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
-                   self.piece_at(chess.B8) is None and self.piece_at(chess.C8) is None and self.piece_at(chess.D8) is None:
-                    if self.has_queenside_castling_rights(chess.BLACK):
-                        castling_target_squares.add(chess.C8)
-            if castling_rights & chess.BB_H8: # Black Kingside
-                if self.piece_at(chess.E8) == chess.Piece(chess.KING, chess.BLACK) and \
-                   self.piece_at(chess.F8) is None and self.piece_at(chess.G8) is None:
-                    if self.has_kingside_castling_rights(chess.BLACK):
-                        castling_target_squares.add(chess.G8)
+        steps_collected = 0
+        while steps_collected < HISTORY_STEPS:
+            # Key for repetition check: first 4 FEN fields
+            fen_parts = board_copy.fen().split(' ')
+            rep_key = ' '.join(fen_parts[:4])
+            history_keys.append(rep_key)
 
-        for sq in chess.SQUARES:
-            rank = chess.square_rank(sq)
-            file = chess.square_file(sq)
-            piece = self.piece_at(sq)
+            # Collect piece listing for this snapshot
+            pieces_state: List[Tuple[int, int, chess.Piece]] = []
+            for sq in chess.SQUARES:
+                piece = board_copy.piece_at(sq)
+                if piece is None:
+                    continue
+                rank = chess.square_rank(sq)
+                file = chess.square_file(sq)
+                pieces_state.append((rank, file, piece))
+            snapshots.append((board_copy.turn == chess.WHITE, pieces_state))
 
-            # Channel 7: EnPassantTarget
-            if ep_square is not None and sq == ep_square:
-                board_vector[7, rank, file] = 1
+            steps_collected += 1
+            if steps_collected >= HISTORY_STEPS:
+                break
+            if len(board_copy.move_stack) == 0:
+                break
+            board_copy.pop()
 
-            # Channel 8: Castling Target
-            if sq in castling_target_squares:
-                board_vector[8, rank, file] = 1
+        # If fewer than HISTORY_STEPS, repeat the oldest snapshot
+        if len(snapshots) < HISTORY_STEPS:
+            oldest_turn, oldest_pieces = snapshots[-1]
+            oldest_key = history_keys[-1]
+            repeat_times = HISTORY_STEPS - len(snapshots)
+            snapshots.extend([(oldest_turn, oldest_pieces)] * repeat_times)
+            history_keys.extend([oldest_key] * repeat_times)
 
-            if piece:
-                # Channel 0: Color
-                color_val = 1 if piece.color == chess.WHITE else -1
-                board_vector[0, rank, file] = color_val
+        # --- Compute repetition flags per step (backward order) ---
+        # For step i, flag = 1 if same rep_key appears in any earlier position in the game
+        # In backward order, that means presence in history_keys[i+1:]
+        repetition_flags = [0] * HISTORY_STEPS
+        seen_suffix: set[str] = set()
+        for i in range(HISTORY_STEPS - 1, -1, -1):
+            key = history_keys[i]
+            repetition_flags[i] = 1 if key in seen_suffix else 0
+            seen_suffix.add(key)
 
-                # Channels 1-6: Piece Type / BehaviorType (One-hot)
-                piece_type_idx = piece.piece_type - 1 # 0-5 for P,N,B,R,Q,K
-                board_vector[1 + piece_type_idx, rank, file] = 1
+        # --- Fill history planes ---
+        ch = 0
+        for step_idx in range(HISTORY_STEPS):
+            turn_is_white, pieces_state = snapshots[step_idx]
+            own_color = chess.WHITE if turn_is_white else chess.BLACK
 
-            else:
-                # Empty Square Defaults
-                board_vector[0, rank, file] = 0
+            # 6 own planes (P,N,B,R,Q,K) then 6 opp planes
+            # Map piece type (1..6) -> index 0..5
+            for rank, file, piece in pieces_state:
+                pt_idx = piece.piece_type - 1
+                if piece.color == own_color:
+                    obs[ch + pt_idx, rank, file] = 1.0
+                else:
+                    obs[ch + 6 + pt_idx, rank, file] = 1.0
 
-        return board_vector
+            ch += 12
+
+            # Repetition count plane (all 1s if occurred before, else 0s)
+            if repetition_flags[step_idx]:
+                obs[ch, :, :] = 1.0
+            ch += 1
+
+            # Color plane for this step: 1 for white to move, -1 for black to move
+            obs[ch, :, :] = 1.0 if turn_is_white else -1.0
+            ch += 1
+
+        # --- Constant meta planes (for current position self) ---
+        current_white_to_move = (self.turn == chess.WHITE)
+        obs[ch, :, :] = 1.0 if current_white_to_move else -1.0  # current player color
+        ch += 1
+
+        # Castling rights (WK, WQ, BK, BQ)
+        obs[ch, :, :] = 1.0 if self.has_kingside_castling_rights(chess.WHITE) else 0.0; ch += 1
+        obs[ch, :, :] = 1.0 if self.has_queenside_castling_rights(chess.WHITE) else 0.0; ch += 1
+        obs[ch, :, :] = 1.0 if self.has_kingside_castling_rights(chess.BLACK) else 0.0; ch += 1
+        obs[ch, :, :] = 1.0 if self.has_queenside_castling_rights(chess.BLACK) else 0.0; ch += 1
+
+        # Halfmove clock normalized by 100 (for 50-move rule)
+        obs[ch, :, :] = float(self.halfmove_clock) / 100.0
+        ch += 1
+
+        # Bias plane (all ones)
+        obs[ch, :, :] = 1.0
+        ch += 1
+
+        # Sanity check: ch should equal TOTAL_CHANNELS
+        # (Avoid raising to keep compatibility; rely on shape)
+        return obs
 
 class FullyTrackedBoard(BaseChessBoard):
     """

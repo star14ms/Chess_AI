@@ -20,7 +20,7 @@ network:
   # Target the specific NetworkConfig dataclass
   _target_: MCTS.config_schema.NetworkConfig
   # Values here override defaults in the dataclass
-  input_channels: 10
+  input_channels: 119  # 8-step AlphaZero history (112) + 7 meta planes for Legacy board
   dim_piece_type: 16
   board_size: 8
   num_residual_layers: 0
