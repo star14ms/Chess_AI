@@ -44,9 +44,12 @@ mcts:
   _target_: MCTS.config_schema.MCTSConfig
   iterations: 1
   c_puct: 1.41
-  temperature_start: 1.0
-  temperature_end: 0.1
-  temperature_decay_moves: 30
+  temperature_start: 1.25
+  temperature_end: 0.5
+  temperature_decay_moves: 40
+  dirichlet_alpha: 0.3
+  dirichlet_epsilon: 0.25
+  
 
 optimizer:
   _target_: MCTS.config_schema.OptimizerConfig

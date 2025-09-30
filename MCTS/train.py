@@ -130,6 +130,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     temp_start = cfg.mcts.temperature_start
     temp_end = cfg.mcts.temperature_end
     temp_decay_moves = cfg.mcts.temperature_decay_moves
+    dirichlet_alpha = cfg.mcts.dirichlet_alpha
+    dirichlet_epsilon = cfg.mcts.dirichlet_epsilon
+    action_space_mode = cfg.network.action_space_mode
     max_moves = cfg.training.max_game_moves
 
     task_id_game = None
@@ -149,7 +152,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 device=device,
                 env=mcts_env,
                 C_puct=c_puct,
-                action_space_mode=cfg.network.action_space_mode
+                dirichlet_alpha=dirichlet_alpha,
+                dirichlet_epsilon=dirichlet_epsilon,
+                action_space_mode=action_space_mode
             )
             mcts_player.search(root_node, mcts_iterations, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)

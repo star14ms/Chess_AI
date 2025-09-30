@@ -25,6 +25,8 @@ class MCTSConfig:
     temperature_start: float = 1.0
     temperature_end: float = 0.1
     temperature_decay_moves: int = 30
+    dirichlet_alpha: float = 0.3
+    dirichlet_epsilon: float = 0.25
 
 @dataclass
 class OptimizerConfig:
