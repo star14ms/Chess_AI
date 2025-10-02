@@ -16,6 +16,16 @@ import chess_gym  # noqa: F401
 from utils.policy_human import sample_action_v2 as heuristic_policy
 from chess_pygame.config import IMG_DIR
 
+# Optional DQN model imports
+try:
+    import torch  # type: ignore[import-not-found]
+    from omegaconf import OmegaConf  # type: ignore[import-not-found]
+    from MCTS.training_modules.chess import create_chess_network  # type: ignore[import-not-found]
+except Exception:
+    torch = None  # type: ignore[assignment]
+    OmegaConf = None  # type: ignore[assignment]
+    create_chess_network = None  # type: ignore[assignment]
+
 try:
     import pygame  # Optional; only used when --pygame
 except Exception:
@@ -23,11 +33,12 @@ except Exception:
 
 
 def create_env(use_4672_action_space: bool, show_possible_actions: bool) -> gym.Env:
+    action_space_mode = "4672" if use_4672_action_space else "1700"
     env = gym.make(
         "Chess-v0",
         render_mode=None,
         show_possible_actions=show_possible_actions,
-        use_4672_action_space=use_4672_action_space,
+        action_space_mode=action_space_mode,
     )
     return env
 
@@ -101,6 +112,41 @@ def parse_human_input_to_action(env: gym.Env, raw: str) -> Optional[int]:
     return convert_move_to_action_id(env, move)
 
 
+_DQN_MODEL = None
+_DQN_DEVICE = None
+
+
+def _load_dqn_model(action_space_mode: str):
+    global _DQN_MODEL, _DQN_DEVICE
+    if torch is None or OmegaConf is None or create_chess_network is None:
+        raise RuntimeError("Required packages for DQN are not available. Install torch and omegaconf.")
+
+    # Prefer CUDA; avoid MPS due to missing ops in some kernels
+    device_str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    _DQN_DEVICE = torch.device(device_str)
+
+    # Load config and initialize network
+    cfg_path = os.path.join(os.path.abspath('.'), 'config', 'train_mcts.yaml')
+    checkpoint_path = os.path.join(os.path.abspath('.'), 'checkpoints', 'model.pth')
+    cfg = OmegaConf.load(cfg_path)
+
+    # Warn if action space modes mismatch
+    try:
+        cfg_mode = str(cfg.network.action_space_mode)
+        if cfg_mode != action_space_mode:
+            print(f"[Warning] DQN checkpoint configured for action_space_mode={cfg_mode}, but env is {action_space_mode}.")
+    except Exception:
+        pass
+
+    model = create_chess_network(cfg, _DQN_DEVICE)
+    state = torch.load(checkpoint_path, map_location='cpu')
+    state_dict = state.get('model_state_dict', state)
+    model.load_state_dict(state_dict)
+    model.eval()
+    model.to(_DQN_DEVICE)
+    _DQN_MODEL = model
+
+
 def choose_ai_action(env: gym.Env, mode: str) -> int:
     board = env.action_space.board
     if mode == "heuristic":
@@ -113,6 +159,43 @@ def choose_ai_action(env: gym.Env, mode: str) -> int:
                 return random.choice(list(legal))
             return env.action_space.sample()
         return int(action_id)
+    if mode == "dqn":
+        # Ensure model is loaded
+        if _DQN_MODEL is None:
+            # Derive mode from board vector channels: 10 -> 4672, else 1700
+            try:
+                ch = board.get_board_vector().shape[0]
+                action_space_mode = "4672" if ch == 10 else "1700"
+            except Exception:
+                action_space_mode = getattr(env, 'action_space_mode', '1700')
+            _load_dqn_model(action_space_mode)
+
+        # Safety: if still None, fallback
+        if _DQN_MODEL is None or torch is None:
+            legal = getattr(board, "legal_actions", None)
+            if legal:
+                return random.choice(list(legal))
+            return env.action_space.sample()
+
+        # Build observation
+        obs_np = board.get_board_vector()
+        obs = torch.from_numpy(obs_np).unsqueeze(0).to(device=_DQN_DEVICE, dtype=torch.float32)
+        with torch.no_grad():
+            policy_logits, _ = _DQN_MODEL(obs)
+        policy = policy_logits.squeeze(0)
+
+        # Mask illegal actions (IDs are 1-based)
+        legal = getattr(board, "legal_actions", None)
+        if not legal:
+            return env.action_space.sample()  # Fallback if no legal info
+        legal_ids = list(legal)
+        indices = torch.tensor([aid - 1 for aid in legal_ids if 1 <= aid <= policy.shape[-1]], device=policy.device, dtype=torch.long)
+        if indices.numel() == 0:
+            return env.action_space.sample()
+        legal_policy = policy.index_select(0, indices)
+        best_local = int(torch.argmax(legal_policy).item())
+        best_global = int(indices[best_local].item())
+        return best_global + 1
     legal = getattr(board, "legal_actions", None)
     if legal:
         return random.choice(list(legal))
@@ -350,6 +433,9 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
         reward = 0.0
         checkmated_square: Optional[int] = None
         winner_text = ""
+        # Move history and redo stack (list of chess.Move)
+        move_history: list[chess.Move] = []
+        redo_stack: list[chess.Move] = []
 
         def update_legal_targets(sel: Optional[int]) -> set[int]:
             if sel is None:
@@ -363,7 +449,14 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
         # AI opens if human plays Black (human at bottom False)
         if (not human_white_bottom) and board.turn:
             ai_action = choose_ai_action(env, ai_mode)
+            try:
+                ai_move_obj = env.action_space._action_to_move(ai_action)
+            except Exception:
+                ai_move_obj = None
             _, reward, terminated, truncated, _ = env.step(ai_action)
+            if ai_move_obj is not None:
+                move_history.append(ai_move_obj)
+                redo_stack.clear()
 
         # Initial draw
         draw_board(screen, board, images, cell, human_white_bottom, selected, legal_targets, checkmated_square)
@@ -383,6 +476,31 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
                         # Restart same side
                         in_game = False
                         break
+                elif event.type == pygame.KEYDOWN:
+                    # Undo one move
+                    if event.key == pygame.K_LEFT and move_history:
+                        last_move = move_history.pop()
+                        try:
+                            board.pop()
+                            redo_stack.append(last_move)
+                            terminated = False
+                            truncated = False
+                            winner_text = ""
+                            checkmated_square = None
+                            selected = None
+                            legal_targets = set()
+                        except Exception:
+                            pass
+                    # Redo one move
+                    elif event.key == pygame.K_RIGHT and redo_stack:
+                        next_move = redo_stack.pop()
+                        try:
+                            board.push(next_move)
+                            move_history.append(next_move)
+                            selected = None
+                            legal_targets = set()
+                        except Exception:
+                            pass
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and not (terminated or truncated):
                     # Human turn only
                     if (board.turn and human_white_bottom) or ((not board.turn) and (not human_white_bottom)):
@@ -405,6 +523,9 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
                                     if action_id is not None:
                                         # Apply player's move
                                         _, reward, terminated, truncated, _ = env.step(action_id)
+                                        # Record history and clear redo
+                                        move_history.append(move)
+                                        redo_stack.clear()
                                         selected = None
                                         legal_targets = set()
                                         # Redraw after player's move before AI thinks
@@ -413,7 +534,14 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
                                         # Then AI responds if game continues
                                         if not terminated and not truncated:
                                             ai_action = choose_ai_action(env, ai_mode)
+                                            try:
+                                                ai_move_obj = env.action_space._action_to_move(ai_action)
+                                            except Exception:
+                                                ai_move_obj = None
                                             _, reward, terminated, truncated, _ = env.step(ai_action)
+                                            if ai_move_obj is not None:
+                                                move_history.append(ai_move_obj)
+                                                redo_stack.clear()
                                     else:
                                         selected = None
                                         legal_targets = set()
@@ -455,7 +583,7 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
 def main() -> int:
     parser = argparse.ArgumentParser(description="Play Chess: Human vs AI using chess-gym env")
     parser.add_argument("--side", choices=["white", "black", "w", "b"], default="white", help="Choose your side")
-    parser.add_argument("--ai", choices=["heuristic", "random"], default="heuristic", help="AI policy")
+    parser.add_argument("--ai", choices=["heuristic", "random", "dqn"], default="heuristic", help="AI policy")
     parser.add_argument("--fen", type=str, default=None, help="Start position FEN")
     parser.add_argument("--max-steps", type=int, default=512, help="Max plies (half-moves)")
     parser.add_argument("--show-legal", action="store_true", help="Print legal actions each turn")
@@ -468,6 +596,11 @@ def main() -> int:
     args = parser.parse_args()
 
     human_is_white = args.side in ("white", "w")
+
+    # If DQN is selected, prefer 4672 action space to match checkpoint
+    if args.ai == "dqn" and not args.use_4672:
+        print("[Info] Forcing 4672 action space for DQN policy to match checkpoint.")
+        args.use_4672 = True
 
     env = create_env(use_4672_action_space=args.use_4672, show_possible_actions=args.show_legal)
     reset_env(env, args.fen)
