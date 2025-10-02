@@ -51,7 +51,7 @@ def _evaluate_terminal_board(b: chess.Board, root_color: chess.Color) -> float:
     return _material_score_board(b)
 
 
-def _negamax_worker(fen: str, move_uci: str, depth: int, color: int, root_color_is_white: bool, depth_threshold_skipping_moves: int) -> Tuple[str, float, int]:
+def _negamax_worker(fen: str, move_uci: str, depth: int, color: int, root_color_is_white: bool, depth_threshold_skipping_moves: int, top_n_piece_score: int, top_m_mobility: int) -> Tuple[str, float, int]:
     b = chess.Board(fen)
     mv = chess.Move.from_uci(move_uci)
     
@@ -133,6 +133,7 @@ def _negamax_worker(fen: str, move_uci: str, depth: int, color: int, root_color_
                 baseline_mob = None
             if baseline_mob is not None:
                 filtered_local: List[chess.Move] = []
+                scored_local: List[Tuple[chess.Move, int, float]] = []
                 for m_local in legal_local:
                     try:
                         board.push(m_local)
@@ -160,8 +161,25 @@ def _negamax_worker(fen: str, move_uci: str, depth: int, color: int, root_color_
                     should_skip_local = (mob_after < int(baseline_mob)) and not (material_after > baseline_material)
                     if not should_skip_local:
                         filtered_local.append(m_local)
+                        scored_local.append((m_local, int(mob_after), material_after))
                 if filtered_local:
-                    consider_local = filtered_local
+                    # Now apply hybrid top-N piece score and top-M mobility selection
+                    # Piece score proxy: material_after (higher is better for current color)
+                    if scored_local:
+                        top_n = max(1, int(top_n_piece_score))
+                        top_m = max(1, int(top_m_mobility))
+                        # sort by material_after desc
+                        by_piece = sorted(scored_local, key=lambda t: t[2], reverse=True)[:top_n]
+                        # sort by mobility desc
+                        by_mob = sorted(scored_local, key=lambda t: t[1], reverse=True)[:top_m]
+                        union_moves = {mv for mv, _, _ in by_piece}.union({mv for mv, _, _ in by_mob})
+                        if union_moves:
+                            consider_local = list(union_moves)
+                        else:
+                            consider_local = filtered_local
+                    else:
+                        consider_local = filtered_local
+        # print(f"{len(consider_local)}/{len(legal_local)}")
         for m in consider_local:
             try:
                 board.push(m)
@@ -536,18 +554,20 @@ def sample_action(board: chess.Board, avoid_attacks: bool = True, return_id: boo
 
 # Overloads for v2 lookahead sampler
 @overload
-def sample_action_v2(board: chess.Board, lookahead_moves: int = 2, return_id: bool = False, return_move: bool = False, return_info: Literal[True] = True, depth_threshold_skipping_moves: int = 0) -> Tuple[Union[int, chess.Move, None], int, str]: ...
+def sample_action_v2(board: chess.Board, lookahead_moves: int = 2, return_id: bool = False, return_move: bool = False, return_info: Literal[True] = True, depth_threshold_skipping_moves: int = 0, top_n_piece_score: int = 10, top_m_mobility: int = 5) -> Tuple[Union[int, chess.Move, None], int, str]: ...
 
 @overload
-def sample_action_v2(board: chess.Board, lookahead_moves: int = 2, return_id: bool = False, return_move: bool = False, return_info: Literal[False] = False, depth_threshold_skipping_moves: int = 0) -> Union[int, chess.Move, None]: ...
+def sample_action_v2(board: chess.Board, lookahead_moves: int = 2, return_id: bool = False, return_move: bool = False, return_info: Literal[False] = False, depth_threshold_skipping_moves: int = 0, top_n_piece_score: int = 10, top_m_mobility: int = 5) -> Union[int, chess.Move, None]: ...
 
 
 def sample_action_v2(board: chess.Board,
-                    lookahead_moves: int = 3,
+                    lookahead_moves: int = 5,
                     return_id: bool = False,
                     return_move: bool = False,
                     return_info: bool = False,
                     depth_threshold_skipping_moves: int = 2,
+                    top_n_piece_score: int = 3, 
+                    top_m_mobility: int = 3,
                     use_multiprocessing: bool = False,
                     max_workers: int = 0) -> Union[Tuple[Union[int, chess.Move, None], int, str], Union[int, chess.Move, None]]:
     """
@@ -566,6 +586,8 @@ def sample_action_v2(board: chess.Board,
         return_move: If True, return chess.Move instead of id
         return_info: If True, return (action, policy_id, policy_title)
         depth_threshold_skipping_moves: Apply mobility-based skipping only for nodes with ply < this threshold from the root. 0 disables skipping.
+        top_n_piece_score: Include up to N highest material-evaluated moves after skipping (default 10).
+        top_m_mobility: Include up to M highest mobility moves after skipping (default 5).
 
     Returns:
         action or (action, policy_id, policy_title)
@@ -767,35 +789,33 @@ def sample_action_v2(board: chess.Board,
             except Exception:
                 pass
             baseline_mobility = None
-    # Pre-filter candidate moves based on mobility decrease unless material improves
+    # Pre-filter candidate moves based on mobility decrease unless material improves, then select top-N material ∪ top-M mobility
     consider_moves: List[chess.Move] = list(legal_moves)
     if (max(0, depth_threshold_skipping_moves) > 0) and baseline_mobility is not None:
-        filtered: List[chess.Move] = []
+        scored_root: List[Tuple[chess.Move, int, float]] = []
         for mv in consider_moves:
             try:
                 board.push(mv)
-                # Root is ply 0 within threshold, so compare opponent mobility after our move
                 mob_after = mobility_value_opponent_turn(board)
                 material_after = float(color) * material_score(board)
+                # Apply previous skipping first
+                if (mob_after < int(baseline_mobility)) and not (material_after > baseline_material):
+                    board.pop()
+                    continue
                 board.pop()
             except Exception:
                 if board.move_stack and board.peek() == mv:
                     board.pop()
-                # If simulation fails, be conservative and keep the move
-                filtered.append(mv)
                 continue
-            should_skip = (mob_after < int(baseline_mobility)) and not (material_after > baseline_material)
-            if not should_skip:
-                filtered.append(mv)
-        if filtered:
-            consider_moves = filtered
-        else:
-            # Fallback to all legal moves if filtering removed everything
-            consider_moves = list(legal_moves)
+            scored_root.append((mv, int(mob_after), material_after))
+        if scored_root:
+            by_piece = sorted(scored_root, key=lambda t: t[2], reverse=True)[:max(1, int(top_n_piece_score))]
+            by_mob = sorted(scored_root, key=lambda t: t[1], reverse=True)[:max(1, int(top_m_mobility))]
+            consider_moves = list({mv for mv, _, _ in by_piece}.union({mv for mv, _, _ in by_mob}))
     if use_multiprocessing and search_depth > 0 and len(legal_moves) > 1:
         fen = board.fen()
         root_color_is_white = (board.turn == chess.WHITE)
-        worker_args = [(fen, mv.uci(), search_depth, color, root_color_is_white, depth_threshold_skipping_moves) for mv in consider_moves]
+        worker_args = [(fen, mv.uci(), search_depth, color, root_color_is_white, depth_threshold_skipping_moves, top_n_piece_score, top_m_mobility) for mv in consider_moves]
         workers = max_workers if max_workers and max_workers > 0 else None
         with ProcessPoolExecutor(max_workers=workers) as ex:
             future_to_move = {ex.submit(_negamax_worker, *args): args[1] for args in worker_args}
