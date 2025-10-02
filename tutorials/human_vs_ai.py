@@ -31,6 +31,7 @@ try:
 except Exception:
     pygame = None  # type: ignore[assignment]
 
+import time
 
 def create_env(use_4672_action_space: bool, show_possible_actions: bool) -> gym.Env:
     action_space_mode = "4672" if use_4672_action_space else "1700"
@@ -450,7 +451,13 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
 
         # AI opens if human plays Black (human at bottom False)
         if (not human_white_bottom) and board.turn:
+            t0 = time.perf_counter()
             ai_action = choose_ai_action(env, ai_mode)
+            dt = time.perf_counter() - t0
+            try:
+                print(f"AI decision time: {dt:.3f}s")
+            except Exception:
+                pass
             try:
                 ai_move_obj = env.action_space._action_to_move(ai_action)
             except Exception:
@@ -553,7 +560,13 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
                                             clock.tick(60)
                                         # Then AI responds if game continues
                                         if not terminated and not truncated:
+                                            t0 = time.perf_counter()
                                             ai_action = choose_ai_action(env, ai_mode)
+                                            dt = time.perf_counter() - t0
+                                            try:
+                                                print(f"AI decision time: {dt:.3f}s")
+                                            except Exception:
+                                                pass
                                             try:
                                                 ai_move_obj = env.action_space._action_to_move(ai_action)
                                             except Exception:
@@ -664,7 +677,14 @@ def main() -> int:
         return 0
     else:
         if not human_is_white and board.turn:  # AI starts if human chose black
+            # Measure AI think time
+            t0 = time.perf_counter()
             ai_action = choose_ai_action(env, args.ai)
+            dt = time.perf_counter() - t0
+            try:
+                print(f"AI decision time: {dt:.3f}s")
+            except Exception:
+                pass
             _, reward, terminated, truncated, _ = env.step(ai_action)
             steps += 1
             print("AI move played.")
@@ -698,7 +718,14 @@ def main() -> int:
         if terminated or truncated:
             break
 
+        # Measure AI think time
+        t0 = time.perf_counter()
         ai_action = choose_ai_action(env, args.ai)
+        dt = time.perf_counter() - t0
+        try:
+            print(f"AI decision time: {dt:.3f}s")
+        except Exception:
+            pass
         _, reward, terminated, truncated, _ = env.step(ai_action)
         steps += 1
         print("AI move played.")
