@@ -321,7 +321,7 @@ def find_move_from_squares(board: chess.Board, from_sq: int, to_sq: int) -> Opti
     return None
 
 
-def draw_board(surface, board: chess.Board, images, cell: int, human_white_bottom: bool, selected: Optional[int], legal_targets: set[int], checkmated_square: Optional[int] = None) -> None:
+def draw_board(surface, board: chess.Board, images, cell: int, human_white_bottom: bool, selected: Optional[int], legal_targets: set[int], checkmated_square: Optional[int] = None, exclude: Optional[int] = None) -> None:
     if pygame is None:
         return
     light = (240, 217, 181)
@@ -356,6 +356,8 @@ def draw_board(surface, board: chess.Board, images, cell: int, human_white_botto
 
     # Draw pieces
     for sq, piece in board.piece_map().items():
+        if exclude is not None and sq == exclude:
+            continue
         x, y = xy_from_square(sq, cell, human_white_bottom)
         img = images.get((piece.piece_type, piece.color))
         if img is not None:
@@ -521,16 +523,34 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
                                     # Visualize player's move immediately
                                     action_id = convert_move_to_action_id(env, move)
                                     if action_id is not None:
-                                        # Apply player's move
+                                        # Animate player's move
+                                        from_sq = move.from_square
+                                        to_sq = move.to_square
+                                        fx, fy = xy_from_square(from_sq, cell, human_white_bottom)
+                                        tx, ty = xy_from_square(to_sq, cell, human_white_bottom)
+                                        moving_piece = board.piece_at(from_sq)
+                                        img = images.get((moving_piece.piece_type, moving_piece.color)) if moving_piece is not None else None
+                                        # Apply board move first so captured piece disappears
                                         _, reward, terminated, truncated, _ = env.step(action_id)
-                                        # Record history and clear redo
                                         move_history.append(move)
                                         redo_stack.clear()
                                         selected = None
                                         legal_targets = set()
-                                        # Redraw after player's move before AI thinks
-                                        draw_board(screen, board, images, cell, human_white_bottom, selected, legal_targets)
-                                        pygame.display.flip()
+                                        # Animate over 150 ms
+                                        duration_ms = 150
+                                        start_time = pygame.time.get_ticks()
+                                        while True:
+                                            now = pygame.time.get_ticks()
+                                            t = min(1.0, (now - start_time) / duration_ms)
+                                            cx = fx + (tx - fx) * t
+                                            cy = fy + (ty - fy) * t
+                                            draw_board(screen, board, images, cell, human_white_bottom, selected, legal_targets, exclude=to_sq)
+                                            if img is not None:
+                                                screen.blit(img, (cx, cy))
+                                            pygame.display.flip()
+                                            if t >= 1.0:
+                                                break
+                                            clock.tick(60)
                                         # Then AI responds if game continues
                                         if not terminated and not truncated:
                                             ai_action = choose_ai_action(env, ai_mode)
@@ -538,10 +558,34 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
                                                 ai_move_obj = env.action_space._action_to_move(ai_action)
                                             except Exception:
                                                 ai_move_obj = None
+                                            # Animate AI move
+                                            if ai_move_obj is not None:
+                                                af, at = ai_move_obj.from_square, ai_move_obj.to_square
+                                                afx, afy = xy_from_square(af, cell, human_white_bottom)
+                                                atx, aty = xy_from_square(at, cell, human_white_bottom)
+                                                moving_piece_ai = board.piece_at(af)
+                                                aimg = images.get((moving_piece_ai.piece_type, moving_piece_ai.color)) if moving_piece_ai is not None else None
+                                            else:
+                                                aimg = None
                                             _, reward, terminated, truncated, _ = env.step(ai_action)
                                             if ai_move_obj is not None:
                                                 move_history.append(ai_move_obj)
                                                 redo_stack.clear()
+                                                # animate over 150ms
+                                                duration_ms = 150
+                                                start_time = pygame.time.get_ticks()
+                                                while True:
+                                                    now = pygame.time.get_ticks()
+                                                    t = min(1.0, (now - start_time) / duration_ms)
+                                                    cx = afx + (atx - afx) * t
+                                                    cy = afy + (aty - afy) * t
+                                                    draw_board(screen, board, images, cell, human_white_bottom, selected, legal_targets, exclude=at)
+                                                    if aimg is not None:
+                                                        screen.blit(aimg, (cx, cy))
+                                                    pygame.display.flip()
+                                                    if t >= 1.0:
+                                                        break
+                                                    clock.tick(60)
                                     else:
                                         selected = None
                                         legal_targets = set()
