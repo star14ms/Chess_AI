@@ -96,7 +96,7 @@ def _negamax_worker(fen: str, move_uci: str, depth: int, color: int, root_color_
         if key is not None:
             _mob_cache_local[key] = val
         return val
-    
+
     def negamax_local(board: chess.Board, d: int, c: int, alpha: float, beta: float) -> float:
         nonlocal leaf_count
         if d == 0 or board.is_game_over():
@@ -107,13 +107,23 @@ def _negamax_worker(fen: str, move_uci: str, depth: int, color: int, root_color_
         # Optionally filter moves by mobility at this node
         legal_local = list(board.legal_moves)
         consider_local = legal_local
-        if legal_local and (max(0, depth_threshold_skipping_moves) > 0) and ((max(0, depth) - d) < max(0, depth_threshold_skipping_moves)):
+        if legal_local and (max(0, depth_threshold_skipping_moves) > 0):
+            ply_from_root = max(0, depth) - d
+            use_opponent_metric = ply_from_root < max(0, depth_threshold_skipping_moves)
             baseline_mob = None
             baseline_material = float(c) * _material_score_board(board)
             try:
-                board.push(chess.Move.null())
-                baseline_mob = mobility_value_opponent_turn_local(board)
-                board.pop()
+                if use_opponent_metric:
+                    # Opponent mobility baseline: null move to switch to opponent
+                    board.push(chess.Move.null())
+                    baseline_mob = mobility_value_opponent_turn_local(board)
+                    board.pop()
+                else:
+                    # Current player's mobility baseline: legal move count now
+                    try:
+                        baseline_mob = board.legal_moves.count()
+                    except Exception:
+                        baseline_mob = sum(1 for _ in board.legal_moves)
             except Exception:
                 try:
                     if board.move_stack and board.peek() == chess.Move.null():
@@ -126,7 +136,20 @@ def _negamax_worker(fen: str, move_uci: str, depth: int, color: int, root_color_
                 for m_local in legal_local:
                     try:
                         board.push(m_local)
-                        mob_after = mobility_value_opponent_turn_local(board)
+                        if use_opponent_metric:
+                            # After our move, it's opponent to move; measure their mobility
+                            mob_after = mobility_value_opponent_turn_local(board)
+                        else:
+                            # Measure our mobility next turn via null move
+                            try:
+                                board.push(chess.Move.null())
+                                try:
+                                    mob_after = board.legal_moves.count()
+                                except Exception:
+                                    mob_after = sum(1 for _ in board.legal_moves)
+                                board.pop()
+                            except Exception:
+                                mob_after = baseline_mob
                         material_after = float(c) * _material_score_board(board)
                         board.pop()
                     except Exception:
@@ -628,6 +651,7 @@ def sample_action_v2(board: chess.Board,
         legal_here = list(b.legal_moves)
         consider_here = legal_here
         if legal_here and (max(0, depth_threshold_skipping_moves) > 0) and ((search_depth - depth) < max(0, depth_threshold_skipping_moves)):
+            # Within threshold: use opponent mobility baseline via null move
             baseline_mob_h = None
             baseline_material_h = float(color) * material_score(b)
             try:
@@ -646,7 +670,45 @@ def sample_action_v2(board: chess.Board,
                 for mv_h in legal_here:
                     try:
                         b.push(mv_h)
+                        # After our move, measure opponent mobility
                         mob_after_h = mobility_value_opponent_turn(b)
+                        material_after_h = float(color) * material_score(b)
+                        b.pop()
+                    except Exception:
+                        if b.move_stack and b.peek() == mv_h:
+                            b.pop()
+                        filtered_here.append(mv_h)
+                        continue
+                    should_skip_h = (mob_after_h < int(baseline_mob_h)) and not (material_after_h > baseline_material_h)
+                    if not should_skip_h:
+                        filtered_here.append(mv_h)
+                if filtered_here:
+                    consider_here = filtered_here
+        elif legal_here and (max(0, depth_threshold_skipping_moves) > 0):
+            # Beyond threshold: use current player's mobility baseline and next-turn mobility via null move
+            baseline_mob_h = None
+            baseline_material_h = float(color) * material_score(b)
+            try:
+                try:
+                    baseline_mob_h = b.legal_moves.count()
+                except Exception:
+                    baseline_mob_h = sum(1 for _ in b.legal_moves)
+            except Exception:
+                baseline_mob_h = None
+            if baseline_mob_h is not None:
+                filtered_here: List[chess.Move] = []
+                for mv_h in legal_here:
+                    try:
+                        b.push(mv_h)
+                        try:
+                            b.push(chess.Move.null())
+                            try:
+                                mob_after_h = b.legal_moves.count()
+                            except Exception:
+                                mob_after_h = sum(1 for _ in b.legal_moves)
+                            b.pop()
+                        except Exception:
+                            mob_after_h = baseline_mob_h
                         material_after_h = float(color) * material_score(b)
                         b.pop()
                     except Exception:
@@ -689,15 +751,21 @@ def sample_action_v2(board: chess.Board,
     color = 1 if board.turn == chess.WHITE else -1
     search_depth = max(0, lookahead_moves)
     scored_moves: List[Tuple[chess.Move, float]] = []
-    # Compute baseline mobility via a null-move (opponent to move), if enabled
+    # Compute baseline mobility for root filtering
     baseline_mobility: Optional[int] = None
     baseline_material: float = float(color) * material_score(board)
     if max(0, depth_threshold_skipping_moves) > 0:
         try:
-            b2 = board.copy(stack=False)
-            b2.push_null()
-            baseline_mobility = mobility_value_opponent_turn(b2)
+            # At root, if we are within threshold (ply 0), use opponent mobility baseline
+            board.push_null()
+            baseline_mobility = mobility_value_opponent_turn(board)
+            board.pop()
         except Exception:
+            try:
+                if board.move_stack and board.peek() == chess.Move.null():
+                    board.pop()
+            except Exception:
+                pass
             baseline_mobility = None
     # Pre-filter candidate moves based on mobility decrease unless material improves
     consider_moves: List[chess.Move] = list(legal_moves)
@@ -706,6 +774,7 @@ def sample_action_v2(board: chess.Board,
         for mv in consider_moves:
             try:
                 board.push(mv)
+                # Root is ply 0 within threshold, so compare opponent mobility after our move
                 mob_after = mobility_value_opponent_turn(board)
                 material_after = float(color) * material_score(board)
                 board.pop()
