@@ -872,12 +872,8 @@ def get_absolute_action_id_4672(
         promo_offset = {'q': 65, 'n': 66, 'b': 67, 'r': 68}[promo_char]
         return base_id + promo_offset - 1  # Subtract 1 because base_id is 1-based
     
-    # Handle castling (part of queen's move types)
-    if piece_type == chess.KING and abs(file_change) == 2 and rank_change == 0:
-        if file_change == 2:  # Kingside
-            return base_id + 69 - 1  # Subtract 1 because base_id is 1-based
-        else:  # Queenside
-            return base_id + 70 - 1  # Subtract 1 because base_id is 1-based
+    # Note: Castling is represented as a standard king move (E/W by 2 squares)
+    # and therefore falls under the queen-like move encoding below.
     
     # Regular moves
     if abs(file_change) > 7 or abs(rank_change) > 7:

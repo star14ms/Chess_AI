@@ -127,10 +127,24 @@ class BaseChessBoard(chess.Board):
 
     def push(self, move: chess.Move | None):
         """Pushes a move to the board, handling illegal moves."""
-        if move is None:
+        if move is None or move == chess.Move.null():
             self.foul = True
             return
         super().push(move)
+        
+    def pop(self):
+        """Pops a move from the board, handling illegal moves."""
+        if self.foul:
+            # Last push was illegal and was not applied to the move stack.
+            # Just clear foul state and do not pop a real move.
+            self.foul = False
+            return
+        super().pop()
+        
+    def reset(self):
+        """Resets the board to the standard starting position and populates the tracker."""
+        self.foul = False
+        super().reset()
 
     def copy(self, *, stack: Union[bool, int] = True) -> 'BaseChessBoard':
         """Creates a copy of the board, including the foul state."""
@@ -151,8 +165,10 @@ class BaseChessBoard(chess.Board):
     def get_squares_to_action_ids_map(self) -> Dict[chess.Square, List[int]]:
         raise NotImplementedError("Subclasses must implement get_squares_to_action_ids_map")
     
-    def set_fen(self, fen: str, *args, **kwargs):
+    def set_fen(self, fen: str, reset_foul: bool = False, *args, **kwargs):
         super().set_fen(fen)
+        if reset_foul:
+            self.foul = False
 
 class LegacyChessBoard(BaseChessBoard):
     """Chess board class for the 4672 action space without piece tracking."""
@@ -250,6 +266,9 @@ class LegacyChessBoard(BaseChessBoard):
             logging.warning(f"Move to ID: Failed to calculate action ID for move {move.uci()}")
             
         return action_id
+    
+    def set_fen(self, fen: str, piece_tracker_override: Optional[PieceTracker] = None, *args, **kwargs):
+        super().set_fen(fen, *args, **kwargs)
 
     @property
     def legal_actions(self) -> List[int]:
@@ -568,7 +587,6 @@ class FullyTrackedBoard(BaseChessBoard):
     def reset(self):
         """Resets the board to the standard starting position and populates the tracker."""
         self.is_theoretically_possible_state = True # Reset flag
-        self.foul = False
         self._pre_initialize_tracker_keys()
         super().reset()
         self._populate_tracker_from_standard_start()
@@ -635,7 +653,7 @@ class FullyTrackedBoard(BaseChessBoard):
 
     # Override push to store the flag state
     def push(self, move: chess.Move | None):
-        if move is None:
+        if move is None or move == chess.Move.null():
             self.foul = True
             return
 
@@ -705,6 +723,11 @@ class FullyTrackedBoard(BaseChessBoard):
     # Override pop to restore the flag state
     def pop(self) -> chess.Move:
         """Pops a move and restores the piece tracker state and possibility flag."""
+        # If the last action was a foul (no move applied), just clear the flag and return a null move
+        if self.foul:
+            self.foul = False
+            return chess.Move.null()
+
         move = super().pop()
         if self._piece_tracker_stack:
             # Restore both tracker and flag state

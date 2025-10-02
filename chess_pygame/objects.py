@@ -155,21 +155,21 @@ class Piece:
         # Handle castling
         if isinstance(self, King):
             if movable == "White_Queen_Side_Castling":
-                board.move(0, 7, 3, 7)
-                board.board[7][3].p_x = 3
-                board.board[7][3].p_y = 7
+                board.move(0, y2, 3, y2)
+                board.board[y2][3].p_x = 3
+                board.board[y2][3].p_y = y2
             elif movable == "Black_Queen_Side_Castling":
-                board.move(0, 0, 3, 0)
-                board.board[0][3].p_x = 3
-                board.board[0][3].p_y = 0
+                board.move(0, y2, 3, y2)
+                board.board[y2][3].p_x = 3
+                board.board[y2][3].p_y = y2
             elif movable == "White_King_Side_Castling":
-                board.move(7, 7, 5, 7)
-                board.board[7][5].p_x = 5
-                board.board[7][5].p_y = 7
+                board.move(7, y2, 5, y2)
+                board.board[y2][5].p_x = 5
+                board.board[y2][5].p_y = y2
             elif movable == "Black_King_Side_Castling":
-                board.move(7, 0, 5, 0)
-                board.board[0][5].p_x = 5
-                board.board[0][5].p_y = 0
+                board.move(7, y2, 5, y2)
+                board.board[y2][5].p_x = 5
+                board.board[y2][5].p_y = y2
 
         # Update moved status for castling eligibility
         if isinstance(self, (Rook, King)):
