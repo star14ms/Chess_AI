@@ -56,7 +56,7 @@ class ResidualConvBlock(nn.Module):
             self.conv_blocks.append(ConvBlock(channel_list[i], channel_list[i+1], kernel_size, padding))
 
         self.last_block = nn.Sequential(
-            nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=1, padding=0, bias=True),
+            nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=3, padding=1, bias=True),
             nn.BatchNorm2d(channel_list[-1])
         )
 
@@ -116,11 +116,11 @@ class PolicyHead(nn.Module):
         self.action_space_size = action_space_size
         
         # Residual conv stack for policy head
-        self.final_channels = 2
-        self.conv = ConvBlock(in_channels, self.final_channels, kernel_size=1, padding=0)
+        final_channels = 2
+        self.conv = ConvBlock(in_channels, final_channels, kernel_size=1, padding=0)
 
         # Build fully connected stack after conv features using provided out_features
-        in_features = self.final_channels * vec_height * vec_width
+        in_features = final_channels * vec_height * vec_width
         if not all(isinstance(f, int) and f > 0 for f in linear_out_features):
             raise ValueError(f"All elements of linear_out_features must be positive integers: {linear_out_features}")
         if linear_out_features[-1] != action_space_size:
@@ -148,22 +148,19 @@ class ValueHead(nn.Module):
         super().__init__()
         # Input channels = C
         # Use a 1x1 Conv block to reduce channels to 1
-        self.value_conv = ConvBlock(num_channels, 1, kernel_size=1, padding=0) 
+        self.conv = ConvBlock(num_channels, 1, kernel_size=1, padding=0) 
         value_input_size = 1 * board_height * board_width 
-        self.value_fc1 = nn.Linear(value_input_size, hidden_size)
-        self.value_fc2 = nn.Linear(hidden_size, 1)
+        self.fc1 = nn.Linear(value_input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, 1)
 
-    def forward(self, conv_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Input shape: (N, C, H, W)
         # Apply 1x1 ConvBlock (returns 3D: N, H*W, 1)
-        value_x_3d = self.value_conv(conv_features)
-        
-        N = value_x_3d.size(0)
-        value_x = value_x_3d.view(N, -1) # Shape: (N, H*W * 1)
-        
-        value_x = F.relu(self.value_fc1(value_x))
-        value = torch.tanh(self.value_fc2(value_x)) # Shape: (N, 1)
-        return value
+        x = self.conv(x)
+        x = x.view(x.size(0), -1) # Shape: (N, H*W * 1)
+        x = F.relu(self.fc1(x))
+        x = torch.tanh(self.fc2(x)) # Shape: (N, 1)
+        return x
 
 # --- Main Chess Network --- 
 class ChessNetwork4672(nn.Module):
