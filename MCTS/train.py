@@ -219,7 +219,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 action_space_mode=action_space_mode,
                 history_steps=cfg.env.history_steps
             )
-            mcts_player.search(root_node, mcts_iterations, progress=progress)
+            mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
             action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1 # +1 because actions are 1-indexed
         else:
@@ -415,17 +415,9 @@ def run_training_loop(cfg: DictConfig) -> None:
             checkpoint = torch.load(checkpoint_path, map_location=device)
             network.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_iter = checkpoint['iteration']
-            progress.print(f"Successfully loaded checkpoint from iteration {start_iter}")
-            # Seed cumulative games if present
-            try:
-                total_games_simulated = int(checkpoint.get('total_games_simulated', 0))
-            except Exception:
-                total_games_simulated = 0
-            if total_games_simulated:
-                progress.print(
-                    f"Resuming with total_games_simulated={total_games_simulated}"
-                )
+            start_iter = int(checkpoint.get('iteration', 0))
+            total_games_simulated = int(checkpoint.get('total_games_simulated', 0))
+            progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated")
         except Exception as e:
             progress.print(f"Error loading checkpoint: {e}")
             progress.print("Starting training from scratch...")

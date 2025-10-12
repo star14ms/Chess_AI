@@ -27,6 +27,7 @@ class MCTSConfig:
     temperature_decay_moves: int = 30
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
+    batch_size: int = 1  # Number of leaves to evaluate in one batched network call
 
 @dataclass
 class OptimizerConfig:

@@ -45,6 +45,7 @@ mcts:
   temperature_start: 1.0
   temperature_end: 0.1
   temperature_decay_moves: 30
+  batch_size: 8  # Number of leaves to evaluate in one batched network call
 
 optimizer:
   _target_: MCTS.config_schema.OptimizerConfig

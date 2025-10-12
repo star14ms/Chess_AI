@@ -39,6 +39,20 @@ class MCTS:
         self.history_steps = max(1, int(history_steps))
         self.network.eval()
 
+    # --- Virtual Loss Helpers ---
+
+    def _apply_virtual_loss(self, search_path: List[MCTSNode], virtual_loss: float = 1.0):
+        """Applies virtual loss to all nodes in search_path to discourage parallel selection."""
+        for node in search_path:
+            node.N += virtual_loss
+            node.W -= virtual_loss  # Pessimistic value
+
+    def _remove_virtual_loss(self, search_path: List[MCTSNode], virtual_loss: float = 1.0):
+        """Removes virtual loss from all nodes in search_path before real backprop."""
+        for node in search_path:
+            node.N -= virtual_loss
+            node.W += virtual_loss
+
     # --- MCTS Phases ---
 
     def _select(self, root_node: MCTSNode) -> Tuple[MCTSNode, List[MCTSNode]]:
@@ -130,6 +144,79 @@ class MCTS:
                     leaf_node.children[action_id] = child_node
                 except Exception as e:
                     print(f"Error during MCTS board.push expansion for action_id {action_id} from FEN {leaf_board.fen()}: {e}")
+
+    # --- Helper Methods for Batched MCTS ---
+
+    def _get_terminal_value(self, leaf_node: MCTSNode) -> float:
+        """Returns value for terminal node (1.0, -1.0, or 0.0)."""
+        leaf_board = leaf_node.get_board()
+        result_str = leaf_board.result(claim_draw=True)
+        if result_str == "1-0":
+            return 1.0
+        elif result_str == "0-1":
+            return -1.0
+        else:
+            return 0.0  # Draw
+
+    def _prepare_observation(self, leaf_node: MCTSNode) -> torch.Tensor:
+        """Prepares observation tensor for a leaf node. Returns None if terminal."""
+        leaf_board = leaf_node.get_board()
+        if leaf_board.is_game_over(claim_draw=True):
+            return None
+        steps = getattr(self.env, 'history_steps', None) if self.env is not None else None
+        if steps is None:
+            steps = self.history_steps
+        obs_vector = leaf_board.get_board_vector(history_steps=steps)
+        obs_tensor = torch.tensor(obs_vector, dtype=torch.float32, device=self.device)
+        return obs_tensor
+
+    def _expand_node_with_policy(self, leaf_node: MCTSNode, policy_logits: torch.Tensor):
+        """Expands a node using policy logits (handles Dirichlet noise)."""
+        leaf_board = leaf_node.get_board()
+        # Calculate Probabilities (mask illegal moves before softmax)
+        legal_actions = list(leaf_board.legal_actions)
+        masked_logits = policy_logits.clone()
+        masked_logits[:] = float('-inf')
+        for aid in legal_actions:
+            idx = aid - 1
+            if 0 <= idx < masked_logits.shape[0]:
+                masked_logits[idx] = policy_logits[idx]
+        full_probs = F.softmax(masked_logits, dim=0)
+        use_uniform_fallback = False
+        uniform_prob = 0.0
+        if torch.isnan(full_probs).any():
+            num_legal_actions = len(legal_actions)
+            uniform_prob = 1.0 / num_legal_actions if num_legal_actions > 0 else 0.0
+            use_uniform_fallback = True
+
+        probs_to_use = full_probs
+        # Add Dirichlet Noise (only if root node)
+        if leaf_node.parent is None and not use_uniform_fallback:
+            num_legal = len(legal_actions)
+            if num_legal > 1:
+                legal_indices = []
+                legal_probs = []
+                for action_id in legal_actions:
+                    if action_id is not None:
+                        idx = action_id - 1
+                        if 0 <= idx < full_probs.shape[0]:
+                            legal_indices.append(idx)
+                            legal_probs.append(full_probs[idx].item())
+                if legal_indices:
+                    noise = np.random.dirichlet([self.dirichlet_alpha] * len(legal_indices))
+                    noise_t = torch.tensor(noise, device=self.device, dtype=torch.float32)
+                    legal_probs_t = torch.tensor(legal_probs, device=self.device, dtype=torch.float32)
+                    combined = (1 - self.dirichlet_epsilon) * legal_probs_t + self.dirichlet_epsilon * noise_t
+                    probs_to_use = full_probs.clone()
+                    indices_t = torch.tensor(legal_indices, dtype=torch.long, device=self.device)
+                    probs_to_use[indices_t] = combined
+
+        # Dispatch to appropriate expansion method
+        if self.env is not None:
+            self._expand_sequential(leaf_node, probs_to_use, uniform_prob, use_uniform_fallback)
+        else:
+            self._expand_parallel(leaf_node, probs_to_use, uniform_prob, use_uniform_fallback)
+        leaf_node.is_expanded = True
 
     # --- Main Expansion & Evaluation Method ---
 
@@ -228,8 +315,66 @@ class MCTS:
             node.N += 1
             node.W += current_node_perspective_value
 
+    # --- Batched Search Method ---
+    def _search_batched(self, root_node: MCTSNode, batch_size: int) -> int:
+        """Performs batch_size MCTS simulations in one batched network call.
+        
+        Returns the number of simulations actually performed (may be < batch_size if terminal nodes).
+        """
+        # Phase 1: SELECT - Collect batch_size leaf nodes with virtual loss
+        leaves = []
+        paths = []
+        for _ in range(batch_size):
+            leaf, path = self._select(root_node)
+            leaves.append(leaf)
+            paths.append(path)
+            self._apply_virtual_loss(path, virtual_loss=1.0)
+
+        # Phase 2: PREPARE - Prepare observations, track terminals
+        obs_tensors = []
+        obs_indices = []  # Maps batch index to leaf index
+        terminal_values = {}  # leaf_idx -> value
+        for i, leaf in enumerate(leaves):
+            if not leaf.is_expanded:
+                leaf_board = leaf.get_board()
+                if leaf_board.is_game_over(claim_draw=True):
+                    terminal_values[i] = self._get_terminal_value(leaf)
+                    leaf.is_expanded = True
+                else:
+                    obs_t = self._prepare_observation(leaf)
+                    if obs_t is not None:
+                        obs_tensors.append(obs_t)
+                        obs_indices.append(i)
+
+        # Phase 3: EVALUATE - Batched network call for non-terminals
+        policy_logits_batch = None
+        value_preds_batch = None
+        if obs_tensors:
+            obs_batch = torch.stack(obs_tensors, dim=0)  # (B, C, H, W)
+            with torch.no_grad():
+                policy_logits_batch, value_preds_batch = self.network(obs_batch)
+
+        # Phase 4: EXPAND & BACKPROP - Remove virtual loss, expand, backprop
+        for i, (leaf, path) in enumerate(zip(leaves, paths)):
+            self._remove_virtual_loss(path, virtual_loss=1.0)
+            if i in terminal_values:
+                value = terminal_values[i]
+            elif i in obs_indices:
+                batch_idx = obs_indices.index(i)
+                policy_logits = policy_logits_batch[batch_idx]
+                value = value_preds_batch[batch_idx].item()
+                if not leaf.is_expanded:
+                    self._expand_node_with_policy(leaf, policy_logits)
+            else:
+                # Already expanded; use 0 value (shouldn't happen often)
+                value = 0.0
+            leaf_turn = leaf.get_board().turn
+            self._backpropagate(path, value, leaf_turn)
+
+        return len(leaves)
+
     # --- Main Search Function ---
-    def search(self, root_node: MCTSNode, iterations: int, progress: Progress | None = None):
+    def search(self, root_node: MCTSNode, iterations: int, batch_size: int = 1, progress: Progress | None = None):
         
         if self.env is not None:
             root_fen = self.env.board.fen()
@@ -241,19 +386,30 @@ class MCTS:
             mcts_task_id = progress.add_task(f"  ├─ MCTS Sims (0/{iterations})", total=iterations, transient=True, start=False)
             progress.start_task(mcts_task_id)
 
-        for i in range(iterations):
-            # Phase 1: Selection
-            leaf_node, search_path = self._select(root_node)
+        if batch_size > 1:
+            # Batched search path
+            sims_done = 0
+            while sims_done < iterations:
+                actual_batch = min(batch_size, iterations - sims_done)
+                performed = self._search_batched(root_node, actual_batch)
+                sims_done += performed
+                if mcts_task_id is not None and progress is not None:
+                    progress.update(mcts_task_id, advance=performed, description=f"  ├─ MCTS Sims ({sims_done}/{iterations})")
+        else:
+            # Sequential search path (original logic)
+            for i in range(iterations):
+                # Phase 1: Selection
+                leaf_node, search_path = self._select(root_node)
 
-            # Phase 2: Expansion & Evaluation
-            value = self._expand_and_evaluate(leaf_node)
+                # Phase 2: Expansion & Evaluation
+                value = self._expand_and_evaluate(leaf_node)
 
-            # Phase 4: Backpropagation
-            leaf_node_turn = leaf_node.get_board().turn
-            self._backpropagate(search_path, value, leaf_node_turn)
+                # Phase 4: Backpropagation
+                leaf_node_turn = leaf_node.get_board().turn
+                self._backpropagate(search_path, value, leaf_node_turn)
 
-            if mcts_task_id is not None and progress is not None:
-                 progress.update(mcts_task_id, advance=1, description=f"  ├─ MCTS Sims ({i+1}/{iterations})")
+                if mcts_task_id is not None and progress is not None:
+                     progress.update(mcts_task_id, advance=1, description=f"  ├─ MCTS Sims ({i+1}/{iterations})")
 
         if mcts_task_id is not None and progress is not None:
             progress.stop_task(mcts_task_id)
