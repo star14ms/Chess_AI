@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 from collections import deque
 import os
+import gc
 import time
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
 import hydra
@@ -46,18 +47,24 @@ def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
         raise ValueError(f"Unsupported environment type: {cfg.env.type}")
 
 # Helper function for parallel execution (module scope for pickling)
-def self_play_worker(game_idm , network_state_dict, cfg: DictConfig, device_str: str):
+def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: str):
     """Worker function to run a single self-play game."""
     # Ensure factories are initialized inside spawned workers
     initialize_factories_from_cfg(cfg)
     # Determine device for this worker
     device = torch.device(device_str)
+    # Ensure correct CUDA device context in worker
+    if device.type == 'cuda':
+        try:
+            torch.cuda.set_device(device)
+        except Exception:
+            pass
 
     # Re-initialize Network in the worker process
     if cfg.mcts.iterations > 0:
         network = create_network(cfg, device)
         network.load_state_dict(network_state_dict)
-        network.eval() # Ensure it's in eval mode
+        network.to(device).eval() # Ensure it's on the correct device and in eval mode
     else:
         network = None
 
@@ -238,7 +245,14 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     if use_multiprocessing_flag and num_workers > 1:
         device = "cpu"
-        progress.print(f"Using {num_workers} workers for self-play (out of {total_cores} CPU cores),", log_str_trining_device)
+        # Describe mixed actors plan
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            cpu_workers = max(0, num_workers - min(gpu_count, max(0, num_workers - 1))) if num_workers > 1 else num_workers
+            gpu_workers = min(gpu_count, max(0, num_workers - 1)) if num_workers > 1 else 0
+            progress.print(f"Using {num_workers} workers for self-play: {gpu_workers} GPU actor(s), {cpu_workers} CPU actor(s)")
+        else:
+            progress.print(f"Using {num_workers} CPU workers for self-play (no GPUs detected)")
     else:
         use_multiprocessing_flag = False
         progress.print(f"Using {device} for self-play, {log_str_trining_device}")
@@ -337,17 +351,31 @@ def run_training_loop(cfg: DictConfig) -> None:
             # Prepare arguments for workers
             # Pass network state_dict directly since it's clean
             network_state_dict = network.state_dict()
-            device_str = 'cpu' # Pass device as string
-            # Pack arguments into tuples for the wrapper function
-            worker_args_packed = [
-                (game_num, network_state_dict, cfg, device_str)
-                for game_num in range(cfg.training.self_play_games_per_epoch)
-            ]
+            # --- Mixed actors device assignment (GPU + CPU) ---
+            available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            desired_processes = max(1, num_workers)
+            device_pool = []
+            # Prefer to keep at least one CPU actor when we have multiple processes
+            gpu_slots = min(available_gpus, max(0, desired_processes - 1)) if desired_processes > 1 else 0
+            for g in range(gpu_slots):
+                device_pool.append(f"cuda:{g}")
+            # Fill remaining slots with CPU actors
+            while len(device_pool) < desired_processes:
+                device_pool.append('cpu')
+
+            if not device_pool:
+                device_pool = ['cpu']
+
+            # Distribute games round-robin across devices
+            worker_args_packed = []
+            for game_num in range(cfg.training.self_play_games_per_epoch):
+                device_str = device_pool[game_num % len(device_pool)]
+                worker_args_packed.append((game_num, network_state_dict, cfg, device_str))
 
             pool = None # Initialize pool to None
             try:
                 # Use 'spawn' context for better compatibility across platforms, especially with CUDA/PyTorch
-                pool = multiprocessing.get_context("spawn").Pool(processes=num_workers)
+                pool = multiprocessing.get_context("spawn").Pool(processes=len(device_pool))
                 # progress.print(f"Submitting {len(worker_args_packed)} games to pool...")
 
                 # Use imap_unordered to get results as they complete
@@ -393,6 +421,15 @@ def run_training_loop(cfg: DictConfig) -> None:
                     pool.close()
                     pool.join()
 
+                # Cleanup GPU caches after self-play workers
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.synchronize()
+                    except Exception:
+                        pass
+                    torch.cuda.empty_cache()
+                gc.collect()
+
         else: # Sequential Execution
             task_id_selfplay = progress.add_task("Self-Play", total=cfg.training.self_play_games_per_epoch)
             # Use values from cfg
@@ -424,6 +461,15 @@ def run_training_loop(cfg: DictConfig) -> None:
                 progress.update(task_id_selfplay, advance=1)
             progress.update(task_id_selfplay, visible=False)
 
+            # Cleanup GPU caches after sequential self-play
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
+            gc.collect()
+
         # Add collected data to replay buffer (outside the conditional block)
         for experience in games_data_collected:
             replay_buffer.add(experience)
@@ -433,6 +479,14 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.print(f"Self-play results: White Wins: {num_wins}, Black Wins: {num_losses}, Draws: {num_draws}")
 
         # --- Training Phase ---
+        # Cleanup and prep GPU before training
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+            torch.cuda.empty_cache()
+        gc.collect()
         if len(replay_buffer) < cfg.training.batch_size:
             progress.print("Not enough data in buffer to start training. Skipping phase.")
             continue
