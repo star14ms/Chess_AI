@@ -81,6 +81,16 @@ class MoveSpace(spaces.Space):
                     if 0 <= end_file < 8 and 0 <= end_rank < 8:
                         start_sq = chess.square_name(square)
                         end_sq = chess.square_name(chess.square(end_file, end_rank))
+                        # If moving piece is a pawn and reaches last rank with a single-step pawn move, auto-queen
+                        moving_piece = self.board.piece_at(square)
+                        if moving_piece is not None and moving_piece.piece_type == chess.PAWN:
+                            if self.board.turn == chess.WHITE:
+                                is_promo_push = (chess.square_rank(square) == 6 and end_rank == 7)
+                            else:
+                                is_promo_push = (chess.square_rank(square) == 1 and end_rank == 0)
+                            is_one_step_pawn_move = (end_file == start_file and abs(end_rank - start_rank) == 1) or (abs(end_file - start_file) == 1 and abs(end_rank - start_rank) == 1)
+                            if is_promo_push and is_one_step_pawn_move:
+                                return chess.Move.from_uci(f"{start_sq}{end_sq}q")
                         return chess.Move.from_uci(f"{start_sq}{end_sq}")
                     else:
                         return chess.Move.null()
@@ -189,13 +199,15 @@ class MoveSpace(spaces.Space):
                     if file_change == df and rank_change == dr:
                         rel_action = 56 + idx
                         return start_sq * 73 + rel_action + 1
-                # Promotions (underpromotions only in 4672 mapping)
+                # Promotions (encode underpromotions to 64-72; encode queen promotions via queen-like indices)
                 if move.promotion is not None:
                     promo_piece = move.promotion.symbol().lower()
-                    # Only underpromotions are encoded here: knight, bishop, rook
+                    # Underpromotions are encoded in 64-72; queen promotions use queen-like mapping above
                     under_map = {'n': 0, 'b': 1, 'r': 2}
                     if promo_piece not in under_map:
-                        # Not an underpromotion (likely queen); not encodable in 4672 underpromo slots
+                        # Treat as queen promotion; fall through to queen-like encoding by not returning here
+                        # If move matches queen-like delta, it was already returned above.
+                        # If not matched, mark invalid.
                         return -1
                     # Determine direction
                     if self.board.turn == chess.WHITE:

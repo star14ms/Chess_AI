@@ -862,15 +862,18 @@ def get_absolute_action_id_4672(
     file_change = chess.square_file(end_sq) - chess.square_file(start_sq)
     rank_change = chess.square_rank(end_sq) - chess.square_rank(start_sq)
     
-    # Handle promotions (underpromotions only in 4672 mapping)
+    # Handle promotions: underpromotions use 65-73; queen promotions fall back to queen-like indices
     if len(uci) == 5:
         promo_char = uci[4].lower()
-        if promo_char not in ['n', 'b', 'r']:
+        if promo_char in ['n', 'b', 'r']:
+            # Promotion moves are encoded as 65-73 using N (65-67), B (68-70), R (71-73)
+            promo_offset = {'n': 65, 'b': 68, 'r': 71}[promo_char]
+            return base_id + promo_offset - 1  # Subtract 1 because base_id is 1-based
+        elif promo_char == 'q':
+            # Fall through to queen-like mapping below (treat as normal direction/distance)
+            pass
+        else:
             return None
-            
-        # Promotion moves are encoded as 65-73 using N (65-67), B (68-70), R (71-73)
-        promo_offset = {'n': 65, 'b': 68, 'r': 71}[promo_char]
-        return base_id + promo_offset - 1  # Subtract 1 because base_id is 1-based
     
     # Note: Castling is represented as a standard king move (E/W by 2 squares)
     # and therefore falls under the queen-like move encoding below.
