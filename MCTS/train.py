@@ -666,11 +666,11 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_samples_in_iteration = 0
 
         task_id_train = progress.add_task(
-            "Training Epochs", total=cfg.training.training_epochs,
+            "Training Epochs", total=cfg.training.num_training_steps,
             loss_p=float('nan'), loss_v=float('nan'), illegal_r=float('nan'), illegal_p=float('nan')
         )
         # Use values from cfg
-        for epoch in range(cfg.training.training_epochs):
+        for epoch in range(cfg.training.num_training_steps):
             batch = replay_buffer.sample(cfg.training.batch_size)
             if batch is None: continue
 
@@ -736,8 +736,8 @@ def run_training_loop(cfg: DictConfig) -> None:
             )
         progress.update(task_id_train, visible=False)
 
-        avg_policy_loss = total_policy_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
-        avg_value_loss = total_value_loss / cfg.training.training_epochs if cfg.training.training_epochs > 0 else 0
+        avg_policy_loss = total_policy_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
+        avg_value_loss = total_value_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
         avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
         progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%}")
         iteration_duration = int(time.time() - iteration_start_time)

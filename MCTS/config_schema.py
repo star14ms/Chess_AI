@@ -49,7 +49,7 @@ class TrainingConfig:
     device: str = "auto" # auto, cuda, mps, cpu
     replay_buffer_size: int = 50000
     num_training_iterations: int = 1000
-    training_epochs: int = 10 # Renamed from training_steps_per_iteration for clarity
+    num_training_steps: int = 10 # Renamed from training_steps_per_iteration for clarity
     batch_size: int = 128
     use_multiprocessing: bool = True # Flag to enable/disable multiprocessing for self-play
     self_play_workers: int = 0 # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).

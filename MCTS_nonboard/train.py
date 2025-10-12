@@ -237,11 +237,11 @@ def train(cfg: DictConfig):
         total_policy_loss = 0.0
         total_value_loss = 0.0
         task_id_train = progress.add_task(
-            f"Training", total=cfg.training.training_epochs,
+            f"Training", total=cfg.training.num_training_steps,
             loss_p=float('nan'), loss_v=float('nan')
         )
 
-        for epoch in range(cfg.training.training_epochs):
+        for epoch in range(cfg.training.num_training_steps):
             batch = replay_buffer.sample(cfg.training.batch_size)
             if batch is None:
                 continue
