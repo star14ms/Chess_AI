@@ -159,7 +159,32 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             )
             mcts_player.search(root_node, mcts_iterations, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
-            action_to_take = mcts_player.get_best_action(root_node, temperature=temperature)
+            # Prefer a move that does not allow claiming a repetition draw immediately
+            legal_actions = get_legal_actions(env.board)
+            # Sort legal actions by MCTS policy probability (desc)
+            candidate_actions = sorted(
+                (aid for aid in legal_actions if 1 <= aid <= len(mcts_policy)),
+                key=lambda aid: mcts_policy[aid - 1],
+                reverse=True
+            )
+            action_to_take = None
+            for aid in candidate_actions:
+                try:
+                    sim_board = env.board.copy()
+                    move = sim_board.action_id_to_move(aid)
+                    if move is None:
+                        continue
+                    sim_board.push(move)
+                    # Skip moves that would allow claiming a repetition draw immediately
+                    if sim_board.is_fivefold_repetition() or sim_board.is_repetition(3) or sim_board.can_claim_threefold_repetition():
+                        continue
+                    action_to_take = aid
+                    break
+                except Exception:
+                    # If simulation fails for this move, skip it
+                    continue
+            if action_to_take is None:
+                action_to_take = mcts_player.get_best_action(root_node, temperature=temperature)
         else:
             mcts_policy = np.zeros(cfg.network.action_space_size)
             legal_actions = get_legal_actions(env.board)
