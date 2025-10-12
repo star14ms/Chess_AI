@@ -299,13 +299,17 @@ class LegacyChessBoard(BaseChessBoard):
         """
         Generates a 119x8x8 numpy array following AlphaZero-style input planes.
 
-        Layout: 112 history planes (8 steps × [6 own + 6 opp + 1 repetition + 1 color])
-                + 7 constant meta planes (current color, 4 castling rights, halfmove/100, bias).
+        Layout: 112 history planes (8 steps × [6 own + 6 opp + 2 repetition])
+                + 7 constant meta planes:
+                  - current player color (1 for white to move, -1 for black)
+                  - total move count normalized (fullmove number scaled to [0,1])
+                  - castling rights: WK, WQ, BK, BQ (1 if legal else 0)
+                  - halfmove clock normalized by 100 (number of moves without progress)
         """
         # Validate history_steps (minimum 1)
         HISTORY_STEPS = max(1, int(history_steps))
-        PLANES_PER_STEP = 14  # 6 own + 6 opp + 1 repetition + 1 color
-        TOTAL_CHANNELS = HISTORY_STEPS * PLANES_PER_STEP + 7  # = 119
+        PLANES_PER_STEP = 14  # 6 own + 6 opp + 2 repetition
+        TOTAL_CHANNELS = HISTORY_STEPS * PLANES_PER_STEP + 7  # = 119 (14 * 8 (default history steps) + 7 (meta planes))
 
         obs = np.zeros((TOTAL_CHANNELS, 8, 8), dtype=np.float32)
 
@@ -348,15 +352,16 @@ class LegacyChessBoard(BaseChessBoard):
             snapshots.extend([(oldest_turn, oldest_pieces)] * repeat_times)
             history_keys.extend([oldest_key] * repeat_times)
 
-        # --- Compute repetition flags per step (backward order) ---
-        # For step i, flag = 1 if same rep_key appears in any earlier position in the game
-        # In backward order, that means presence in history_keys[i+1:]
-        repetition_flags = [0] * HISTORY_STEPS
-        seen_suffix: set[str] = set()
+        # --- Compute repetition counts per step (backward order) ---
+        # For step i, count = occurrences of the same rep_key in any earlier position (i+1..end)
+        # We cap the count at 2 to form two binary repetition planes (==1) and (>=2)
+        repetition_counts = [0] * HISTORY_STEPS
+        seen_counts: dict[str, int] = {}
         for i in range(HISTORY_STEPS - 1, -1, -1):
             key = history_keys[i]
-            repetition_flags[i] = 1 if key in seen_suffix else 0
-            seen_suffix.add(key)
+            count_in_suffix = seen_counts.get(key, 0)
+            repetition_counts[i] = 2 if count_in_suffix >= 2 else count_in_suffix
+            seen_counts[key] = count_in_suffix + 1
 
         # --- Fill history planes ---
         ch = 0
@@ -375,18 +380,20 @@ class LegacyChessBoard(BaseChessBoard):
 
             ch += 12
 
-            # Repetition count plane (all 1s if occurred before, else 0s)
-            if repetition_flags[step_idx]:
-                obs[ch, :, :] = 1.0
-            ch += 1
-
-            # Color plane for this step: 1 for white to move, -1 for black to move
-            obs[ch, :, :] = 1.0 if turn_is_white else -1.0
-            ch += 1
+            # Repetition planes: exactly once before (==1) and twice-or-more before (>=2)
+            rep_count = repetition_counts[step_idx]
+            obs[ch, :, :] = 1.0 if rep_count == 1 else 0.0; ch += 1
+            obs[ch, :, :] = 1.0 if rep_count >= 2 else 0.0; ch += 1
 
         # --- Constant meta planes (for current position self) ---
         current_white_to_move = (self.turn == chess.WHITE)
         obs[ch, :, :] = 1.0 if current_white_to_move else -1.0  # current player color
+        ch += 1
+
+        # Total move count (fullmove number) normalized to [0,1]
+        # Use a conservative scale to keep values in range during typical games
+        fullmove_norm = min(float(self.fullmove_number) / 200.0, 1.0)
+        obs[ch, :, :] = fullmove_norm
         ch += 1
 
         # Castling rights (WK, WQ, BK, BQ)
@@ -397,10 +404,6 @@ class LegacyChessBoard(BaseChessBoard):
 
         # Halfmove clock normalized by 100 (for 50-move rule)
         obs[ch, :, :] = float(self.halfmove_clock) / 100.0
-        ch += 1
-
-        # Bias plane (all ones)
-        obs[ch, :, :] = 1.0
         ch += 1
 
         # Sanity check: ch should equal TOTAL_CHANNELS

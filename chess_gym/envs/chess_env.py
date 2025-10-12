@@ -102,16 +102,14 @@ class MoveSpace(spaces.Space):
                         return chess.Move.from_uci(f"{start_sq}{end_sq}")
                     else:
                         return chess.Move.null()
-                # 64-72: Promotions (3 directions × 3 pieces)
+                # 64-72: Promotions (3 directions × 3 underpromotions)
                 elif 64 <= relative_action <= 72:
-                    # Promotion mapping:
-                    # 0: forward to Q, 1: left-capture to Q, 2: right-capture to Q
-                    # 3: forward to R, 4: left-capture to R, 5: right-capture to R
-                    # 6: forward to B, 7: left-capture to B, 8: right-capture to B
+                    # Underpromotion mapping (N, B, R) across directions (Forward, Left, Right)
+                    # Indexing 0..8 -> (direction, promo_char)
                     promo_map = [
-                        (0, 'q'), (1, 'q'), (2, 'q'),
-                        (0, 'r'), (1, 'r'), (2, 'r'),
-                        (0, 'n'), (1, 'n'), (2, 'n')
+                        (0, 'n'), (1, 'n'), (2, 'n'),
+                        (0, 'b'), (1, 'b'), (2, 'b'),
+                        (0, 'r'), (1, 'r'), (2, 'r')
                     ]
                     promo_idx = relative_action - 64
                     direction, promo_char = promo_map[promo_idx]
@@ -130,9 +128,9 @@ class MoveSpace(spaces.Space):
                         if direction == 0:
                             end_file = start_file
                         elif direction == 1:
-                            end_file = start_file + 1
+                            end_file = start_file + 1  # For black, "left" from white's POV is file+1
                         else:
-                            end_file = start_file - 1
+                            end_file = start_file - 1  # For black, "right" from white's POV is file-1
                     if 0 <= end_file < 8:
                         start_sq = chess.square_name(square)
                         end_sq = chess.square_name(chess.square(end_file, end_rank))
@@ -191,12 +189,14 @@ class MoveSpace(spaces.Space):
                     if file_change == df and rank_change == dr:
                         rel_action = 56 + idx
                         return start_sq * 73 + rel_action + 1
-                # Promotions
+                # Promotions (underpromotions only in 4672 mapping)
                 if move.promotion is not None:
                     promo_piece = move.promotion.symbol().lower()
-                    promo_map = {'q': 0, 'r': 1, 'n': 2}
-                    if promo_piece not in promo_map:
-                        raise ValueError(f"Unsupported promotion piece: {promo_piece}")
+                    # Only underpromotions are encoded here: knight, bishop, rook
+                    under_map = {'n': 0, 'b': 1, 'r': 2}
+                    if promo_piece not in under_map:
+                        # Not an underpromotion (likely queen); not encodable in 4672 underpromo slots
+                        return -1
                     # Determine direction
                     if self.board.turn == chess.WHITE:
                         if chess.square_file(end_sq) == chess.square_file(start_sq):
@@ -209,11 +209,12 @@ class MoveSpace(spaces.Space):
                         if chess.square_file(end_sq) == chess.square_file(start_sq):
                             direction = 0  # forward
                         elif chess.square_file(end_sq) > chess.square_file(start_sq):
-                            direction = 1  # left-capture
+                            direction = 1  # left-capture (from mover's POV)
                         else:
-                            direction = 2  # right-capture
-                    # Promotion action index: 64 + (promo_piece * 3) + direction
-                    promo_piece_idx = {'q': 0, 'r': 1, 'n': 2}[promo_piece]
+                            direction = 2  # right-capture (from mover's POV)
+                    # Promotion action index: 64 + (piece_group * 3) + direction
+                    # piece_group order: N (0), B (1), R (2)
+                    promo_piece_idx = under_map[promo_piece]
                     rel_action = 64 + promo_piece_idx * 3 + direction
                     return start_sq * 73 + rel_action + 1
                 # If not found, return invalid

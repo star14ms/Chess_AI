@@ -862,14 +862,14 @@ def get_absolute_action_id_4672(
     file_change = chess.square_file(end_sq) - chess.square_file(start_sq)
     rank_change = chess.square_rank(end_sq) - chess.square_rank(start_sq)
     
-    # Handle promotions (part of queen's move types)
+    # Handle promotions (underpromotions only in 4672 mapping)
     if len(uci) == 5:
         promo_char = uci[4].lower()
-        if promo_char not in ['q', 'n', 'b', 'r']:
+        if promo_char not in ['n', 'b', 'r']:
             return None
             
-        # Promotion moves are encoded as 65-73
-        promo_offset = {'q': 65, 'n': 66, 'b': 67, 'r': 68}[promo_char]
+        # Promotion moves are encoded as 65-73 using N (65-67), B (68-70), R (71-73)
+        promo_offset = {'n': 65, 'b': 68, 'r': 71}[promo_char]
         return base_id + promo_offset - 1  # Subtract 1 because base_id is 1-based
     
     # Note: Castling is represented as a standard king move (E/W by 2 squares)
@@ -1055,8 +1055,9 @@ def interpret_action_4672(action_id: int) -> Optional[Dict[str, Union[str, int, 
             return None
             
     elif 65 <= relative_action <= 73:
-        # Promotions (3 moves × 3 underpromotions)
-        promo_types = ['q', 'n', 'b']  # Queen, Knight, Bishop underpromotions
+        # Promotions (3 directions × 3 underpromotions)
+        # Order: N (65-67), B (68-70), R (71-73)
+        promo_types = ['n', 'b', 'r']
         move_directions = ["forward", "left", "right"]
         
         promo_idx = (relative_action - 65) // 3
@@ -1082,9 +1083,9 @@ def interpret_action_4672(action_id: int) -> Optional[Dict[str, Union[str, int, 
             if direction == "forward":
                 end_file = file
             elif direction == "left":
-                end_file = file - 1
+                end_file = file + 1  # From mover's POV, left for black is file+1
             else:  # right
-                end_file = file + 1
+                end_file = file - 1  # From mover's POV, right for black is file-1
         else:
             return None
             
