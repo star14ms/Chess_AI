@@ -30,8 +30,8 @@ network:
   num_pieces: 32
   value_head_hidden_size: 64
   # Policy head structure
-  policy_conv_blocks_channels: [64, 64, 64, 64, 64, 64, 64, 64] # e.g., [128, 128] to stack residual conv blocks in policy head
-  policy_linear_out_features: [256, 4672] # e.g., [1024, 512, 4672]; last must equal action_space_size
+  policy_conv_blocks_channels: [2] # e.g., [128, 128] to stack residual conv blocks in policy head
+  policy_linear_out_features: [4672] # e.g., [1024, 512, 4672]; last must equal action_space_size
   action_space_mode: "4672"  # Use 4672 action space with LegacyChessBoard
 
 # New Env section

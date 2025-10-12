@@ -126,7 +126,7 @@ class PolicyHead(nn.Module):
             if not isinstance(out_ch, int) or out_ch <= 0:
                 raise ValueError(f"Invalid policy conv out_channels at index {i}: {out_ch}")
             self.residual_blocks.append(
-                ResidualConvBlock(channel_list=[current_stage_in_channels, out_ch])
+                ResidualConvBlock(channel_list=[current_stage_in_channels, out_ch], kernel_size=1)
             )
             current_stage_in_channels = out_ch
         self.final_channels = current_stage_in_channels
