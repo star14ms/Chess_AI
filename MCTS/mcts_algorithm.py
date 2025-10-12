@@ -27,7 +27,8 @@ class MCTS:
                  C_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3,
                  dirichlet_epsilon: float = 0.25,
-                 action_space_mode: str = "1700"):  # Add action_space_mode parameter
+                 action_space_mode: str = "1700",
+                 history_steps: int = 8):  # Number of history planes to use when env is None
         self.network = network
         self.device = torch.device(device)
         self.env = env # If None, board.push() will be used for expansion
@@ -35,6 +36,7 @@ class MCTS:
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
         self.action_space_mode = action_space_mode  # Store action space mode
+        self.history_steps = max(1, int(history_steps))
         self.network.eval()
 
     # --- MCTS Phases ---
@@ -151,7 +153,11 @@ class MCTS:
                 # No expansion needed for terminal nodes
             else:
                 # 2. Non-Terminal: Get Network Prediction
-                obs_vector = leaf_board.get_board_vector()
+                # Use env's configured history_steps if available; otherwise fallback to configured value
+                steps = getattr(self.env, 'history_steps', None) if self.env is not None else None
+                if steps is None:
+                    steps = self.history_steps
+                obs_vector = leaf_board.get_board_vector(history_steps=steps)
                 obs_tensor = torch.tensor(obs_vector, dtype=torch.float32, device=self.device).unsqueeze(0)
                 with torch.no_grad():
                     policy_logits, value_pred = self.network(obs_tensor)

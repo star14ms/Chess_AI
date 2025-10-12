@@ -255,6 +255,7 @@ class ChessEnv(gym.Env):
                  show_possible_actions=False, 
                  save_video_folder: Optional[str] = None,
                  action_space_mode: str = "1700",
+                 history_steps: int = 8,
                  **kwargs):
         super(ChessEnv, self).__init__()
 
@@ -273,6 +274,8 @@ class ChessEnv(gym.Env):
         self.observation_mode = observation_mode
         self.render_mode = render_mode
         self.action_space_mode = action_space_mode
+        # History steps for vector observations
+        self.history_steps = max(1, history_steps)
 
         self.chess960 = kwargs.get('chess960', False)
         # --- Board selection logic moved here ---
@@ -298,7 +301,7 @@ class ChessEnv(gym.Env):
             )
         elif observation_mode == 'vector':
             try:
-                vec = self.board.get_board_vector()
+                vec = self.board.get_board_vector(history_steps=self.history_steps)
                 vec_shape = vec.shape
             except Exception:
                 # Fallback to 26x8x8 if board not ready
@@ -346,7 +349,7 @@ class ChessEnv(gym.Env):
             observation = self._get_piece_configuration()
         elif self.observation_mode == 'vector':
             if hasattr(self.board, 'get_board_vector'):
-                observation = self.board.get_board_vector().astype(np.float32, copy=False)
+                observation = self.board.get_board_vector(history_steps=self.history_steps).astype(np.float32, copy=False)
             else:
                 raise AttributeError("Board object does not have method 'get_board_vector'. Required for observation_mode='vector'.")
         else:
@@ -498,7 +501,7 @@ class ChessEnv(gym.Env):
             pygame.quit()
     
     def _get_board_vector(self):
-        return self.board.get_board_vector()
+        return self.board.get_board_vector(history_steps=self.history_steps)
 
     # --- Video Saving Helper ---
     def _save_recorded_video(self):

@@ -25,10 +25,9 @@ def create_chess_network(cfg, device) -> nn.Module:
             conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
             action_space_size=cfg.network.action_space_size,
             num_pieces=cfg.network.num_pieces,
-            policy_head_out_channels=cfg.network.policy_head_out_channels,
             value_head_hidden_size=cfg.network.value_head_hidden_size,
             policy_conv_blocks_channels=cfg.network.policy_conv_blocks_channels,
-            policy_linear_out_features=cfg.network.policy_linear_out_features
+            policy_linear_out_features=cfg.network.policy_linear_out_features,
         ).to(device)
     else:
         network = ChessNetwork(
@@ -50,7 +49,8 @@ def create_chess_env(cfg, render=False) -> ChessEnv:
         observation_mode=cfg.env.observation_mode,
         render_mode=cfg.env.render_mode if render else None,
         save_video_folder=cfg.env.save_video_folder if render else None,
-        action_space_mode=cfg.network.action_space_mode
+        action_space_mode=cfg.network.action_space_mode,
+        history_steps=cfg.env.history_steps
     )
 
 def get_chess_game_result(board: BaseChessBoard) -> float:

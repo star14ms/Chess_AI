@@ -21,7 +21,6 @@ DEFAULT_VALUE_HIDDEN_SIZE = 4
 DEFAULT_POLICY_CONV_BLOCKS_CHANNELS = [32] * 8
 DEFAULT_POLICY_LINEAR_OUT_FEATURES = [4672]
 
-print(DEFAULT_POLICY_CONV_BLOCKS_CHANNELS)
 
 class ConvBlock(nn.Module):
     """A single convolutional block with Conv -> BatchNorm -> ReLU."""

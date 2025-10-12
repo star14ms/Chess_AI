@@ -154,7 +154,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 C_puct=c_puct,
                 dirichlet_alpha=dirichlet_alpha,
                 dirichlet_epsilon=dirichlet_epsilon,
-                action_space_mode=action_space_mode
+                action_space_mode=action_space_mode,
+                history_steps=cfg.env.history_steps
             )
             mcts_player.search(root_node, mcts_iterations, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
