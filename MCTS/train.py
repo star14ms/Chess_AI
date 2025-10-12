@@ -86,7 +86,7 @@ def worker_wrapper(args):
     return self_play_worker(game_id, network_state_dict, cfg, device_str)
 
 # Persistent continual self-play actor
-def continual_self_play_worker(checkpoint_path: str, cfg: DictConfig, device_str: str, out_queue: multiprocessing.queues.Queue, stop_event: multiprocessing.synchronize.Event):
+def continual_self_play_worker(checkpoint_path: str, cfg: DictConfig, device_str: str, out_queue, stop_event):
     initialize_factories_from_cfg(cfg)
     device = torch.device(device_str)
     if device.type == 'cuda':
@@ -265,12 +265,27 @@ def run_training_loop(cfg: DictConfig) -> None:
     # --- Setup ---
     # Ensure factories are initialized in the main process
     initialize_factories_from_cfg(cfg)
-    if cfg.training.device == "auto" or cfg.training.device == "cuda":
-        if cfg.training.device == "cuda" and not torch.cuda.is_available():
+    # Training device selection with auto fallback
+    device_cfg = str(cfg.training.device).lower()
+    if device_cfg == "auto":
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+    elif device_cfg == "cuda":
+        if not torch.cuda.is_available():
             raise ValueError("CUDA is not available")
-        if cfg.training.device == "mps" and not torch.backends.mps.is_available():
+        device = torch.device("cuda")
+    elif device_cfg == "mps":
+        if not (getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()):
             raise ValueError("MPS is not available")
-        device = torch.device("cuda" if cfg.training.device == "cuda" else "mps" if cfg.training.device == "mps" else "cpu")
+        device = torch.device("mps")
+    elif device_cfg == "cpu":
+        device = torch.device("cpu")
+    else:
+        raise ValueError(f"Unsupported training.device: {cfg.training.device}")
     log_str_trining_device = f"{device} for training"
 
     # Print action space mode
@@ -298,40 +313,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress = Progress(transient=False)
         progress.start()
 
-    if continual_enabled:
-        # Launch persistent actors (mixed devices)
-        available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        desired_processes = max(1, num_workers if num_workers > 0 else 1)
-        device_pool = []
-        gpu_slots = min(available_gpus, max(0, desired_processes - 1)) if desired_processes > 1 else 0
-        for g in range(gpu_slots):
-            device_pool.append(f"cuda:{g}")
-        while len(device_pool) < desired_processes:
-            device_pool.append('cpu')
-        for dev in device_pool:
-            p = multiprocessing.get_context("spawn").Process(
-                target=continual_self_play_worker,
-                args=(os.path.join(checkpoint_dir, "model.pth"), cfg, dev, sp_queue, stop_event)
-            )
-            p.daemon = True
-            p.start()
-            actors.append(p)
-        if show_progress:
-            progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
-        # For continual mode, keep training device as configured
-    elif use_multiprocessing_flag and num_workers > 1:
-        device = "cpu"
-        # Describe mixed actors plan
-        if torch.cuda.is_available():
-            gpu_count = torch.cuda.device_count()
-            cpu_workers = max(0, num_workers - min(gpu_count, max(0, num_workers - 1))) if num_workers > 1 else num_workers
-            gpu_workers = min(gpu_count, max(0, num_workers - 1)) if num_workers > 1 else 0
-            progress.print(f"Using {num_workers} workers for self-play: {gpu_workers} GPU actor(s), {cpu_workers} CPU actor(s)")
-        else:
-            progress.print(f"Using {num_workers} CPU workers for self-play (no GPUs detected)")
-    else:
-        use_multiprocessing_flag = False
-        progress.print(f"Using {device} for self-play, {log_str_trining_device}")
+    # Mode selection will occur after defining checkpoint and queue
     
     # Initialize Network using network factory
     network = create_network(cfg, device)
@@ -377,10 +359,47 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # Continual self-play setup (actors + queue)
     manager = multiprocessing.Manager()
-    sp_queue: multiprocessing.Queue = manager.Queue(maxsize=cfg.training.get('continual_queue_maxsize', 64))
+    sp_queue = manager.Queue(maxsize=cfg.training.get('continual_queue_maxsize', 64))
     stop_event = manager.Event()
     continual_enabled = bool(cfg.training.get('continual_training', False))
-    actors: list[multiprocessing.Process] = []
+    actors = []
+
+    # --- Mode selection for self-play ---
+    if continual_enabled:
+        # Launch persistent actors (mixed devices)
+        available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        desired_processes = max(1, num_workers if num_workers > 0 else 1)
+        device_pool = []
+        gpu_slots = min(available_gpus, max(0, desired_processes - 1)) if desired_processes > 1 else 0
+        for g in range(gpu_slots):
+            device_pool.append(f"cuda:{g}")
+        while len(device_pool) < desired_processes:
+            device_pool.append('cpu')
+        checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
+        for dev in device_pool:
+            p = multiprocessing.get_context("spawn").Process(
+                target=continual_self_play_worker,
+                args=(checkpoint_path_for_actors, cfg, dev, sp_queue, stop_event)
+            )
+            p.daemon = True
+            p.start()
+            actors.append(p)
+        if show_progress:
+            progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
+        # For continual mode, keep training device as configured
+    elif use_multiprocessing_flag and num_workers > 1:
+        device = "cpu"
+        # Describe mixed actors plan
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            cpu_workers = max(0, num_workers - min(gpu_count, max(0, num_workers - 1))) if num_workers > 1 else num_workers
+            gpu_workers = min(gpu_count, max(0, num_workers - 1)) if num_workers > 1 else 0
+            progress.print(f"Using {num_workers} workers for self-play: {gpu_workers} GPU actor(s), {cpu_workers} CPU actor(s)")
+        else:
+            progress.print(f"Using {num_workers} CPU workers for self-play (no GPUs detected)")
+    else:
+        use_multiprocessing_flag = False
+        progress.print(f"Using {device} for self-play, {log_str_trining_device}")
 
     # --- Main Training Loop ---
     start_iter = 0 # Initialize start_iter
@@ -454,6 +473,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                     if game_data:
                         games_data_collected.extend(game_data)
                         collected_games += 1
+                        # Update game outcome counters (first player's perspective)
+                        try:
+                            result_value = game_data[0][3]
+                            if result_value is None:
+                                num_draws += 1
+                            elif result_value > 0:
+                                num_wins += 1
+                            elif result_value < 0:
+                                num_losses += 1
+                            else:
+                                num_draws += 1
+                        except Exception:
+                            pass
                         if task_id_selfplay is not None:
                             progress.update(task_id_selfplay, advance=1)
                 except queue.Empty:
@@ -461,6 +493,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     pass
             if task_id_selfplay is not None:
                 progress.update(task_id_selfplay, visible=False)
+            # Record games completed for logging/checkpoint
+            games_completed_this_iter = collected_games
             # Quick cleanup
             if torch.cuda.is_available():
                 try:
@@ -602,7 +636,6 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_games_simulated += games_completed_this_iter
         progress.print(f"Self-play finished: {games_completed_this_iter} game(s) this iteration, total {total_games_simulated}. Steps collected: {len(games_data_collected)}. Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
         progress.print(f"Self-play results: White Wins: {num_wins}, Black Wins: {num_losses}, Draws: {num_draws}")
-        progress.print(f"Temperature schedule: start={cfg.mcts.temperature_start}, end={cfg.mcts.temperature_end}, decay_moves={cfg.mcts.temperature_decay_moves}")
 
         # --- Training Phase ---
         # Cleanup and prep GPU before training
