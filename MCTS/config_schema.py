@@ -12,11 +12,13 @@ class NetworkConfig:
     num_filters: List[int] = [32, 64, 64, 128, 128, 128, 128]
     num_residual_layers: int = 0
     conv_blocks_channel_lists: Optional[List[List[int]]] = [] * 0
-    action_space_size: int = 1700 # Updated based on latest yaml
+    action_space_size: int = 4672 # Updated based on latest yaml
     num_pieces: int = 32 # Standard number of pieces
-    policy_head_out_channels: int = 2
     value_head_hidden_size: int = 256
-    action_space_mode: str = "1700" # "1700" or "4672" - controls which action space and board class to use
+    # Policy head configuration
+    policy_conv_blocks_channels: Optional[List[int]] = field(default_factory=lambda: [64])
+    policy_linear_out_features: Optional[List[int]] = field(default_factory=lambda: [4672])
+    action_space_mode: str = "4672" # "1700" or "4672" - controls which action space and board class to use
 
 @dataclass
 class MCTSConfig:

@@ -12,13 +12,16 @@ from chess_gym.chess_custom import LegacyChessBoard
 # Default values based on common AlphaZero implementations for chess
 DEFAULT_INPUT_CHANNELS = 10  # 10 features (Color, Piece Type, EnPassant, Castling, Current Player)
 DEFAULT_BOARD_SIZE = 8
-DEFAULT_NUM_RESIDUAL_LAYERS = 0
-DEFAULT_NUM_FILTERS = [32, 32, 64, 64, 128, 128, 128]
-DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [] * DEFAULT_NUM_RESIDUAL_LAYERS
-DEFAULT_ACTION_SPACE = 1700 # User-specified action space size
+DEFAULT_NUM_RESIDUAL_LAYERS = 8
+DEFAULT_NUM_FILTERS = [32] * 8
+DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[32]] * DEFAULT_NUM_RESIDUAL_LAYERS
+DEFAULT_ACTION_SPACE = 4672 # User-specified action space size
 DEFAULT_NUM_PIECES = 32
-DEFAULT_POLICY_OUT_CHANNELS = 4
 DEFAULT_VALUE_HIDDEN_SIZE = 4
+DEFAULT_POLICY_CONV_BLOCKS_CHANNELS = [32] * 8
+DEFAULT_POLICY_LINEAR_OUT_FEATURES = [4672]
+
+print(DEFAULT_POLICY_CONV_BLOCKS_CHANNELS)
 
 class ConvBlock(nn.Module):
     """A single convolutional block with Conv -> BatchNorm -> ReLU."""
@@ -32,7 +35,7 @@ class ConvBlock(nn.Module):
 
 class ConvBlockInitial(nn.Module):
     """A multi-scale convolutional block that captures both local and long-range patterns."""
-    def __init__(self, in_channels, num_filters=[16, 32, 64, 128, 128, 128, 128]):
+    def __init__(self, in_channels, num_filters=[32, 32, 32, 32, 32, 32, 32, 32]):
         super().__init__()
         self.conv_paths = nn.ModuleList()
         self.bn_paths = nn.ModuleList()
@@ -62,22 +65,98 @@ class ResidualConvBlock(nn.Module):
     def forward(self, x):
         return F.relu(self.last_block(self.conv_blocks(x)) + x)
 
+# --- Convolutional Body Module ---
+class ConvBody(nn.Module):
+    """Encapsulates the initial conv stack and subsequent residual stages."""
+    def __init__(self, input_channels: int, num_filters: list, conv_blocks_channel_lists: list, num_residual_layers: int):
+        super().__init__()
+        if conv_blocks_channel_lists is None or len(conv_blocks_channel_lists) != num_residual_layers:
+            raise ValueError(f"conv_blocks_channel_lists must be a list of length num_residual_layers ({num_residual_layers})")
+
+        self.first_conv_block = ConvBlockInitial(input_channels, num_filters=num_filters)
+        self.num_filters_last_stage = num_filters[-1]
+
+        self.residual_blocks = nn.ModuleList()
+        if conv_blocks_channel_lists:
+            self.final_conv_channels = conv_blocks_channel_lists[-1][-1]
+            current_stage_in_channels = self.num_filters_last_stage
+            for i in range(num_residual_layers):
+                ch_list = conv_blocks_channel_lists[i]
+                if not ch_list:
+                    raise ValueError(f"Channel list for conv stage {i} cannot be empty")
+                self.residual_blocks.append(
+                    ResidualConvBlock(channel_list=[current_stage_in_channels] + ch_list)
+                )
+                current_stage_in_channels = ch_list[-1]
+        else:
+            self.final_conv_channels = self.num_filters_last_stage
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.first_conv_block(x)
+        for block in self.residual_blocks:
+            features = block(features)
+        return features
+
 # --- Policy Head Module ---
 class PolicyHead(nn.Module):
-    """Calculates policy logits from the final piece vector."""
-    def __init__(self, in_chennels: int, out_channels: int, action_space_size: int, vec_height: int, vec_width: int):
+    """Calculates policy logits from the final convolutional features.
+
+    Supports either a single 1x1 conv reduction (legacy) or a configurable
+    stack of residual convolutional blocks defined by channel lists.
+    """
+    def __init__(self,
+                 in_chennels: int,
+                 action_space_size: int,
+                 vec_height: int,
+                 vec_width: int,
+                 conv_blocks_channels = DEFAULT_POLICY_CONV_BLOCKS_CHANNELS,
+                 linear_out_features: list = DEFAULT_POLICY_LINEAR_OUT_FEATURES):
         super().__init__()
-        self.conv = ConvBlock(in_chennels, out_channels, kernel_size=1, padding=0)  # Directly reduce channels
-        self.fc = nn.Sequential(
-            nn.Linear(out_channels*vec_height*vec_width, action_space_size),
-        )
+        # Default to [64] if not provided or empty
+        if not conv_blocks_channels:
+            conv_blocks_channels = DEFAULT_POLICY_CONV_BLOCKS_CHANNELS
+        self.use_residual_stack = True
+        self.vec_height = vec_height
+        self.vec_width = vec_width
+        self.action_space_size = action_space_size
+        
+        # Residual conv stack for policy head
+        self.residual_blocks = nn.ModuleList()
+        current_stage_in_channels = in_chennels
+        for i, out_ch in enumerate(conv_blocks_channels):
+            if not isinstance(out_ch, int) or out_ch <= 0:
+                raise ValueError(f"Invalid policy conv out_channels at index {i}: {out_ch}")
+            self.residual_blocks.append(
+                ResidualConvBlock(channel_list=[current_stage_in_channels, out_ch])
+            )
+            current_stage_in_channels = out_ch
+        self.final_channels = current_stage_in_channels
+
+        # Build fully connected stack after conv features using provided out_features
+        in_features = self.final_channels * vec_height * vec_width
+        if not all(isinstance(f, int) and f > 0 for f in linear_out_features):
+            raise ValueError(f"All elements of linear_out_features must be positive integers: {linear_out_features}")
+        if linear_out_features[-1] != action_space_size:
+            raise ValueError(f"The last out_features ({linear_out_features[-1]}) must equal action_space_size ({action_space_size})")
+        layers = []
+        prev_features = in_features
+        for idx, out_features in enumerate(linear_out_features):
+            layers.append(nn.Linear(prev_features, out_features))
+            # Add ReLU between layers, but not after the final output to action space
+            if idx < len(linear_out_features) - 1:
+                layers.append(nn.ReLU(inplace=True))
+            prev_features = out_features
+        self.fc = nn.Sequential(*layers)
 
     def forward(self, conv_features: torch.Tensor) -> torch.Tensor:
         # Input shape: (N, C, H, W)
         N = conv_features.size(0)
-        conv_features = self.conv(conv_features)
-        conv_features = conv_features.view(N, -1)  # Shape: (N, P * C)
-        policy_logits = self.fc(conv_features)
+        x = conv_features
+        for block in self.residual_blocks:
+            x = block(x)
+
+        x = x.view(N, -1)
+        policy_logits = self.fc(x)
         return policy_logits
 
 # --- Value Head Module ---
@@ -124,8 +203,9 @@ class ChessNetwork4672(nn.Module):
                  conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
-                 policy_head_out_channels=DEFAULT_POLICY_OUT_CHANNELS,
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
+                 policy_conv_blocks_channels=DEFAULT_POLICY_CONV_BLOCKS_CHANNELS,
+                 policy_linear_out_features: list | None = DEFAULT_POLICY_LINEAR_OUT_FEATURES,
                 ):
         super().__init__()
         self.board_height = board_size
@@ -134,33 +214,19 @@ class ChessNetwork4672(nn.Module):
         self.input_channels = input_channels
         self.num_residual_layers = num_residual_layers
         self.num_pieces = num_pieces
-        self.num_filters_last_stage = num_filters[-1]
-
-        # --- Convolutional Configuration --- 
-        if conv_blocks_channel_lists is None or len(conv_blocks_channel_lists) != num_residual_layers:
-            raise ValueError(f"conv_blocks_channel_lists must be a list of length num_residual_layers ({num_residual_layers})")
-
-        self.first_conv_block = ConvBlockInitial(self.input_channels, num_filters=num_filters)
-
-        if conv_blocks_channel_lists:
-            self.final_conv_channels = conv_blocks_channel_lists[-1][-1]
-
-            # --- Convolutional Body (All stages are ConvBlocks now) --- 
-            self.residual_blocks = nn.ModuleList()
-            current_stage_in_channels = self.num_filters_last_stage
-            for i in range(num_residual_layers):
-                ch_list = conv_blocks_channel_lists[i]
-                if not ch_list:
-                    raise ValueError(f"Channel list for conv stage {i} cannot be empty")
-                self.residual_blocks.append(
-                    ResidualConvBlock(channel_list=[current_stage_in_channels] + ch_list)
-                )
-                current_stage_in_channels = ch_list[-1]
-        else:
-            self.final_conv_channels = self.num_filters_last_stage
+        # --- Convolutional Body ---
+        self.body = ConvBody(self.input_channels, num_filters, conv_blocks_channel_lists, num_residual_layers)
+        self.final_conv_channels = self.body.final_conv_channels
 
         # --- Instantiate Head Modules (using C_final) --- 
-        self.policy_head = PolicyHead(self.final_conv_channels, policy_head_out_channels, self.action_space_size, self.board_height, self.board_width)
+        self.policy_head = PolicyHead(
+            self.final_conv_channels,
+            self.action_space_size,
+            self.board_height,
+            self.board_width,
+            conv_blocks_channels=policy_conv_blocks_channels,
+            linear_out_features=policy_linear_out_features,
+        )
         self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size)
 
     def forward(self, x):
@@ -178,13 +244,8 @@ class ChessNetwork4672(nn.Module):
         if x.shape[1] != self.input_channels:
              raise ValueError(f"Input tensor channel dimension ({x.shape[1]}) doesn't match expected channels ({self.input_channels})")
 
-        # --- Feature Extraction --- 
-        conv_features = self.first_conv_block(x)
-
-        num_stages = self.num_residual_layers
-        for i in range(num_stages):
-            residual_block = self.residual_blocks[i]
-            conv_features = residual_block(conv_features)
+        # --- Feature Extraction via body --- 
+        conv_features = self.body(x)
 
         policy_logits = self.policy_head(conv_features)
         value = self.value_head(conv_features)
@@ -209,8 +270,9 @@ def test_network(cfg: DictConfig):
         conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
-        policy_head_out_channels=cfg.network.policy_head_out_channels,
-        value_head_hidden_size=cfg.network.value_head_hidden_size
+        value_head_hidden_size=cfg.network.value_head_hidden_size,
+        policy_conv_blocks_channels=cfg.network.policy_conv_blocks_channels,
+        policy_linear_out_features=cfg.network.policy_linear_out_features,
     )
     print("Network Initialized.")
     print(f"Using: num_residual_layers={network.num_residual_layers}, final_conv_channels={network.final_conv_channels}, action_space={network.action_space_size}")
@@ -218,7 +280,9 @@ def test_network(cfg: DictConfig):
     board = LegacyChessBoard('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')
     # from gym_gomoku.envs import Board
     # board = Board(15)
-    dummy_input_tensor = torch.from_numpy(board.get_board_vector()).to(dtype=torch.float32)
+    # Use env-configured history steps if available
+    history_steps = getattr(cfg.env, 'history_steps', 8)
+    dummy_input_tensor = torch.from_numpy(board.get_board_vector(history_steps=history_steps)).to(dtype=torch.float32)
     dummy_input_tensor = dummy_input_tensor.unsqueeze(0).repeat(2, 1, 1, 1)
     # for i in range(dummy_input_tensor.shape[2]):
     #     for j in range(dummy_input_tensor.shape[3]):
