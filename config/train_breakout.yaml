@@ -18,8 +18,8 @@ network:
   _target_: MCTS.config_schema.NetworkConfig
   input_channels: 2
   num_residual_layers: 4
-  num_filters: [16, 32, 64]
-  conv_blocks_channel_lists: [[64], [64], [64], [64]]
+  initial_conv_block_out_channels: [16, 32, 64]
+  residual_blocks_out_channels: [[64], [64], [64], [64]]
   action_space_size: 4
   policy_head_out_channels: 2
   value_head_hidden_size: 32
@@ -60,5 +60,4 @@ training:
   max_game_moves: 1000  # Typical for Breakout
   checkpoint_dir: ./checkpoints
   checkpoint_dir_load: null  # If set, load checkpoints from here; otherwise use checkpoint_dir
-  save_interval: 10
   progress_bar: true

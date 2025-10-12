@@ -34,12 +34,12 @@ except Exception:
 import time
 
 def create_env(use_4672_action_space: bool, show_possible_actions: bool) -> gym.Env:
-    action_space_mode = "4672" if use_4672_action_space else "1700"
+    action_space_size = 4672 if use_4672_action_space else 1700
     env = gym.make(
         "Chess-v0",
         render_mode=None,
         show_possible_actions=show_possible_actions,
-        action_space_mode=action_space_mode,
+        action_space_size=action_space_size,
     )
     return env
 
@@ -117,7 +117,7 @@ _DQN_MODEL = None
 _DQN_DEVICE = None
 
 
-def _load_dqn_model(action_space_mode: str):
+def _load_dqn_model(action_space_size: int):
     global _DQN_MODEL, _DQN_DEVICE
     if torch is None or OmegaConf is None or create_chess_network is None:
         raise RuntimeError("Required packages for DQN are not available. Install torch and omegaconf.")
@@ -131,11 +131,11 @@ def _load_dqn_model(action_space_mode: str):
     checkpoint_path = os.path.join(os.path.abspath('.'), 'checkpoints', 'model.pth')
     cfg = OmegaConf.load(cfg_path)
 
-    # Warn if action space modes mismatch
+    # Warn if action space sizes mismatch
     try:
-        cfg_mode = str(cfg.network.action_space_mode)
-        if cfg_mode != action_space_mode:
-            print(f"[Warning] DQN checkpoint configured for action_space_mode={cfg_mode}, but env is {action_space_mode}.")
+        cfg_size = int(cfg.network.action_space_size)
+        if cfg_size != action_space_size:
+            print(f"[Warning] DQN checkpoint configured for action_space_size={cfg_size}, but env is {action_space_size}.")
     except Exception:
         pass
 
@@ -163,13 +163,8 @@ def choose_ai_action(env: gym.Env, mode: str) -> int:
     if mode == "dqn":
         # Ensure model is loaded
         if _DQN_MODEL is None:
-            # Derive mode from board vector channels: 10 -> 4672, else 1700
-            try:
-                ch = board.get_board_vector().shape[0]
-                action_space_mode = "4672" if ch == 10 else "1700"
-            except Exception:
-                action_space_mode = getattr(env, 'action_space_mode', '1700')
-            _load_dqn_model(action_space_mode)
+            action_space_size = getattr(env, 'action_space_size', 4672)
+            _load_dqn_model(action_space_size)
 
         # Safety: if still None, fallback
         if _DQN_MODEL is None or torch is None:

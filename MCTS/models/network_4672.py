@@ -13,8 +13,8 @@ from chess_gym.chess_custom import LegacyChessBoard
 DEFAULT_INPUT_CHANNELS = 10  # 10 features (Color, Piece Type, EnPassant, Castling, Current Player)
 DEFAULT_BOARD_SIZE = 8
 DEFAULT_NUM_RESIDUAL_LAYERS = 8
-DEFAULT_NUM_FILTERS = [32] * 8
-DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[32]] * DEFAULT_NUM_RESIDUAL_LAYERS
+DEFAULT_INITIAL_CONV_BLOCK_OUT_CHANNELS = [32] * 8
+DEFAULT_RESIDUAL_BLOCKS_OUT_CHANNELS = [[32]] * DEFAULT_NUM_RESIDUAL_LAYERS
 DEFAULT_ACTION_SPACE = 4672 # User-specified action space size
 DEFAULT_NUM_PIECES = 32
 DEFAULT_VALUE_HIDDEN_SIZE = 4
@@ -33,17 +33,17 @@ class ConvBlock(nn.Module):
 
 class ConvBlockInitial(nn.Module):
     """A multi-scale convolutional block that captures both local and long-range patterns."""
-    def __init__(self, in_channels, num_filters=[32, 32, 32, 32, 32, 32, 32, 32]):
+    def __init__(self, in_channels, initial_conv_block_out_channels=[32, 32, 32, 32, 32, 32, 32, 32]):
         super().__init__()
         self.conv_paths = nn.ModuleList()
         self.bn_paths = nn.ModuleList()
 
-        num_filters = [in_channels] + num_filters
+        initial_conv_block_out_channels = [in_channels] + initial_conv_block_out_channels
         self.conv_blocks = nn.Sequential()
-        for i in range(len(num_filters)-1):
-            self.conv_blocks.append(ConvBlock(num_filters[i], num_filters[i+1], kernel_size=3, padding=1))
+        for i in range(len(initial_conv_block_out_channels)-1):
+            self.conv_blocks.append(ConvBlock(initial_conv_block_out_channels[i], initial_conv_block_out_channels[i+1], kernel_size=3, padding=1))
             
-        self.bn = nn.BatchNorm2d(num_filters[-1])
+        self.bn = nn.BatchNorm2d(initial_conv_block_out_channels[-1])
 
     def forward(self, x):
         return F.relu(self.bn(self.conv_blocks(x)))
@@ -66,20 +66,20 @@ class ResidualConvBlock(nn.Module):
 # --- Convolutional Body Module ---
 class ConvBody(nn.Module):
     """Encapsulates the initial conv stack and subsequent residual stages."""
-    def __init__(self, input_channels: int, num_filters: list, conv_blocks_channel_lists: list, num_residual_layers: int):
+    def __init__(self, input_channels: int, initial_conv_block_out_channels: list, residual_blocks_out_channels: list, num_residual_layers: int):
         super().__init__()
-        if conv_blocks_channel_lists is None or len(conv_blocks_channel_lists) != num_residual_layers:
-            raise ValueError(f"conv_blocks_channel_lists must be a list of length num_residual_layers ({num_residual_layers})")
+        if residual_blocks_out_channels is None or len(residual_blocks_out_channels) != num_residual_layers:
+            raise ValueError(f"residual_blocks_out_channels must be a list of length num_residual_layers ({num_residual_layers})")
 
-        self.first_conv_block = ConvBlockInitial(input_channels, num_filters=num_filters)
-        self.num_filters_last_stage = num_filters[-1]
+        self.first_conv_block = ConvBlockInitial(input_channels, initial_conv_block_out_channels=initial_conv_block_out_channels)
+        self.initial_conv_block_out_channels_last_stage = initial_conv_block_out_channels[-1]
 
         self.residual_blocks = nn.ModuleList()
-        if conv_blocks_channel_lists:
-            self.final_conv_channels = conv_blocks_channel_lists[-1][-1]
-            current_stage_in_channels = self.num_filters_last_stage
+        if residual_blocks_out_channels:
+            self.final_conv_channels = residual_blocks_out_channels[-1][-1]
+            current_stage_in_channels = self.initial_conv_block_out_channels_last_stage
             for i in range(num_residual_layers):
-                ch_list = conv_blocks_channel_lists[i]
+                ch_list = residual_blocks_out_channels[i]
                 if not ch_list:
                     raise ValueError(f"Channel list for conv stage {i} cannot be empty")
                 self.residual_blocks.append(
@@ -87,7 +87,7 @@ class ConvBody(nn.Module):
                 )
                 current_stage_in_channels = ch_list[-1]
         else:
-            self.final_conv_channels = self.num_filters_last_stage
+            self.final_conv_channels = self.initial_conv_block_out_channels_last_stage
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.first_conv_block(x)
@@ -178,8 +178,8 @@ class ChessNetwork4672(nn.Module):
                  input_channels=DEFAULT_INPUT_CHANNELS,
                  board_size=DEFAULT_BOARD_SIZE,
                  num_residual_layers=DEFAULT_NUM_RESIDUAL_LAYERS,
-                 num_filters=DEFAULT_NUM_FILTERS,
-                 conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
+                 initial_conv_block_out_channels=DEFAULT_INITIAL_CONV_BLOCK_OUT_CHANNELS,
+                 residual_blocks_out_channels=DEFAULT_RESIDUAL_BLOCKS_OUT_CHANNELS,
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
@@ -193,7 +193,7 @@ class ChessNetwork4672(nn.Module):
         self.num_residual_layers = num_residual_layers
         self.num_pieces = num_pieces
         # --- Convolutional Body ---
-        self.body = ConvBody(self.input_channels, num_filters, conv_blocks_channel_lists, num_residual_layers)
+        self.body = ConvBody(self.input_channels, initial_conv_block_out_channels, residual_blocks_out_channels, num_residual_layers)
         self.final_conv_channels = self.body.final_conv_channels
 
         # --- Instantiate Head Modules (using C_final) --- 
@@ -243,8 +243,8 @@ def test_network(cfg: DictConfig):
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
         num_residual_layers=cfg.network.num_residual_layers,
-        num_filters=cfg.network.num_filters,
-        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+        initial_conv_block_out_channels=cfg.network.initial_conv_block_out_channels,
+        residual_blocks_out_channels=cfg.network.residual_blocks_out_channels,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
         value_head_hidden_size=cfg.network.value_head_hidden_size,

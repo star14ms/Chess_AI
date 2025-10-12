@@ -22,13 +22,12 @@ network:
   dim_piece_type: 0  # Only two piece types in Gomoku
   board_size: 15  # Standard Gomoku board size
   num_residual_layers: 0
-  num_filters: [32, 32, 32, 32, 32, 32, 32]
-  conv_blocks_channel_lists: []
+  initial_conv_block_out_channels: [32, 32, 32, 32, 32, 32, 32]
+  residual_blocks_out_channels: []
   action_space_size: 225  # 15x15 board
   num_pieces: 2  # Only black and white pieces
   policy_head_out_channels: 4
   value_head_hidden_size: 64
-  action_space_mode: "gomoku"  # Use Gomoku action space
 
 # Environment configuration
 env:
@@ -66,6 +65,5 @@ training:
   max_game_moves: 225  # Maximum possible moves in a 15x15 board
   checkpoint_dir: ./checkpoints
   checkpoint_dir_load: null  # If set, load checkpoints from here; otherwise use checkpoint_dir
-  save_interval: 10
   initial_board_fen: null  # Not used for Gomoku 
   progress_bar: true

@@ -9,14 +9,13 @@ class NetworkConfig:
     input_channels: int = 26
     dim_piece_type: int = 16 # Standard number of piece types
     board_size: int = 8
-    num_filters: List[int] = [32, 64, 64, 128, 128, 128, 128]
+    initial_conv_block_out_channels: List[int] = [32, 64, 64, 128, 128, 128, 128]
     num_residual_layers: int = 0
-    conv_blocks_channel_lists: Optional[List[List[int]]] = [] * 0
-    action_space_size: int = 4672 # Updated based on latest yaml
+    residual_blocks_out_channels: Optional[List[List[int]]] = [] * 0
+    action_space_size: int = 4672 # 1700 or 4672 - controls which action space and board class to use
     num_pieces: int = 32 # Standard number of pieces
     value_head_hidden_size: int = 256
     policy_linear_out_features: Optional[List[int]] = field(default_factory=lambda: [4672])
-    action_space_mode: str = "4672" # "1700" or "4672" - controls which action space and board class to use
 
 @dataclass
 class MCTSConfig:
@@ -61,7 +60,6 @@ class TrainingConfig:
     checkpoint_dir: str = "checkpoints" # Will be relative to hydra output dir
     checkpoint_dir_load: Optional[str] = None # Optional separate directory to load checkpoints from (defaults to checkpoint_dir if None or empty)
     progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
-    save_interval: int = 10
     initial_board_fen: str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" #except pawns
 
 @dataclass

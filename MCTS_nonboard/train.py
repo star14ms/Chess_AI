@@ -150,7 +150,6 @@ def train(cfg: DictConfig):
     checkpoint_dir_load = cfg.training.get('checkpoint_dir_load', None)
     load_dir = checkpoint_dir_load if checkpoint_dir_load not in (None, "", "null") else checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)  # Ensure save directory exists
-    save_interval = cfg.training.save_interval
     total_training_start_time = time.time()
 
     # Attempt to resume from the latest checkpoint in load_dir
@@ -269,15 +268,13 @@ def train(cfg: DictConfig):
         progress.update(task_id_train, visible=False)
         progress.print(f"Iteration {iteration+1} finished. Buffer size: {len(replay_buffer)} | Avg Policy Loss: {current_avg_policy_loss:.4f} | Avg Value Loss: {current_avg_value_loss:.4f} | Avg Score: {avg_score:.4f}")
 
-        # --- Checkpointing ---
-        if (iteration + 1) % save_interval == 0 or (iteration + 1) == cfg.training.num_training_iterations:
-            checkpoint = {
-                'iteration': iteration + 1,
-                'model_state_dict': network.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-            }
-            torch.save(checkpoint, os.path.join(checkpoint_dir, f"model_{iteration+1}.pth"))
-            progress.print(f"Checkpoint saved at iteration {iteration + 1}")
+        checkpoint = {
+            'iteration': iteration + 1,
+            'model_state_dict': network.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }
+        torch.save(checkpoint, os.path.join(checkpoint_dir, f"model_{iteration+1}.pth"))
+        progress.print(f"Checkpoint saved at iteration {iteration + 1}")
 
         # --- Iteration Duration Logging ---
         iteration_duration = int(time.time() - iteration_start_time_selfplay)

@@ -15,7 +15,7 @@ from omegaconf import DictConfig, OmegaConf
 DEFAULT_INPUT_CHANNELS = 1
 DEFAULT_BOARD_SIZE = 8
 DEFAULT_NUM_RESIDUAL_LAYERS = 7 # Number of convolutional stages (now all are ConvBlocks)
-DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[64]*7] * DEFAULT_NUM_RESIDUAL_LAYERS
+DEFAULT_RESIDUAL_BLOCKS_OUT_CHANNELS = [[64]*7] * DEFAULT_NUM_RESIDUAL_LAYERS
 DEFAULT_ACTION_SPACE = 1700 # User-specified action space size
 DEFAULT_NUM_PIECES = 32
 DEFAULT_NUM_ATTENTION_HEADS = 4 # Heads for MultiheadCrossAttentionLayer
@@ -138,7 +138,7 @@ class ChessNetwork(nn.Module):
                  input_channels=DEFAULT_INPUT_CHANNELS,
                  board_size=DEFAULT_BOARD_SIZE,
                  num_residual_layers=DEFAULT_NUM_RESIDUAL_LAYERS,
-                 conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
+                 residual_blocks_out_channels=DEFAULT_RESIDUAL_BLOCKS_OUT_CHANNELS,
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
                  num_attention_heads=DEFAULT_NUM_ATTENTION_HEADS,
@@ -158,13 +158,13 @@ class ChessNetwork(nn.Module):
         self.num_pieces = num_pieces
 
         # --- Convolutional Configuration --- 
-        if conv_blocks_channel_lists is None or len(conv_blocks_channel_lists) != num_residual_layers:
-            raise ValueError(f"conv_blocks_channel_lists must be a list of length num_residual_layers ({num_residual_layers})")
+        if residual_blocks_out_channels is None or len(residual_blocks_out_channels) != num_residual_layers:
+            raise ValueError(f"residual_blocks_out_channels must be a list of length num_residual_layers ({num_residual_layers})")
 
         # Determine final conv channels for downstream modules
-        if not conv_blocks_channel_lists or not conv_blocks_channel_lists[-1]:
-             raise ValueError("Last channel list in conv_blocks_channel_lists cannot be empty")
-        final_conv_channels = conv_blocks_channel_lists[-1][-1]
+        if not residual_blocks_out_channels or not residual_blocks_out_channels[-1]:
+             raise ValueError("Last channel list in residual_blocks_out_channels cannot be empty")
+        final_conv_channels = residual_blocks_out_channels[-1][-1]
         
         self.final_conv_channels = final_conv_channels # C_final
 
@@ -172,11 +172,11 @@ class ChessNetwork(nn.Module):
         self.piece_vector_extractor = PieceVectorExtractor(num_pieces=self.num_pieces)
 
         # --- Convolutional Body (All stages are ConvBlocks now) --- 
-        self.first_conv_block = ConvBlock(self.conv_input_channels, conv_blocks_channel_lists[0][0]-1)
+        self.first_conv_block = ConvBlock(self.conv_input_channels, residual_blocks_out_channels[0][0]-1)
         self.residual_blocks = nn.ModuleList()
-        current_stage_in_channels = conv_blocks_channel_lists[0][0] # Start with conv input channels
+        current_stage_in_channels = residual_blocks_out_channels[0][0] # Start with conv input channels
         for i in range(num_residual_layers): # Iterate num_residual_layers times
-            ch_list = conv_blocks_channel_lists[i]
+            ch_list = residual_blocks_out_channels[i]
             if not ch_list:
                  raise ValueError(f"Channel list for conv stage {i} cannot be empty")
             self.residual_blocks.append(
@@ -270,7 +270,7 @@ def test_network(cfg: DictConfig):
         input_channels=cfg.network.input_channels,
         board_size=cfg.network.board_size,
         num_residual_layers=cfg.network.num_residual_layers,
-        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+        residual_blocks_out_channels=cfg.network.residual_blocks_out_channels,
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
     )

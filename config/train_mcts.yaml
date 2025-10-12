@@ -24,14 +24,13 @@ network:
   dim_piece_type: 16
   board_size: 8
   num_residual_layers: 8
-  num_filters: [64]
-  conv_blocks_channel_lists: [[64], [64], [64], [64], [64], [64], [64], [64]]
+  initial_conv_block_out_channels: [64]
+  residual_blocks_out_channels: [[64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64]]
   action_space_size: 4672
   num_pieces: 32
   value_head_hidden_size: 256
   # Policy head structure
   policy_linear_out_features: [4672] # e.g., [1024, 512, 4672]; last must equal action_space_size
-  action_space_mode: "4672"  # Use 4672 action space with LegacyChessBoard
 
 # New Env section
 env:
@@ -76,6 +75,5 @@ training:
   max_game_moves: 100
   checkpoint_dir: ./checkpoints
   checkpoint_dir_load: null # If set, load checkpoints from here; otherwise use checkpoint_dir
-  save_interval: 10
   initial_board_fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
   progress_bar: true

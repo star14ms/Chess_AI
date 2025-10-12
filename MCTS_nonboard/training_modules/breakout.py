@@ -72,8 +72,8 @@ def create_breakout_network(cfg, device) -> nn.Module:
     network = BreakoutNetwork(
         input_channels=cfg.network.input_channels,
         num_residual_layers=cfg.network.num_residual_layers,
-        num_filters=cfg.network.num_filters,
-        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+        initial_conv_block_out_channels=cfg.network.initial_conv_block_out_channels,
+        residual_blocks_out_channels=cfg.network.residual_blocks_out_channels,
         action_space_size=cfg.network.action_space_size,
         policy_head_out_channels=cfg.network.policy_head_out_channels,
         value_head_hidden_size=cfg.network.value_head_hidden_size

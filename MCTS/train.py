@@ -194,7 +194,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     temp_decay_moves = cfg.mcts.temperature_decay_moves
     dirichlet_alpha = cfg.mcts.dirichlet_alpha
     dirichlet_epsilon = cfg.mcts.dirichlet_epsilon
-    action_space_mode = cfg.network.action_space_mode
+    action_space_size = cfg.network.action_space_size
     max_moves = cfg.training.max_game_moves
 
     task_id_game = None
@@ -216,7 +216,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 C_puct=c_puct,
                 dirichlet_alpha=dirichlet_alpha,
                 dirichlet_epsilon=dirichlet_epsilon,
-                action_space_mode=action_space_mode,
+                action_space_size=action_space_size,
                 history_steps=cfg.env.history_steps
             )
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
@@ -288,8 +288,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         raise ValueError(f"Unsupported training.device: {cfg.training.device}")
     log_str_trining_device = f"{device} for training"
 
-    # Print action space mode
-    progress.print(f"Using {cfg.network.action_space_mode} action space mode")
+    # Print action space size
+    progress.print(f"Using action space size: {cfg.network.action_space_size}")
 
     # Determine number of workers
     num_workers_config = cfg.training.get('self_play_workers', 0)

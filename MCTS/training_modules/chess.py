@@ -16,13 +16,13 @@ from MCTS.models.network_4672 import ChessNetwork4672
 
 def create_chess_network(cfg, device) -> nn.Module:
     """Create and initialize the appropriate chess network based on config."""
-    if cfg.network.action_space_mode == "4672":
+    if cfg.network.action_space_size == 4672:
         network = ChessNetwork4672(
             input_channels=cfg.network.input_channels,
             board_size=cfg.network.board_size,
             num_residual_layers=cfg.network.num_residual_layers,
-            num_filters=cfg.network.num_filters,
-            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+            initial_conv_block_out_channels=cfg.network.initial_conv_block_out_channels,
+            residual_blocks_out_channels=cfg.network.residual_blocks_out_channels,
             action_space_size=cfg.network.action_space_size,
             num_pieces=cfg.network.num_pieces,
             value_head_hidden_size=cfg.network.value_head_hidden_size,
@@ -34,8 +34,8 @@ def create_chess_network(cfg, device) -> nn.Module:
             dim_piece_type=cfg.network.dim_piece_type,
             board_size=cfg.network.board_size,
             num_residual_layers=cfg.network.num_residual_layers,
-            num_filters=cfg.network.num_filters,
-            conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+            initial_conv_block_out_channels=cfg.network.initial_conv_block_out_channels,
+            residual_blocks_out_channels=cfg.network.residual_blocks_out_channels,
             action_space_size=cfg.network.action_space_size,
             num_pieces=cfg.network.num_pieces,
             value_head_hidden_size=cfg.network.value_head_hidden_size
@@ -48,7 +48,7 @@ def create_chess_env(cfg, render=False) -> ChessEnv:
         observation_mode=cfg.env.observation_mode,
         render_mode=cfg.env.render_mode if render else None,
         save_video_folder=cfg.env.save_video_folder if render else None,
-        action_space_mode=cfg.network.action_space_mode,
+        action_space_size=cfg.network.action_space_size,
         history_steps=cfg.env.history_steps
     )
 

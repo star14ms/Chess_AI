@@ -15,8 +15,8 @@ DEFAULT_INPUT_CHANNELS = 2
 DEFAULT_BOARD_HEIGHT = 160
 DEFAULT_BOARD_WIDTH = 144
 DEFAULT_NUM_RESIDUAL_LAYERS = 8
-DEFAULT_NUM_FILTERS = [16, 32, 32, 32]
-DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[32]] * DEFAULT_NUM_RESIDUAL_LAYERS
+DEFAULT_INITIAL_CONV_BLOCK_OUT_CHANNELS = [16, 32, 32, 32]
+DEFAULT_RESIDUAL_BLOCKS_OUT_CHANNELS = [[32]] * DEFAULT_NUM_RESIDUAL_LAYERS
 DEFAULT_ACTION_SPACE = 4
 DEFAULT_POLICY_OUT_CHANNELS = 2
 DEFAULT_VALUE_HEAD_HIDDEN_SIZE = 32
@@ -24,20 +24,20 @@ DEFAULT_VALUE_HEAD_HIDDEN_SIZE = 32
 
 class ConvBlockInitial(nn.Module):
     """A multi-scale convolutional block that captures both local and long-range patterns."""
-    def __init__(self, in_channels, num_filters=[16, 32, 32, 32]):
+    def __init__(self, in_channels, initial_conv_block_out_channels=[16, 32, 32, 32]):
         super().__init__()
         self.conv_paths = nn.ModuleList()
         self.bn_paths = nn.ModuleList()
 
-        num_filters = [in_channels] + num_filters
+        initial_conv_block_out_channels = [in_channels] + initial_conv_block_out_channels
         self.conv_blocks = nn.ModuleList()
         self.pool_blocks = nn.ModuleList()
         
-        for i in range(len(num_filters)-1):
-            self.conv_blocks.append(ConvBlock(num_filters[i], num_filters[i+1], kernel_size=3, padding=1))
+        for i in range(len(initial_conv_block_out_channels)-1):
+            self.conv_blocks.append(ConvBlock(initial_conv_block_out_channels[i], initial_conv_block_out_channels[i+1], kernel_size=3, padding=1))
             self.pool_blocks.append(nn.MaxPool2d(kernel_size=2, stride=2))
 
-        self.bn = nn.BatchNorm2d(num_filters[-1])
+        self.bn = nn.BatchNorm2d(initial_conv_block_out_channels[-1])
 
     def forward(self, x):
         for conv, pool in zip(self.conv_blocks, self.pool_blocks):
@@ -63,8 +63,8 @@ class BreakoutNetwork(nn.Module):
                  board_height=DEFAULT_BOARD_HEIGHT,
                  board_width=DEFAULT_BOARD_WIDTH,
                  num_residual_layers=DEFAULT_NUM_RESIDUAL_LAYERS,
-                 num_filters=DEFAULT_NUM_FILTERS,
-                 conv_blocks_channel_lists=DEFAULT_CONV_BLOCKS_CHANNEL_LISTS,
+                 initial_conv_block_out_channels=DEFAULT_INITIAL_CONV_BLOCK_OUT_CHANNELS,
+                 residual_blocks_out_channels=DEFAULT_RESIDUAL_BLOCKS_OUT_CHANNELS,
                  action_space_size=DEFAULT_ACTION_SPACE,
                  policy_head_out_channels=DEFAULT_POLICY_OUT_CHANNELS,
                  value_head_hidden_size=DEFAULT_VALUE_HEAD_HIDDEN_SIZE
@@ -75,22 +75,22 @@ class BreakoutNetwork(nn.Module):
         self.action_space_size = action_space_size
         self.input_channels = input_channels
         self.num_residual_layers = num_residual_layers
-        self.num_filters_last_stage = num_filters[-1]
+        self.initial_conv_block_out_channels_last_stage = initial_conv_block_out_channels[-1]
 
         # --- Convolutional Configuration --- 
-        if conv_blocks_channel_lists is None or len(conv_blocks_channel_lists) != num_residual_layers:
-            raise ValueError(f"conv_blocks_channel_lists must be a list of length num_residual_layers ({num_residual_layers})")
+        if residual_blocks_out_channels is None or len(residual_blocks_out_channels) != num_residual_layers:
+            raise ValueError(f"residual_blocks_out_channels must be a list of length num_residual_layers ({num_residual_layers})")
 
-        self.first_conv_block = ConvBlockInitial(self.input_channels, num_filters=num_filters)
+        self.first_conv_block = ConvBlockInitial(self.input_channels, initial_conv_block_out_channels=initial_conv_block_out_channels)
 
-        if conv_blocks_channel_lists:
-            self.final_conv_channels = conv_blocks_channel_lists[-1][-1]
+        if residual_blocks_out_channels:
+            self.final_conv_channels = residual_blocks_out_channels[-1][-1]
 
             # --- Convolutional Body (All stages are ConvBlocks now) --- 
             self.residual_blocks = nn.ModuleList()
-            current_stage_in_channels = self.num_filters_last_stage
+            current_stage_in_channels = self.initial_conv_block_out_channels_last_stage
             for i in range(num_residual_layers):
-                ch_list = conv_blocks_channel_lists[i]
+                ch_list = residual_blocks_out_channels[i]
                 if not ch_list:
                     raise ValueError(f"Channel list for conv stage {i} cannot be empty")
                 self.residual_blocks.append(
@@ -98,11 +98,11 @@ class BreakoutNetwork(nn.Module):
                 )
                 current_stage_in_channels = ch_list[-1]
         else:
-            self.final_conv_channels = self.num_filters_last_stage
+            self.final_conv_channels = self.initial_conv_block_out_channels_last_stage
 
         # --- Instantiate Head Modules (using C_final) --- 
-        self.policy_head = PolicyHead(self.final_conv_channels, policy_head_out_channels, self.action_space_size, self.board_height//(2**len(num_filters)), self.board_width//(2**len(num_filters)))
-        self.value_head = ValueHead(self.final_conv_channels, self.board_height//(2**len(num_filters)), self.board_width//(2**len(num_filters)), hidden_size=value_head_hidden_size)
+        self.policy_head = PolicyHead(self.final_conv_channels, policy_head_out_channels, self.action_space_size, self.board_height//(2**len(initial_conv_block_out_channels)), self.board_width//(2**len(initial_conv_block_out_channels)))
+        self.value_head = ValueHead(self.final_conv_channels, self.board_height//(2**len(initial_conv_block_out_channels)), self.board_width//(2**len(initial_conv_block_out_channels)), hidden_size=value_head_hidden_size)
 
     def forward(self, x):
         """Forward pass through the network.
@@ -150,8 +150,8 @@ def test_network(cfg):
         board_height=cfg.network.get("board_height", DEFAULT_BOARD_HEIGHT),
         board_width=cfg.network.get("board_width", DEFAULT_BOARD_WIDTH),
         num_residual_layers=cfg.network.num_residual_layers,
-        num_filters=cfg.network.num_filters,
-        conv_blocks_channel_lists=cfg.network.conv_blocks_channel_lists,
+        initial_conv_block_out_channels=cfg.network.initial_conv_block_out_channels,
+        residual_blocks_out_channels=cfg.network.residual_blocks_out_channels,
         action_space_size=cfg.network.action_space_size,
         policy_head_out_channels=cfg.network.policy_head_out_channels,
         value_head_hidden_size=cfg.network.value_head_hidden_size

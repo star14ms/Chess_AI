@@ -27,7 +27,7 @@ class MCTS:
                  C_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3,
                  dirichlet_epsilon: float = 0.25,
-                 action_space_mode: str = "1700",
+                 action_space_size: int = 1700,
                  history_steps: int = 8):  # Number of history planes to use when env is None
         self.network = network
         self.device = torch.device(device)
@@ -35,7 +35,7 @@ class MCTS:
         self.C_puct = C_puct
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
-        self.action_space_mode = action_space_mode  # Store action space mode
+        self.action_space_size = action_space_size  # Store action space size
         self.history_steps = max(1, int(history_steps))
         self.network.eval()
 
