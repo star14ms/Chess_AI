@@ -54,6 +54,8 @@ class TrainingConfig:
     use_multiprocessing: bool = True # Flag to enable/disable multiprocessing for self-play
     self_play_workers: int = 0 # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
     self_play_games_per_epoch: int = 50
+    continual_training: bool = True # If True, continue training from the last checkpoint
+    continual_queue_maxsize: int = 64 # Maximum size of the queue for continual training
     max_game_moves: int = 200
     checkpoint_dir: str = "checkpoints" # Will be relative to hydra output dir
     checkpoint_dir_load: Optional[str] = None # Optional separate directory to load checkpoints from (defaults to checkpoint_dir if None or empty)

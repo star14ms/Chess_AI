@@ -70,6 +70,8 @@ training:
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
   self_play_games_per_epoch: 24
+  continual_training: true
+  continual_queue_maxsize: 64
   max_game_moves: 300
   checkpoint_dir: ./checkpoints
   checkpoint_dir_load: null # If set, load checkpoints from here; otherwise use checkpoint_dir

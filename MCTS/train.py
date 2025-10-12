@@ -10,6 +10,7 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, Ti
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import multiprocessing # Keep for potential parallel execution
+import queue
 import torch.nn.functional as F
 from torch import nn
 
@@ -83,6 +84,60 @@ def worker_wrapper(args):
     game_id, network_state_dict, cfg, device_str = args
     # Call the original worker function with unpacked args
     return self_play_worker(game_id, network_state_dict, cfg, device_str)
+
+# Persistent continual self-play actor
+def continual_self_play_worker(checkpoint_path: str, cfg: DictConfig, device_str: str, out_queue: multiprocessing.queues.Queue, stop_event: multiprocessing.synchronize.Event):
+    initialize_factories_from_cfg(cfg)
+    device = torch.device(device_str)
+    if device.type == 'cuda':
+        try:
+            torch.cuda.set_device(device)
+        except Exception:
+            pass
+    network = None
+    if cfg.mcts.iterations > 0:
+        network = create_network(cfg, device)
+        if os.path.exists(checkpoint_path):
+            try:
+                ckpt = torch.load(checkpoint_path, map_location=device)
+                network.load_state_dict(ckpt['model_state_dict'])
+            except Exception:
+                pass
+        network.to(device).eval()
+    last_mtime = os.path.getmtime(checkpoint_path) if os.path.exists(checkpoint_path) else 0.0
+    while not stop_event.is_set():
+        # Hot-reload if newer checkpoint exists
+        try:
+            if os.path.exists(checkpoint_path):
+                mtime = os.path.getmtime(checkpoint_path)
+                if mtime > last_mtime and network is not None:
+                    try:
+                        ckpt = torch.load(checkpoint_path, map_location=device)
+                        network.load_state_dict(ckpt['model_state_dict'])
+                        network.to(device).eval()
+                        last_mtime = mtime
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Play one game and enqueue
+        try:
+            game_data = run_self_play_game(cfg, network if cfg.mcts.iterations > 0 else None, env=None, progress=None, device=device)
+            if game_data:
+                out_queue.put(game_data)
+        except Exception:
+            # Continue on errors to keep the actor alive
+            pass
+
+        # Modest cleanup to avoid memory growth
+        if device.type == 'cuda':
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+            torch.cuda.empty_cache()
+        gc.collect()
 
 # --- Replay Buffer (Keep as is) ---
 class ReplayBuffer:
@@ -243,7 +298,28 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress = Progress(transient=False)
         progress.start()
 
-    if use_multiprocessing_flag and num_workers > 1:
+    if continual_enabled:
+        # Launch persistent actors (mixed devices)
+        available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        desired_processes = max(1, num_workers if num_workers > 0 else 1)
+        device_pool = []
+        gpu_slots = min(available_gpus, max(0, desired_processes - 1)) if desired_processes > 1 else 0
+        for g in range(gpu_slots):
+            device_pool.append(f"cuda:{g}")
+        while len(device_pool) < desired_processes:
+            device_pool.append('cpu')
+        for dev in device_pool:
+            p = multiprocessing.get_context("spawn").Process(
+                target=continual_self_play_worker,
+                args=(os.path.join(checkpoint_dir, "model.pth"), cfg, dev, sp_queue, stop_event)
+            )
+            p.daemon = True
+            p.start()
+            actors.append(p)
+        if show_progress:
+            progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
+        # For continual mode, keep training device as configured
+    elif use_multiprocessing_flag and num_workers > 1:
         device = "cpu"
         # Describe mixed actors plan
         if torch.cuda.is_available():
@@ -298,6 +374,13 @@ def run_training_loop(cfg: DictConfig) -> None:
     progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
 
     env = create_environment(cfg, render=not use_multiprocessing_flag)
+
+    # Continual self-play setup (actors + queue)
+    manager = multiprocessing.Manager()
+    sp_queue: multiprocessing.Queue = manager.Queue(maxsize=cfg.training.get('continual_queue_maxsize', 64))
+    stop_event = manager.Event()
+    continual_enabled = bool(cfg.training.get('continual_training', False))
+    actors: list[multiprocessing.Process] = []
 
     # --- Main Training Loop ---
     start_iter = 0 # Initialize start_iter
@@ -358,7 +441,35 @@ def run_training_loop(cfg: DictConfig) -> None:
         num_draws = 0
         games_completed_this_iter = 0
 
-        if use_multiprocessing_flag:
+        if continual_enabled:
+            # Drain queue to collect a target number of games for this iteration
+            games_data_collected = []
+            target_games = cfg.training.self_play_games_per_epoch
+            collected_games = 0
+            iteration_start_time_selfplay = time.time()
+            task_id_selfplay = progress.add_task("Self-Play", total=target_games) if show_progress else None
+            while collected_games < target_games:
+                try:
+                    game_data = sp_queue.get(timeout=1.0)
+                    if game_data:
+                        games_data_collected.extend(game_data)
+                        collected_games += 1
+                        if task_id_selfplay is not None:
+                            progress.update(task_id_selfplay, advance=1)
+                except queue.Empty:
+                    # No game yet; keep waiting while actors run
+                    pass
+            if task_id_selfplay is not None:
+                progress.update(task_id_selfplay, visible=False)
+            # Quick cleanup
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
+            gc.collect()
+        elif use_multiprocessing_flag:
             # Prepare arguments for workers
             # Pass network state_dict directly since it's clean
             network_state_dict = network.state_dict()
@@ -616,6 +727,15 @@ def run_training_loop(cfg: DictConfig) -> None:
     progress.print(f"Final model saved at: {os.path.abspath(os.path.join(checkpoint_dir, 'model.pth'))}")
 
     env.close()
+    # Stop continual actors if running
+    if continual_enabled:
+        try:
+            stop_event.set()
+            for p in actors:
+                if p.is_alive():
+                    p.join(timeout=2.0)
+        except Exception:
+            pass
     progress.print("\nTraining loop finished.")
 
 
