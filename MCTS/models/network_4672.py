@@ -18,7 +18,6 @@ DEFAULT_CONV_BLOCKS_CHANNEL_LISTS = [[32]] * DEFAULT_NUM_RESIDUAL_LAYERS
 DEFAULT_ACTION_SPACE = 4672 # User-specified action space size
 DEFAULT_NUM_PIECES = 32
 DEFAULT_VALUE_HIDDEN_SIZE = 4
-DEFAULT_POLICY_CONV_BLOCKS_CHANNELS = [32] * 8
 DEFAULT_POLICY_LINEAR_OUT_FEATURES = [4672]
 
 
@@ -104,32 +103,21 @@ class PolicyHead(nn.Module):
     stack of residual convolutional blocks defined by channel lists.
     """
     def __init__(self,
-                 in_chennels: int,
+                 in_channels: int,
                  action_space_size: int,
                  vec_height: int,
                  vec_width: int,
-                 conv_blocks_channels = DEFAULT_POLICY_CONV_BLOCKS_CHANNELS,
                  linear_out_features: list = DEFAULT_POLICY_LINEAR_OUT_FEATURES):
         super().__init__()
         # Default to [64] if not provided or empty
-        if not conv_blocks_channels:
-            conv_blocks_channels = DEFAULT_POLICY_CONV_BLOCKS_CHANNELS
         self.use_residual_stack = True
         self.vec_height = vec_height
         self.vec_width = vec_width
         self.action_space_size = action_space_size
         
         # Residual conv stack for policy head
-        self.residual_blocks = nn.ModuleList()
-        current_stage_in_channels = in_chennels
-        for i, out_ch in enumerate(conv_blocks_channels):
-            if not isinstance(out_ch, int) or out_ch <= 0:
-                raise ValueError(f"Invalid policy conv out_channels at index {i}: {out_ch}")
-            self.residual_blocks.append(
-                ResidualConvBlock(channel_list=[current_stage_in_channels, out_ch], kernel_size=1)
-            )
-            current_stage_in_channels = out_ch
-        self.final_channels = current_stage_in_channels
+        self.final_channels = 2
+        self.conv = ConvBlock(in_channels, self.final_channels, kernel_size=1, padding=0)
 
         # Build fully connected stack after conv features using provided out_features
         in_features = self.final_channels * vec_height * vec_width
@@ -138,6 +126,7 @@ class PolicyHead(nn.Module):
         if linear_out_features[-1] != action_space_size:
             raise ValueError(f"The last out_features ({linear_out_features[-1]}) must equal action_space_size ({action_space_size})")
         layers = []
+        layers.append(nn.Flatten())
         prev_features = in_features
         for idx, out_features in enumerate(linear_out_features):
             layers.append(nn.Linear(prev_features, out_features))
@@ -148,13 +137,7 @@ class PolicyHead(nn.Module):
         self.fc = nn.Sequential(*layers)
 
     def forward(self, conv_features: torch.Tensor) -> torch.Tensor:
-        # Input shape: (N, C, H, W)
-        N = conv_features.size(0)
-        x = conv_features
-        for block in self.residual_blocks:
-            x = block(x)
-
-        x = x.view(N, -1)
+        x = self.conv(conv_features)
         policy_logits = self.fc(x)
         return policy_logits
 
@@ -203,7 +186,6 @@ class ChessNetwork4672(nn.Module):
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
-                 policy_conv_blocks_channels=DEFAULT_POLICY_CONV_BLOCKS_CHANNELS,
                  policy_linear_out_features: list | None = DEFAULT_POLICY_LINEAR_OUT_FEATURES,
                 ):
         super().__init__()
@@ -223,7 +205,6 @@ class ChessNetwork4672(nn.Module):
             self.action_space_size,
             self.board_height,
             self.board_width,
-            conv_blocks_channels=policy_conv_blocks_channels,
             linear_out_features=policy_linear_out_features,
         )
         self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size)
@@ -270,7 +251,6 @@ def test_network(cfg: DictConfig):
         action_space_size=cfg.network.action_space_size,
         num_pieces=cfg.network.num_pieces,
         value_head_hidden_size=cfg.network.value_head_hidden_size,
-        policy_conv_blocks_channels=cfg.network.policy_conv_blocks_channels,
         policy_linear_out_features=cfg.network.policy_linear_out_features,
     )
     print("Network Initialized.")

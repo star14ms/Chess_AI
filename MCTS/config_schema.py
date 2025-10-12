@@ -15,8 +15,6 @@ class NetworkConfig:
     action_space_size: int = 4672 # Updated based on latest yaml
     num_pieces: int = 32 # Standard number of pieces
     value_head_hidden_size: int = 256
-    # Policy head configuration
-    policy_conv_blocks_channels: Optional[List[int]] = field(default_factory=lambda: [64])
     policy_linear_out_features: Optional[List[int]] = field(default_factory=lambda: [4672])
     action_space_mode: str = "4672" # "1700" or "4672" - controls which action space and board class to use
 
