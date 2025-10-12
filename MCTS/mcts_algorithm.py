@@ -133,11 +133,11 @@ class MCTS:
 
     # --- Main Expansion & Evaluation Method ---
 
-    def _expand_and_evaluate(self, leaf_node: MCTSNode, progress: Progress | None = None) -> float:
+    def _expand_and_evaluate(self, leaf_node: MCTSNode) -> float:
         """Phase 2: Gets value for leaf_node and expands its children.
 
-        Dispatches expansion logic to _expand_sequential (if progress is not None)
-        or _expand_parallel (if progress is None).
+        Dispatches expansion logic to _expand_sequential (if self.env is not None)
+        or _expand_parallel (if self.env is None).
         """
         value = 0.0
         if not leaf_node.is_expanded:
@@ -200,7 +200,7 @@ class MCTS:
                             probs_to_use[indices_t] = combined
 
                 # 4. Dispatch to appropriate expansion method
-                if progress is not None:
+                if self.env is not None:
                     # Use sequential method (requires self.env)
                     self._expand_sequential(leaf_node, probs_to_use, uniform_prob, use_uniform_fallback)
                 else:
@@ -224,7 +224,7 @@ class MCTS:
     # --- Main Search Function ---
     def search(self, root_node: MCTSNode, iterations: int, progress: Progress | None = None):
         
-        if progress is not None:
+        if self.env is not None:
             root_fen = self.env.board.fen()
             if isinstance(self.env.board, FullyTrackedBoard):
                 root_piece_tracker = self.env.board.piece_tracker
@@ -239,7 +239,7 @@ class MCTS:
             leaf_node, search_path = self._select(root_node)
 
             # Phase 2: Expansion & Evaluation
-            value = self._expand_and_evaluate(leaf_node, progress=progress)
+            value = self._expand_and_evaluate(leaf_node)
 
             # Phase 4: Backpropagation
             leaf_node_turn = leaf_node.get_board().turn
@@ -252,7 +252,7 @@ class MCTS:
             progress.stop_task(mcts_task_id)
             progress.update(mcts_task_id, visible=False)
 
-        if progress is not None and isinstance(self.env.board, FullyTrackedBoard):
+        if self.env is not None and isinstance(self.env.board, FullyTrackedBoard):
             self.env.board.set_fen(root_fen, root_piece_tracker)
 
     # --- Get Best Move / Policy --- 

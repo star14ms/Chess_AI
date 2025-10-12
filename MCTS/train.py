@@ -146,7 +146,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         
         if cfg.mcts.iterations > 0:
             root_node = MCTSNode(env.board.copy())
-            mcts_env = env if not cfg.training.get('use_multiprocessing', False) else None
+            mcts_env = env if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False) else None
             mcts_player = MCTS(
                 network,
                 device=device,
@@ -403,7 +403,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 game_data = run_self_play_game(
                     cfg,
                     network if cfg.mcts.iterations > 0 else None,
-                    env if device.type == 'cpu' else None,  # Use the main env instance
+                    env if cfg.env.render_mode == 'human' else None,  # Use the main env instance
                     progress=progress if (device.type == 'cpu' and show_progress) else None,
                     device=device
                 )
