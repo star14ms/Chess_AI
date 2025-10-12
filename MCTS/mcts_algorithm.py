@@ -164,8 +164,16 @@ class MCTS:
                 policy_logits = policy_logits.squeeze(0)
                 value = value_pred.item() # Use network's value prediction
 
-                # 3. Calculate Probabilities (with potential fallback and noise)
-                full_probs = F.softmax(policy_logits, dim=0)
+                # 3. Calculate Probabilities (mask illegal moves before softmax)
+                legal_actions = list(leaf_board.legal_actions)
+                masked_logits = policy_logits.clone()
+                # Initialize all to -inf, then set legal indices to their logits
+                masked_logits[:] = float('-inf')
+                for aid in legal_actions:
+                    idx = aid - 1
+                    if 0 <= idx < masked_logits.shape[0]:
+                        masked_logits[idx] = policy_logits[idx]
+                full_probs = F.softmax(masked_logits, dim=0)
                 use_uniform_fallback = False
                 uniform_prob = 0.0
                 if torch.isnan(full_probs).any():
@@ -179,7 +187,6 @@ class MCTS:
                 # Add Dirichlet Noise (only if root node)
                 if leaf_node.parent is None and not use_uniform_fallback:
                     # --- Dirichlet Noise Logic --- (Same as before)
-                    legal_actions = list(leaf_board.legal_actions)
                     num_legal = len(legal_actions)
                     if num_legal > 1:
                         legal_indices = []

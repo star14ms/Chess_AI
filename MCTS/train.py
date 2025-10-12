@@ -203,13 +203,12 @@ def run_training_loop(cfg: DictConfig) -> None:
     # --- Setup ---
     # Ensure factories are initialized in the main process
     initialize_factories_from_cfg(cfg)
-    if cfg.training.device == "auto":
-        if not cfg.training.use_multiprocessing:
-            device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-        else:
-            device = torch.device("cpu")
-    else:
-        device = torch.device(cfg.training.device)
+    if cfg.training.device == "auto" or cfg.training.device == "cuda":
+        if cfg.training.device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("CUDA is not available")
+        if cfg.training.device == "mps" and not torch.backends.mps.is_available():
+            raise ValueError("MPS is not available")
+        device = torch.device("cuda" if cfg.training.device == "cuda" else "mps" if cfg.training.device == "mps" else "cpu")
     log_str_trining_device = f"{device} for training"
 
     # Print action space mode
