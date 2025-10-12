@@ -166,7 +166,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             )
             mcts_player.search(root_node, mcts_iterations, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
-            action_to_take = mcts_player.get_best_action(root_node, temperature=temperature)
+            action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1 # +1 because actions are 1-indexed
         else:
             mcts_policy = np.zeros(cfg.network.action_space_size)
             legal_actions = get_legal_actions(env.board)
@@ -182,7 +182,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         obs, _, terminated, truncated, info = env.step(action_to_take)
 
         if progress is not None:
-            progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
+            progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves}) | temp={temperature:.3f}", advance=1)
 
         move_count += 1
 
@@ -303,6 +303,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     start_iter = 0 # Initialize start_iter
     progress.print("Starting training loop...")
     total_training_start_time = time.time()
+    total_games_simulated = 0
 
     # Check for existing checkpoint
     checkpoint_path = os.path.join(load_dir, "model.pth")
@@ -314,6 +315,15 @@ def run_training_loop(cfg: DictConfig) -> None:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_iter = checkpoint['iteration']
             progress.print(f"Successfully loaded checkpoint from iteration {start_iter}")
+            # Seed cumulative games if present
+            try:
+                total_games_simulated = int(checkpoint.get('total_games_simulated', 0))
+            except Exception:
+                total_games_simulated = 0
+            if total_games_simulated:
+                progress.print(
+                    f"Resuming with total_games_simulated={total_games_simulated}"
+                )
         except Exception as e:
             progress.print(f"Error loading checkpoint: {e}")
             progress.print("Starting training from scratch...")
@@ -346,6 +356,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         num_wins = 0
         num_losses = 0
         num_draws = 0
+        games_completed_this_iter = 0
 
         if use_multiprocessing_flag:
             # Prepare arguments for workers
@@ -387,6 +398,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 for game_data in results_iterator:
                     if game_data: # Check if worker returned valid data
                         games_data_collected.extend(game_data)
+                        games_completed_this_iter += 1
                         # Infer final game result from the first tuple's value target (first player's perspective)
                         try:
                             result_value = game_data[0][3]
@@ -444,6 +456,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     device=device
                 )
                 games_data_collected.extend(game_data)
+                games_completed_this_iter += 1
                 # Infer final game result from the first tuple's value target (first player's perspective)
                 if game_data:
                     try:
@@ -475,8 +488,10 @@ def run_training_loop(cfg: DictConfig) -> None:
             replay_buffer.add(experience)
 
         self_play_duration = int(time.time() - iteration_start_time_selfplay)
-        progress.print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
+        total_games_simulated += games_completed_this_iter
+        progress.print(f"Self-play finished: {games_completed_this_iter} game(s) this iteration, total {total_games_simulated}. Steps collected: {len(games_data_collected)}. Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
         progress.print(f"Self-play results: White Wins: {num_wins}, Black Wins: {num_losses}, Draws: {num_draws}")
+        progress.print(f"Temperature schedule: start={cfg.mcts.temperature_start}, end={cfg.mcts.temperature_end}, decay_moves={cfg.mcts.temperature_decay_moves}")
 
         # --- Training Phase ---
         # Cleanup and prep GPU before training
@@ -590,6 +605,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             'iteration': iteration + 1,
             'model_state_dict': network.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'total_games_simulated': total_games_simulated,
         }
         torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
         progress.print(f"Checkpoint saved at iteration {iteration + 1}")
