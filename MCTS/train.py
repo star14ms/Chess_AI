@@ -46,7 +46,7 @@ def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
         raise ValueError(f"Unsupported environment type: {cfg.env.type}")
 
 # Helper function for parallel execution (module scope for pickling)
-def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: str):
+def self_play_worker(game_idm , network_state_dict, cfg: DictConfig, device_str: str):
     """Worker function to run a single self-play game."""
     # Ensure factories are initialized inside spawned workers
     initialize_factories_from_cfg(cfg)
@@ -171,7 +171,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
         env.board.set_fen(fen)
-        obs, reward, terminated, truncated, info = env.step(action_to_take)
+        obs, _, terminated, truncated, info = env.step(action_to_take)
 
         if progress is not None:
             progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves})", advance=1)
@@ -184,6 +184,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     for i, (state_obs, policy_target, board_at_state) in enumerate(game_history):
         is_first_player = is_first_player_turn(board_at_state)
         value_target = final_value if is_first_player else -final_value
+        value_target = -value_target if env.board.foul else value_target
         full_game_data.append((state_obs, policy_target, board_at_state, value_target))
     
     if progress is not None and task_id_game is not None:
@@ -429,7 +430,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         self_play_duration = int(time.time() - iteration_start_time_selfplay)
         progress.print(f"Self-play finished ({len(games_data_collected)} steps collected). Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
-        progress.print(f"Self-play results: Wins: {num_wins}, Losses: {num_losses}, Draws: {num_draws}")
+        progress.print(f"Self-play results: White Wins: {num_wins}, Black Wins: {num_losses}, Draws: {num_draws}")
 
         # --- Training Phase ---
         if len(replay_buffer) < cfg.training.batch_size:

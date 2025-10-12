@@ -23,7 +23,7 @@ class BaseChessBoard(chess.Board):
         self.foul: bool = False
         super().__init__(fen, chess960=chess960)
     
-    def get_board_vector(self) -> np.ndarray:
+    def get_board_vector(self, history_steps: int = 8) -> np.ndarray:
         """
         Generates a 26x8x8 numpy array representing the board state.
 
@@ -295,14 +295,15 @@ class LegacyChessBoard(BaseChessBoard):
             final_map[square] = sorted(id_list)
         return final_map
 
-    def get_board_vector(self) -> np.ndarray:
+    def get_board_vector(self, history_steps: int = 8) -> np.ndarray:
         """
         Generates a 119x8x8 numpy array following AlphaZero-style input planes.
 
         Layout: 112 history planes (8 steps × [6 own + 6 opp + 1 repetition + 1 color])
                 + 7 constant meta planes (current color, 4 castling rights, halfmove/100, bias).
         """
-        HISTORY_STEPS = 8
+        # Validate history_steps (minimum 1)
+        HISTORY_STEPS = max(1, int(history_steps))
         PLANES_PER_STEP = 14  # 6 own + 6 opp + 1 repetition + 1 color
         TOTAL_CHANNELS = HISTORY_STEPS * PLANES_PER_STEP + 7  # = 119
 

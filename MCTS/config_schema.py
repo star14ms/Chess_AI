@@ -44,6 +44,7 @@ class EnvConfig:
     observation_mode: str = "vector"
     render_mode: Optional[str] = None # Default to None
     save_video_folder: Optional[str] = None # Default to None
+    history_steps: int = 8 # Number of history snapshots for observation; must be >= 1
 
 @dataclass
 class TrainingConfig:
