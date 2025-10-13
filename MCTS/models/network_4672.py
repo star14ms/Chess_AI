@@ -25,7 +25,7 @@ class ConvBlock(nn.Module):
     """A single convolutional block with Conv -> BatchNorm -> ReLU."""
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=True)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=False)
         self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x):
@@ -56,7 +56,7 @@ class ResidualConvBlock(nn.Module):
             self.conv_blocks.append(ConvBlock(channel_list[i], channel_list[i+1], kernel_size, padding))
 
         self.last_block = nn.Sequential(
-            nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=3, padding=1, bias=True),
+            nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(channel_list[-1])
         )
 
