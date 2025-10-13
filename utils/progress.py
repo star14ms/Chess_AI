@@ -1,3 +1,4 @@
+from rich import print as pprint
 
 
 class NullProgress:
@@ -6,7 +7,7 @@ class NullProgress:
     def stop(self):
         pass
     def print(self, *args, **kwargs):
-        print(*args)
+        pprint(*args)
     def add_task(self, *args, **kwargs):
         return 0
     def update(self, *args, **kwargs):

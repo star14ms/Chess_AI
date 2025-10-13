@@ -469,17 +469,31 @@ def run_training_loop(cfg: DictConfig) -> None:
         num_losses = 0
         num_draws = 0
         games_completed_this_iter = 0
+        # Track pre-generated games (for continual mode)
+        games_from_queue = 0
+        games_waited_for = 0
 
         if continual_enabled:
             # Drain queue to collect a target number of games for this iteration
             games_data_collected = []
             target_games = cfg.training.self_play_games_per_epoch
             collected_games = 0
-            iteration_start_time_selfplay = time.time()
+            queue_drain_start = time.time()
             task_id_selfplay = progress.add_task("Self-Play", total=target_games) if show_progress else None
             while collected_games < target_games:
                 try:
-                    game_data = sp_queue.get(timeout=1.0)
+                    # Try to get immediately first
+                    try:
+                        game_data = sp_queue.get_nowait()
+                        games_from_queue += 1
+                    except queue.Empty:
+                        # If queue is empty, we need to wait for actors to generate
+                        if games_from_queue == 0:
+                            # First wait, record when actual waiting started
+                            iteration_start_time_selfplay = time.time()
+                        games_waited_for += 1
+                        game_data = sp_queue.get(timeout=1.0)
+                    
                     if game_data:
                         games_data_collected.extend(game_data)
                         collected_games += 1
@@ -501,6 +515,16 @@ def run_training_loop(cfg: DictConfig) -> None:
                 except queue.Empty:
                     # No game yet; keep waiting while actors run
                     pass
+            
+            # Calculate actual self-play time (only time spent waiting, not draining pre-generated games)
+            if games_waited_for > 0:
+                # We had to wait for games, so time since first wait is the actual self-play time
+                pass  # iteration_start_time_selfplay was already set when we started waiting
+            else:
+                # All games were pre-generated, so self-play time is essentially 0
+                # But to avoid confusion, use the queue drain time
+                iteration_start_time_selfplay = queue_drain_start
+            
             if task_id_selfplay is not None:
                 progress.update(task_id_selfplay, visible=False)
             # Record games completed for logging/checkpoint
@@ -644,7 +668,14 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         self_play_duration = int(time.time() - iteration_start_time_selfplay)
         total_games_simulated += games_completed_this_iter
-        progress.print(f"Self-play finished: {games_completed_this_iter} game(s) this iteration, total {total_games_simulated}. Steps collected: {len(games_data_collected)}. Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
+        
+        # Build self-play message with mode-specific details
+        if continual_enabled and games_from_queue > 0:
+            mode_info = f" ({games_from_queue} pre-generated, {games_waited_for} waited)"
+        else:
+            mode_info = ""
+        
+        progress.print(f"Self-play finished: {games_completed_this_iter} game(s) this iteration{mode_info}, total {total_games_simulated}. Steps collected: {len(games_data_collected)}. Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
         progress.print(f"Self-play results: White Wins: {num_wins}, Black Wins: {num_losses}, Draws: {num_draws}")
 
         # --- Training Phase ---
