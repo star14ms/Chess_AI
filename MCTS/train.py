@@ -168,6 +168,19 @@ class ReplayBuffer:
 
     def __len__(self):
         return len(self.buffer)
+    
+    def get_state(self):
+        """Returns the replay buffer state for checkpointing."""
+        return {
+            'buffer': list(self.buffer),
+            'maxlen': self.buffer.maxlen
+        }
+    
+    def load_state(self, state):
+        """Loads the replay buffer state from a checkpoint."""
+        if state is None:
+            return
+        self.buffer = deque(state['buffer'], maxlen=state['maxlen'])
 
 # --- Self-Play Function (Update args to use config subsections) ---
 def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
@@ -384,8 +397,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             p.daemon = True
             p.start()
             actors.append(p)
-        if show_progress:
-            progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
+        progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
         # For continual mode, keep training device as configured
     elif use_multiprocessing_flag and num_workers > 1:
         device = "cpu"
@@ -417,7 +429,13 @@ def run_training_loop(cfg: DictConfig) -> None:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_iter = int(checkpoint.get('iteration', 0))
             total_games_simulated = int(checkpoint.get('total_games_simulated', 0))
-            progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated")
+            
+            # Load replay buffer if available in checkpoint
+            if 'replay_buffer_state' in checkpoint:
+                replay_buffer.load_state(checkpoint['replay_buffer_state'])
+                progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated and {len(replay_buffer)} experiences in replay buffer")
+            else:
+                progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated (no replay buffer in checkpoint)")
         except Exception as e:
             progress.print(f"Error loading checkpoint: {e}")
             progress.print("Starting training from scratch...")
@@ -742,9 +760,10 @@ def run_training_loop(cfg: DictConfig) -> None:
             'model_state_dict': network.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'total_games_simulated': total_games_simulated,
+            'replay_buffer_state': replay_buffer.get_state(),
         }
         torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
-        progress.print(f"Checkpoint saved at iteration {iteration + 1}")
+        progress.print(f"Checkpoint saved at iteration {iteration + 1} with {len(replay_buffer)} experiences in replay buffer")
 
     # Final training summary
     total_training_time = time.time() - total_training_start_time
