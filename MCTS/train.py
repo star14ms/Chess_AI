@@ -69,14 +69,14 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
     else:
         network = None
 
-    game_data = run_self_play_game(
+    game_data, game_info = run_self_play_game(
         cfg,
         network,
         env=None,
         progress=None, # Pass None for progress within worker
         device=device
     )
-    return game_data
+    return (game_data, game_info)
 
 # Wrapper for imap_unordered (module scope for pickling)
 def worker_wrapper(args):
@@ -123,9 +123,9 @@ def continual_self_play_worker(checkpoint_path: str, cfg: DictConfig, device_str
 
         # Play one game and enqueue
         try:
-            game_data = run_self_play_game(cfg, network if cfg.mcts.iterations > 0 else None, env=None, progress=None, device=device)
+            game_data, game_info = run_self_play_game(cfg, network if cfg.mcts.iterations > 0 else None, env=None, progress=None, device=device)
             if game_data:
-                out_queue.put(game_data)
+                out_queue.put((game_data, game_info))
         except Exception:
             # Continue on errors to keep the actor alive
             pass
@@ -196,6 +196,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         network.eval()
 
     game_history = []
+    move_list_san = []  # Track moves in SAN notation
     move_count = 0
     terminated = False
     truncated = False
@@ -246,7 +247,15 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         board_copy_at_state = env.board.copy()
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
+        # Convert action to move and get SAN notation before making the move
         env.board.set_fen(fen)
+        if action_to_take in env.board.legal_actions:
+            move = env.action_space._action_to_move(action_to_take)
+            san_move = env.board.san(move)
+        else:
+            san_move = "ILLEGAL"
+        move_list_san.append(san_move)
+        
         obs, _, terminated, truncated, info = env.step(action_to_take)
 
         if progress is not None:
@@ -255,6 +264,15 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         move_count += 1
 
     final_value = get_game_result(env.board)
+    
+    # Get game outcome/termination reason
+    outcome = env.board.outcome(claim_draw=True)
+    if outcome:
+        termination_reason = outcome.termination.name
+    elif truncated or move_count >= max_moves:
+        termination_reason = "MAX_MOVES"
+    else:
+        termination_reason = "UNKNOWN"
 
     full_game_data = []
     for i, (state_obs, policy_target, board_at_state) in enumerate(game_history):
@@ -265,8 +283,16 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     
     if progress is not None and task_id_game is not None:
         progress.update(task_id_game, visible=False)
+    
+    # Return game data, move list in SAN, and termination reason
+    game_info = {
+        'moves_san': ' '.join(move_list_san),
+        'termination': termination_reason,
+        'move_count': move_count,
+        'result': final_value
+    }
 
-    return full_game_data
+    return (full_game_data, game_info)
 
 # --- Training Loop Function --- 
 # Use DictConfig for type hint from Hydra
@@ -469,52 +495,135 @@ def run_training_loop(cfg: DictConfig) -> None:
         num_losses = 0
         num_draws = 0
         games_completed_this_iter = 0
+        # Track draw reasons and collect game moves
+        from collections import defaultdict
+        draw_reasons = defaultdict(int)
+        game_moves_list = []  # Store all game moves for logging
         # Track pre-generated games (for continual mode)
         games_from_queue = 0
         games_waited_for = 0
 
         if continual_enabled:
-            # Drain queue to collect a target number of games for this iteration
+            # Drain queue to collect games for this iteration
+            # Strategy: Drain all available games, wait if needed to reach minimum threshold
+            # Limit: Stop if new experiences would completely replace the entire replay buffer
             games_data_collected = []
-            target_games = cfg.training.self_play_games_per_epoch
+            min_games = cfg.training.self_play_games_per_epoch  # Minimum threshold
+            max_experiences = cfg.training.replay_buffer_size  # Maximum experiences to collect
             collected_games = 0
             queue_drain_start = time.time()
-            task_id_selfplay = progress.add_task("Self-Play", total=target_games) if show_progress else None
-            while collected_games < target_games:
+            task_id_selfplay = progress.add_task("Self-Play", total=min_games) if show_progress else None
+            
+            # Phase 1: Drain all immediately available games from queue (non-blocking)
+            while True:
                 try:
-                    # Try to get immediately first
-                    try:
-                        game_data = sp_queue.get_nowait()
-                        games_from_queue += 1
-                    except queue.Empty:
-                        # If queue is empty, we need to wait for actors to generate
-                        if games_from_queue == 0:
-                            # First wait, record when actual waiting started
-                            iteration_start_time_selfplay = time.time()
-                        games_waited_for += 1
-                        game_data = sp_queue.get(timeout=1.0)
-                    
+                    game_result = sp_queue.get_nowait()
+                    game_data, game_info = game_result
+                    games_from_queue += 1
                     if game_data:
                         games_data_collected.extend(game_data)
                         collected_games += 1
+                        game_moves_list.append(game_info)
+                        # Check if we've collected enough experiences to fill the buffer
+                        if len(games_data_collected) >= max_experiences:
+                            # Stop collecting - would replace entire buffer
+                            if task_id_selfplay is not None:
+                                progress.update(task_id_selfplay, advance=1, total=max(min_games, collected_games))
+                            break
                         # Update game outcome counters (first player's perspective)
                         try:
                             result_value = game_data[0][3]
-                            if result_value is None:
+                            if result_value is None or result_value == 0:
                                 num_draws += 1
+                                draw_reasons[game_info['termination']] += 1
                             elif result_value > 0:
                                 num_wins += 1
                             elif result_value < 0:
                                 num_losses += 1
-                            else:
-                                num_draws += 1
                         except Exception:
                             pass
                         if task_id_selfplay is not None:
-                            progress.update(task_id_selfplay, advance=1)
+                            progress.update(task_id_selfplay, advance=1, total=max(min_games, collected_games))
                 except queue.Empty:
-                    # No game yet; keep waiting while actors run
-                    pass
+                    # No more immediately available games
+                    break
+            
+            # Phase 2: If we haven't reached minimum, wait for more games
+            if collected_games < min_games and len(games_data_collected) < max_experiences:
+                if collected_games == 0:
+                    # First wait, record when actual waiting started
+                    iteration_start_time_selfplay = time.time()
+                
+                while collected_games < min_games and len(games_data_collected) < max_experiences:
+                    try:
+                        game_result = sp_queue.get(timeout=1.0)
+                        game_data, game_info = game_result
+                        games_waited_for += 1
+                        if game_data:
+                            games_data_collected.extend(game_data)
+                            collected_games += 1
+                            game_moves_list.append(game_info)
+                            # Check if we've hit the buffer limit
+                            if len(games_data_collected) >= max_experiences:
+                                if task_id_selfplay is not None:
+                                    progress.update(task_id_selfplay, advance=1)
+                                break
+                            # Update game outcome counters (first player's perspective)
+                            try:
+                                result_value = game_data[0][3]
+                                if result_value is None or result_value == 0:
+                                    num_draws += 1
+                                    draw_reasons[game_info['termination']] += 1
+                                elif result_value > 0:
+                                    num_wins += 1
+                                elif result_value < 0:
+                                    num_losses += 1
+                            except Exception:
+                                pass
+                            if task_id_selfplay is not None:
+                                progress.update(task_id_selfplay, advance=1)
+                    except queue.Empty:
+                        # Keep waiting for actors to generate more
+                        pass
+            
+            # Phase 3: After reaching minimum, drain any additional available games
+            # This keeps the queue from growing too large and uses fresh games
+            # But stop if we'd replace the entire buffer
+            if len(games_data_collected) < max_experiences:
+                extra_drain_attempts = 0
+                max_extra_drain = sp_queue.maxsize if hasattr(sp_queue, 'maxsize') else 32
+                while extra_drain_attempts < max_extra_drain and len(games_data_collected) < max_experiences:
+                    try:
+                        game_result = sp_queue.get_nowait()
+                        game_data, game_info = game_result
+                        games_from_queue += 1
+                        if game_data:
+                            games_data_collected.extend(game_data)
+                            collected_games += 1
+                            game_moves_list.append(game_info)
+                            # Check if we've hit the buffer limit
+                            if len(games_data_collected) >= max_experiences:
+                                if task_id_selfplay is not None:
+                                    progress.update(task_id_selfplay, advance=1, total=max(min_games, collected_games))
+                                break
+                            # Update game outcome counters
+                            try:
+                                result_value = game_data[0][3]
+                                if result_value is None or result_value == 0:
+                                    num_draws += 1
+                                    draw_reasons[game_info['termination']] += 1
+                                elif result_value > 0:
+                                    num_wins += 1
+                                elif result_value < 0:
+                                    num_losses += 1
+                            except Exception:
+                                pass
+                            if task_id_selfplay is not None:
+                                progress.update(task_id_selfplay, advance=1, total=max(min_games, collected_games))
+                        extra_drain_attempts += 1
+                    except queue.Empty:
+                        # No more games available
+                        break
             
             # Calculate actual self-play time (only time spent waiting, not draining pre-generated games)
             if games_waited_for > 0:
@@ -574,21 +683,22 @@ def run_training_loop(cfg: DictConfig) -> None:
                 # Process results with a progress bar
                 task_id_selfplay = progress.add_task("Self-Play", total=len(worker_args_packed))
                 # Iterate over results as they become available
-                for game_data in results_iterator:
-                    if game_data: # Check if worker returned valid data
+                for game_result in results_iterator:
+                    if game_result: # Check if worker returned valid data
+                        game_data, game_info = game_result
                         games_data_collected.extend(game_data)
                         games_completed_this_iter += 1
+                        game_moves_list.append(game_info)
                         # Infer final game result from the first tuple's value target (first player's perspective)
                         try:
                             result_value = game_data[0][3]
-                            if result_value is None:
+                            if result_value is None or result_value == 0:
                                 num_draws += 1
+                                draw_reasons[game_info['termination']] += 1
                             elif result_value > 0:
                                 num_wins += 1
                             elif result_value < 0:
                                 num_losses += 1
-                            else:
-                                num_draws += 1
                         except Exception:
                             # If unexpected structure, skip counting for this game
                             pass
@@ -627,7 +737,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             for game_num in range(cfg.training.self_play_games_per_epoch):
                 progress.update(task_id_selfplay, description=f"Self-Play Game ({game_num+1}/{cfg.training.self_play_games_per_epoch})")
                 # Run game in the main process using the main env instance
-                game_data = run_self_play_game(
+                game_data, game_info = run_self_play_game(
                     cfg,
                     network if cfg.mcts.iterations > 0 else None,
                     env if cfg.env.render_mode == 'human' else None,  # Use the main env instance
@@ -636,18 +746,18 @@ def run_training_loop(cfg: DictConfig) -> None:
                 )
                 games_data_collected.extend(game_data)
                 games_completed_this_iter += 1
+                game_moves_list.append(game_info)
                 # Infer final game result from the first tuple's value target (first player's perspective)
                 if game_data:
                     try:
                         result_value = game_data[0][3]
-                        if result_value is None:
+                        if result_value is None or result_value == 0:
                             num_draws += 1
+                            draw_reasons[game_info['termination']] += 1
                         elif result_value > 0:
                             num_wins += 1
                         elif result_value < 0:
                             num_losses += 1
-                        else:
-                            num_draws += 1
                     except Exception:
                         pass
                 progress.update(task_id_selfplay, advance=1)
@@ -671,12 +781,36 @@ def run_training_loop(cfg: DictConfig) -> None:
         
         # Build self-play message with mode-specific details
         if continual_enabled and games_from_queue > 0:
-            mode_info = f" ({games_from_queue} pre-generated, {games_waited_for} waited)"
+            min_games = cfg.training.self_play_games_per_epoch
+            extra_games = games_completed_this_iter - min_games
+            buffer_limit_hit = len(games_data_collected) >= cfg.training.replay_buffer_size
+            
+            if buffer_limit_hit:
+                mode_info = f" (min={min_games} + {extra_games} extra [BUFFER LIMIT], {games_from_queue} pre-gen / {games_waited_for} waited)"
+            elif extra_games > 0:
+                mode_info = f" (min={min_games} + {extra_games} extra, {games_from_queue} pre-gen / {games_waited_for} waited)"
+            else:
+                mode_info = f" ({games_from_queue} pre-generated, {games_waited_for} waited)"
         else:
             mode_info = ""
         
-        progress.print(f"Self-play finished: {games_completed_this_iter} game(s) this iteration{mode_info}, total {total_games_simulated}. Steps collected: {len(games_data_collected)}. Duration: {format_time(self_play_duration)}. Buffer size: {len(replay_buffer)}")
-        progress.print(f"Self-play results: White Wins: {num_wins}, Black Wins: {num_losses}, Draws: {num_draws}")
+        # Build draw reasons string
+        draw_info = ""
+        if num_draws > 0 and draw_reasons:
+            draw_breakdown = ", ".join([f"{k}: {v}" for k, v in sorted(draw_reasons.items(), key=lambda x: -x[1])])
+            draw_info = f" [{draw_breakdown}]"
+        
+        progress.print(f"Self-play: {games_completed_this_iter} games{mode_info}, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info} | {format_time(self_play_duration)}")
+        
+        # Save game moves to file
+        if game_moves_list:
+            games_file = os.path.join(checkpoint_dir, f"games_iter_{iteration+1}.txt")
+            with open(games_file, 'w') as f:
+                for i, game_info in enumerate(game_moves_list):
+                    result_str = "1-0" if game_info['result'] > 0 else "0-1" if game_info['result'] < 0 else "1/2-1/2"
+                    f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
+                    f.write(f"{game_info['moves_san']}\n\n")
+            progress.print(f"Saved {len(game_moves_list)} game(s) to {games_file}")
 
         # --- Training Phase ---
         # Cleanup and prep GPU before training
