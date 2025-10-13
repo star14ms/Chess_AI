@@ -75,5 +75,6 @@ training:
   max_game_moves: 100
   checkpoint_dir: ./checkpoints
   checkpoint_dir_load: null # If set, load checkpoints from here; otherwise use checkpoint_dir
+  game_history_dir: ./game_history # Directory to save game history files. Set to null to disable.
   initial_board_fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
   progress_bar: true

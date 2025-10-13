@@ -393,6 +393,14 @@ def run_training_loop(cfg: DictConfig) -> None:
     load_dir = checkpoint_dir_load if checkpoint_dir_load not in (None, "", "null") else checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
     progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
+    
+    # Game history directory setup (optional)
+    game_history_dir = cfg.training.get('game_history_dir', None)
+    if game_history_dir not in (None, "", "null"):
+        os.makedirs(game_history_dir, exist_ok=True)
+        progress.print(f"Game histories will be saved in: {os.path.abspath(game_history_dir)}")
+    else:
+        game_history_dir = None
 
     env = create_environment(cfg, render=not use_multiprocessing_flag)
 
@@ -803,14 +811,13 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.print(f"Self-play: {games_completed_this_iter} games{mode_info}, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info} | {format_time(self_play_duration)}")
         
         # Save game moves to file
-        if game_moves_list:
-            games_file = os.path.join(checkpoint_dir, f"games_iter_{iteration+1}.txt")
+        if game_moves_list and game_history_dir:
+            games_file = os.path.join(game_history_dir, f"games_iter_{iteration+1}.txt")
             with open(games_file, 'w') as f:
                 for i, game_info in enumerate(game_moves_list):
                     result_str = "1-0" if game_info['result'] > 0 else "0-1" if game_info['result'] < 0 else "1/2-1/2"
                     f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
                     f.write(f"{game_info['moves_san']}\n\n")
-            progress.print(f"Saved {len(game_moves_list)} game(s) to {games_file}")
 
         # --- Training Phase ---
         # Cleanup and prep GPU before training

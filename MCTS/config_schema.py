@@ -57,8 +57,9 @@ class TrainingConfig:
     continual_training: bool = True # If True, continue training from the last checkpoint
     continual_queue_maxsize: int = 64 # Maximum size of the queue for continual training
     max_game_moves: int = 200
-    checkpoint_dir: str = "checkpoints" # Will be relative to hydra output dir
+    checkpoint_dir: str = "./checkpoints" # Will be relative to hydra output dir
     checkpoint_dir_load: Optional[str] = None # Optional separate directory to load checkpoints from (defaults to checkpoint_dir if None or empty)
+    game_history_dir: Optional[str] = "./output/" # Directory to save game history files (moves in SAN notation). Set to None to disable.
     progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
     initial_board_fen: str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" #except pawns
 
