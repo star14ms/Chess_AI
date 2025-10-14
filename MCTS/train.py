@@ -299,7 +299,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 def run_training_loop(cfg: DictConfig) -> None: 
     """Main function to run the training loop using Hydra config."""
     # Defer real progress creation until we know whether to display
-    progress = NullProgress()
+    progress = NullProgress(rich=cfg.training.progress_bar)
 
     # --- Setup ---
     # Ensure factories are initialized in the main process

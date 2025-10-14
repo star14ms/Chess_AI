@@ -2,12 +2,17 @@ from rich import print as pprint
 
 
 class NullProgress:
+    def __init__(self, rich=True):
+        self.rich = rich
     def start(self):
         pass
     def stop(self):
         pass
     def print(self, *args, **kwargs):
-        pprint(*args)
+        if self.rich:
+            pprint(*args, **kwargs)
+        else:
+            print(*args, **kwargs)
     def add_task(self, *args, **kwargs):
         return 0
     def update(self, *args, **kwargs):
