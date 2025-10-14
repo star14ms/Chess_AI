@@ -31,6 +31,7 @@ network:
   value_head_hidden_size: 256
   # Policy head structure
   policy_linear_out_features: [4672] # e.g., [1024, 512, 4672]; last must equal action_space_size
+  conv_bias: false # Whether to use bias in convolutional layers
 
 # New Env section
 env:
