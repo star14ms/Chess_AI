@@ -16,6 +16,7 @@ class NetworkConfig:
     num_pieces: int = 32 # Standard number of pieces
     value_head_hidden_size: int = 256
     policy_linear_out_features: Optional[List[int]] = field(default_factory=lambda: [4672])
+    conv_bias: bool = False # Whether to use bias in convolutional layers
 
 @dataclass
 class MCTSConfig:

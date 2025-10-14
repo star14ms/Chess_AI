@@ -23,9 +23,9 @@ DEFAULT_POLICY_LINEAR_OUT_FEATURES = [4672]
 
 class ConvBlock(nn.Module):
     """A single convolutional block with Conv -> BatchNorm -> ReLU."""
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, conv_bias=False):
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=False)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=conv_bias)
         self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x):
@@ -33,7 +33,7 @@ class ConvBlock(nn.Module):
 
 class ConvBlockInitial(nn.Module):
     """A multi-scale convolutional block that captures both local and long-range patterns."""
-    def __init__(self, in_channels, initial_conv_block_out_channels=[32, 32, 32, 32, 32, 32, 32, 32]):
+    def __init__(self, in_channels, initial_conv_block_out_channels=[32, 32, 32, 32, 32, 32, 32, 32], conv_bias=False):
         super().__init__()
         self.conv_paths = nn.ModuleList()
         self.bn_paths = nn.ModuleList()
@@ -41,7 +41,7 @@ class ConvBlockInitial(nn.Module):
         initial_conv_block_out_channels = [in_channels] + initial_conv_block_out_channels
         self.conv_blocks = nn.Sequential()
         for i in range(len(initial_conv_block_out_channels)-1):
-            self.conv_blocks.append(ConvBlock(initial_conv_block_out_channels[i], initial_conv_block_out_channels[i+1], kernel_size=3, padding=1))
+            self.conv_blocks.append(ConvBlock(initial_conv_block_out_channels[i], initial_conv_block_out_channels[i+1], kernel_size=3, padding=1, conv_bias=conv_bias))
             
         self.bn = nn.BatchNorm2d(initial_conv_block_out_channels[-1])
 
@@ -49,14 +49,14 @@ class ConvBlockInitial(nn.Module):
         return F.relu(self.bn(self.conv_blocks(x)))
 
 class ResidualConvBlock(nn.Module):
-    def __init__(self, channel_list, kernel_size=3, padding=1):
+    def __init__(self, channel_list, kernel_size=3, padding=1, conv_bias=False):
         super().__init__()
         self.conv_blocks = nn.Sequential()
         for i in range(len(channel_list)-1):
-            self.conv_blocks.append(ConvBlock(channel_list[i], channel_list[i+1], kernel_size, padding))
+            self.conv_blocks.append(ConvBlock(channel_list[i], channel_list[i+1], kernel_size, padding, conv_bias=conv_bias))
 
         self.last_block = nn.Sequential(
-            nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=3, padding=1, bias=conv_bias),
             nn.BatchNorm2d(channel_list[-1])
         )
 
@@ -66,12 +66,12 @@ class ResidualConvBlock(nn.Module):
 # --- Convolutional Body Module ---
 class ConvBody(nn.Module):
     """Encapsulates the initial conv stack and subsequent residual stages."""
-    def __init__(self, input_channels: int, initial_conv_block_out_channels: list, residual_blocks_out_channels: list, num_residual_layers: int):
+    def __init__(self, input_channels: int, initial_conv_block_out_channels: list, residual_blocks_out_channels: list, num_residual_layers: int, conv_bias: bool = False):
         super().__init__()
         if residual_blocks_out_channels is None or len(residual_blocks_out_channels) != num_residual_layers:
             raise ValueError(f"residual_blocks_out_channels must be a list of length num_residual_layers ({num_residual_layers})")
 
-        self.first_conv_block = ConvBlockInitial(input_channels, initial_conv_block_out_channels=initial_conv_block_out_channels)
+        self.first_conv_block = ConvBlockInitial(input_channels, initial_conv_block_out_channels=initial_conv_block_out_channels, conv_bias=conv_bias)
         self.initial_conv_block_out_channels_last_stage = initial_conv_block_out_channels[-1]
 
         self.residual_blocks = nn.ModuleList()
@@ -83,7 +83,7 @@ class ConvBody(nn.Module):
                 if not ch_list:
                     raise ValueError(f"Channel list for conv stage {i} cannot be empty")
                 self.residual_blocks.append(
-                    ResidualConvBlock(channel_list=[current_stage_in_channels] + ch_list)
+                    ResidualConvBlock(channel_list=[current_stage_in_channels] + ch_list, conv_bias=conv_bias)
                 )
                 current_stage_in_channels = ch_list[-1]
         else:
@@ -107,7 +107,8 @@ class PolicyHead(nn.Module):
                  action_space_size: int,
                  vec_height: int,
                  vec_width: int,
-                 linear_out_features: list = DEFAULT_POLICY_LINEAR_OUT_FEATURES):
+                 linear_out_features: list = DEFAULT_POLICY_LINEAR_OUT_FEATURES,
+                 conv_bias: bool = False):
         super().__init__()
         # Default to [64] if not provided or empty
         self.use_residual_stack = True
@@ -117,7 +118,7 @@ class PolicyHead(nn.Module):
         
         # Residual conv stack for policy head
         final_channels = 2
-        self.conv = ConvBlock(in_channels, final_channels, kernel_size=1, padding=0)
+        self.conv = ConvBlock(in_channels, final_channels, kernel_size=1, padding=0, conv_bias=conv_bias)
 
         # Build fully connected stack after conv features using provided out_features
         in_features = final_channels * vec_height * vec_width
@@ -144,11 +145,11 @@ class PolicyHead(nn.Module):
 # --- Value Head Module ---
 class ValueHead(nn.Module):
     """Calculates the value estimate from the final convolutional features."""
-    def __init__(self, num_channels: int, board_height: int, board_width: int, hidden_size: int = 256):
+    def __init__(self, num_channels: int, board_height: int, board_width: int, hidden_size: int = 256, conv_bias: bool = False):
         super().__init__()
         # Input channels = C
         # Use a 1x1 Conv block to reduce channels to 1
-        self.conv = ConvBlock(num_channels, 1, kernel_size=1, padding=0) 
+        self.conv = ConvBlock(num_channels, 1, kernel_size=1, padding=0, conv_bias=conv_bias) 
         value_input_size = 1 * board_height * board_width 
         self.fc1 = nn.Linear(value_input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, 1)
@@ -184,6 +185,7 @@ class ChessNetwork4672(nn.Module):
                  num_pieces=DEFAULT_NUM_PIECES,
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
                  policy_linear_out_features: list | None = DEFAULT_POLICY_LINEAR_OUT_FEATURES,
+                 conv_bias: bool = False,
                 ):
         super().__init__()
         self.board_height = board_size
@@ -193,7 +195,7 @@ class ChessNetwork4672(nn.Module):
         self.num_residual_layers = num_residual_layers
         self.num_pieces = num_pieces
         # --- Convolutional Body ---
-        self.body = ConvBody(self.input_channels, initial_conv_block_out_channels, residual_blocks_out_channels, num_residual_layers)
+        self.body = ConvBody(self.input_channels, initial_conv_block_out_channels, residual_blocks_out_channels, num_residual_layers, conv_bias=conv_bias)
         self.final_conv_channels = self.body.final_conv_channels
 
         # --- Instantiate Head Modules (using C_final) --- 
@@ -203,8 +205,9 @@ class ChessNetwork4672(nn.Module):
             self.board_height,
             self.board_width,
             linear_out_features=policy_linear_out_features,
+            conv_bias=conv_bias,
         )
-        self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size)
+        self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size, conv_bias=conv_bias)
 
     def forward(self, x):
         """Forward pass through the network.
@@ -249,6 +252,7 @@ def test_network(cfg: DictConfig):
         num_pieces=cfg.network.num_pieces,
         value_head_hidden_size=cfg.network.value_head_hidden_size,
         policy_linear_out_features=cfg.network.policy_linear_out_features,
+        conv_bias=cfg.network.conv_bias,
     )
     print("Network Initialized.")
     print(f"Using: num_residual_layers={network.num_residual_layers}, final_conv_channels={network.final_conv_channels}, action_space={network.action_space_size}")

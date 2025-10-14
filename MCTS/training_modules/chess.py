@@ -27,6 +27,7 @@ def create_chess_network(cfg, device) -> nn.Module:
             num_pieces=cfg.network.num_pieces,
             value_head_hidden_size=cfg.network.value_head_hidden_size,
             policy_linear_out_features=cfg.network.policy_linear_out_features,
+            conv_bias=cfg.network.conv_bias,
         ).to(device)
     else:
         network = ChessNetwork(
