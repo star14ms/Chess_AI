@@ -99,7 +99,7 @@ def continual_self_play_worker(checkpoint_path: str, cfg: DictConfig, device_str
         network = create_network(cfg, device)
         if os.path.exists(checkpoint_path):
             try:
-                ckpt = torch.load(checkpoint_path, map_location=device)
+                ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
                 network.load_state_dict(ckpt['model_state_dict'])
             except Exception:
                 pass
@@ -458,7 +458,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     if os.path.exists(checkpoint_path):
         progress.print(f"\nFound existing checkpoint at {checkpoint_path}")
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             network.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_iter = int(checkpoint.get('iteration', 0))
