@@ -70,4 +70,10 @@ def get_chess_legal_actions(board: BaseChessBoard) -> list[int]:
 
 def action_id_to_move(board: BaseChessBoard, action_id: int) -> chess.Move:
     """Convert action ID to move on chess board."""
-    return board.action_id_to_move(action_id) 
+    return board.action_id_to_move(action_id)
+
+def create_board_from_fen(fen: str) -> BaseChessBoard:
+    """Create a chess board from a FEN string."""
+    board = BaseChessBoard()
+    board.set_fen(fen)
+    return board 

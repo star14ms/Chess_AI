@@ -13,6 +13,8 @@ import multiprocessing # Keep for potential parallel execution
 import queue
 import torch.nn.functional as F
 from torch import nn
+import pickle
+import gzip
 
 # Assuming files are in the MCTS directory relative to the project root
 from mcts_node import MCTSNode
@@ -25,9 +27,10 @@ create_environment = None
 get_game_result = None
 is_first_player_turn = None
 get_legal_actions = None
+create_board_from_serialized = None
 
 def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
-    global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions
+    global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions, create_board_from_serialized
     if cfg.env.type == "chess":
         from training_modules.chess import (
             create_chess_env as create_environment,
@@ -35,6 +38,7 @@ def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
             get_chess_game_result as get_game_result,
             is_white_turn as is_first_player_turn,
             get_chess_legal_actions as get_legal_actions,
+            create_board_from_fen as create_board_from_serialized,
         )
     elif cfg.env.type == "gomoku":
         from training_modules.gomoku import (
@@ -43,6 +47,7 @@ def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
             get_gomoku_game_result as get_game_result,
             is_gomoku_first_player_turn as is_first_player_turn,
             get_gomoku_legal_actions as get_legal_actions,
+            create_board_from_state as create_board_from_serialized,
         )
     else:
         raise ValueError(f"Unsupported environment type: {cfg.env.type}")
@@ -169,18 +174,96 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
     
-    def get_state(self):
-        """Returns the replay buffer state for checkpointing."""
+    def get_state(self, env_type='chess'):
+        """Returns the replay buffer state for checkpointing in compressed format.
+        
+        Args:
+            env_type: Type of environment ('chess' or 'gomoku')
+        """
+        if len(self.buffer) == 0:
+            return {
+                'buffer': [],
+                'maxlen': self.buffer.maxlen,
+                'compressed': False
+            }
+        
+        # Convert experiences to a more compact format
+        # Store board as serialized strings instead of full board objects
+        compact_buffer = []
+        for exp in self.buffer:
+            state, policy, board, value = exp
+            # Serialize board based on environment type
+            if env_type == 'chess':
+                # Convert board to FEN string (much smaller than board object)
+                board_str = board.fen()
+            elif env_type == 'gomoku':
+                # Serialize gomoku board as: size,move_count;row0;row1;...
+                size = board.size
+                move_count = board.move
+                rows = [','.join(str(board.board_state[i][j]) for j in range(size)) for i in range(size)]
+                board_str = f"{size},{move_count};{';'.join(rows)}"
+            else:
+                # Fallback: try FEN if available
+                board_str = board.fen() if hasattr(board, 'fen') else str(board)
+            
+            compact_exp = (
+                state.astype(np.float16),  # Use half precision to save space
+                policy.astype(np.float16),
+                board_str,
+                float(value)
+            )
+            compact_buffer.append(compact_exp)
+        
+        # Compress the buffer data using gzip
+        buffer_bytes = pickle.dumps(compact_buffer, protocol=pickle.HIGHEST_PROTOCOL)
+        compressed_bytes = gzip.compress(buffer_bytes, compresslevel=6)
+        
         return {
-            'buffer': list(self.buffer),
-            'maxlen': self.buffer.maxlen
+            'buffer_compressed': compressed_bytes,
+            'maxlen': self.buffer.maxlen,
+            'env_type': env_type,
+            'compressed': True
         }
     
-    def load_state(self, state):
-        """Loads the replay buffer state from a checkpoint."""
+    def load_state(self, state, board_factory_fn=None):
+        """Loads the replay buffer state from a checkpoint.
+        
+        Args:
+            state: The replay buffer state dictionary
+            board_factory_fn: Function that takes a serialized board string and returns a board object
+                             (only needed for compressed format)
+        """
         if state is None:
             return
-        self.buffer = deque(state['buffer'], maxlen=state['maxlen'])
+        
+        # Check if this is compressed format
+        if state.get('compressed', False):
+            # Decompress and reconstruct
+            compressed_bytes = state['buffer_compressed']
+            buffer_bytes = gzip.decompress(compressed_bytes)
+            compact_buffer = pickle.loads(buffer_bytes)
+            
+            if board_factory_fn is None:
+                raise ValueError("board_factory_fn is required for loading compressed replay buffer")
+            
+            # Convert back to full format with board objects
+            full_buffer = []
+            for compact_exp in compact_buffer:
+                state_data, policy, board_str, value = compact_exp
+                # Reconstruct board object from serialized string
+                board = board_factory_fn(board_str)
+                exp = (
+                    state_data.astype(np.float32),  # Convert back to float32
+                    policy.astype(np.float32),
+                    board,
+                    value
+                )
+                full_buffer.append(exp)
+            
+            self.buffer = deque(full_buffer, maxlen=state['maxlen'])
+        else:
+            # Legacy uncompressed format
+            self.buffer = deque(state['buffer'], maxlen=state['maxlen'])
 
 # --- Self-Play Function (Update args to use config subsections) ---
 def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
@@ -464,12 +547,20 @@ def run_training_loop(cfg: DictConfig) -> None:
             start_iter = int(checkpoint.get('iteration', 0))
             total_games_simulated = int(checkpoint.get('total_games_simulated', 0))
             
-            # Load replay buffer if available in checkpoint
+            # Try to load replay buffer from checkpoint
+            buffer_loaded = False
             if 'replay_buffer_state' in checkpoint:
-                replay_buffer.load_state(checkpoint['replay_buffer_state'])
+                try:
+                    replay_buffer.load_state(checkpoint['replay_buffer_state'], create_board_from_serialized)
+                    progress.print(f"Loaded replay buffer from checkpoint: {len(replay_buffer)} experiences")
+                    buffer_loaded = True
+                except Exception as e:
+                    progress.print(f"Warning: Failed to load replay buffer from checkpoint: {e}")
+            
+            if buffer_loaded:
                 progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated and {len(replay_buffer)} experiences in replay buffer")
             else:
-                progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated (no replay buffer in checkpoint)")
+                progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated (no replay buffer found)")
         except Exception as e:
             progress.print(f"Error loading checkpoint: {e}")
             progress.print("Starting training from scratch...")
@@ -932,10 +1023,12 @@ def run_training_loop(cfg: DictConfig) -> None:
             'model_state_dict': network.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'total_games_simulated': total_games_simulated,
-            'replay_buffer_state': replay_buffer.get_state(),
+            'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
         }
         torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
-        progress.print(f"Checkpoint saved at iteration {iteration + 1} with {len(replay_buffer)} experiences in replay buffer")
+        
+        checkpoint_size_mb = os.path.getsize(os.path.join(checkpoint_dir, "model.pth")) / (1024 * 1024)
+        progress.print(f"Checkpoint saved at iteration {iteration + 1} with {len(replay_buffer)} experiences in replay buffer ({checkpoint_size_mb:.1f}MB)")
 
     # Final training summary
     total_training_time = time.time() - total_training_start_time

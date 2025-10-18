@@ -53,3 +53,24 @@ def is_gomoku_first_player_turn(board: Board) -> bool:
 def get_gomoku_legal_actions(board: Board) -> list[int]:
     """Get legal moves (action IDs) from a Gomoku board (Board instance)."""
     return board.legal_actions
+
+def create_board_from_state(board_state_str: str) -> Board:
+    """Create a gomoku board from a serialized board state string.
+    
+    Format: size,move_count;r0c0,r0c1,...;r1c0,r1c1,...
+    """
+    parts = board_state_str.split(';')
+    meta = parts[0].split(',')
+    size = int(meta[0])
+    move_count = int(meta[1])
+    
+    board = Board(size)
+    board.move = move_count
+    
+    # Reconstruct board state
+    for i, row_str in enumerate(parts[1:]):
+        row_values = [int(x) for x in row_str.split(',')]
+        for j, val in enumerate(row_values):
+            board.board_state[i][j] = val
+    
+    return board
