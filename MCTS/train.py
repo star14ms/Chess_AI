@@ -535,6 +535,14 @@ def run_training_loop(cfg: DictConfig) -> None:
     progress.print("Starting training loop...")
     total_training_start_time = time.time()
     total_games_simulated = 0
+    
+    # Initialize metric tracking lists for learning curves
+    history = {
+        'policy_loss': [],
+        'value_loss': [],
+        'illegal_move_ratio': [],
+        'illegal_move_prob': [],
+    }
 
     # Check for existing checkpoint
     checkpoint_path = os.path.join(load_dir, "model.pth")
@@ -546,6 +554,11 @@ def run_training_loop(cfg: DictConfig) -> None:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_iter = int(checkpoint.get('iteration', 0))
             total_games_simulated = int(checkpoint.get('total_games_simulated', 0))
+            
+            # Load training history if available
+            if 'history' in checkpoint:
+                history = checkpoint['history']
+                progress.print(f"Loaded training history with {len(history['policy_loss'])} recorded iterations")
             
             # Try to load replay buffer from checkpoint
             buffer_loaded = False
@@ -1016,6 +1029,12 @@ def run_training_loop(cfg: DictConfig) -> None:
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
         progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)})")
+        
+        # Record metrics for learning curve visualization
+        history['policy_loss'].append(avg_policy_loss)
+        history['value_loss'].append(avg_value_loss)
+        history['illegal_move_ratio'].append(avg_illegal_ratio)
+        history['illegal_move_prob'].append(avg_illegal_prob_mass)
 
         # Save checkpoint after each iteration
         checkpoint = {
@@ -1024,6 +1043,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             'optimizer_state_dict': optimizer.state_dict(),
             'total_games_simulated': total_games_simulated,
             'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
+            'history': history,
         }
         torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
         
