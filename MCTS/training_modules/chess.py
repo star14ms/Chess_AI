@@ -10,7 +10,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from chess_gym.envs import ChessEnv
-from chess_gym.chess_custom import BaseChessBoard
+from chess_gym.chess_custom import BaseChessBoard, LegacyChessBoard
 from MCTS.models.network import ChessNetwork
 from MCTS.models.network_4672 import ChessNetwork4672
 
@@ -74,6 +74,6 @@ def action_id_to_move(board: BaseChessBoard, action_id: int) -> chess.Move:
 
 def create_board_from_fen(fen: str) -> BaseChessBoard:
     """Create a chess board from a FEN string."""
-    board = BaseChessBoard()
+    board = LegacyChessBoard()
     board.set_fen(fen)
     return board 
