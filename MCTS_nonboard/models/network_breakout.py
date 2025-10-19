@@ -142,7 +142,7 @@ def test_network(cfg):
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from MCTS_nonboard.training_modules.breakout import CroppedBreakoutEnv
     from torchview_custom.torchview import draw_graphs
-    from utils.profile import profile_model
+    from utils.profile_model import profile_model
 
     # Example instantiation with new config
     network = BreakoutNetwork(

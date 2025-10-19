@@ -19,7 +19,7 @@ import gzip
 # Assuming files are in the MCTS directory relative to the project root
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
-from utils.profile import get_optimal_worker_count, profile_model, format_time
+from utils.profile_model import get_optimal_worker_count, profile_model, format_time
 from utils.progress import NullProgress
 
 create_network = None

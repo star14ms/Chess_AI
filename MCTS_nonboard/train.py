@@ -15,7 +15,7 @@ from training_modules.breakout import (
     create_breakout_network,
 )
 from collections import deque
-from utils.profile import profile_model, get_optimal_worker_count
+from utils.profile_model import profile_model, get_optimal_worker_count
 from utils.progress import NullProgress
 import torch.nn.functional as F
 

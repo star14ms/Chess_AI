@@ -212,7 +212,7 @@ def test_network(cfg: DictConfig):
     import os
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from torchview_custom.torchview import draw_graphs
-    from utils.profile import profile_model
+    from utils.profile_model import profile_model
     # from utils.analyze import interpret_tile
 
     # Example instantiation with new config
