@@ -30,8 +30,7 @@ from omegaconf import DictConfig
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import network creation function
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'MCTS'))
+from chess_gym.chess_custom import LegacyChessBoard
 from MCTS.training_modules.chess import create_chess_network
 
 
@@ -143,7 +142,7 @@ def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.
             for obs, _, board_str, _ in batch:
                 obs_batch.append(obs)
                 try:
-                    board = chess.Board(board_str)
+                    board = LegacyChessBoard(board_str)
                     boards.append(board)
                     
                     # Determine if white or black to move
