@@ -186,23 +186,16 @@ def draw_possible_actions_on_board(
     # Create a new board with the same FEN (optional)
     new_board = chess.Board(board.fen())
 
-    # Draw the labels (SANs or IDs) on the board, getting the SVG object
-    svg_object = draw_numbers_on_board(squares_to_labels, new_board, image_size=size, return_pil_image=return_pil_image)
+    # Draw the labels (SANs or IDs) on the board
+    result = draw_numbers_on_board(squares_to_labels, new_board, image_size=size, return_pil_image=return_pil_image)
 
-    # Extract the SVG string data
-    svg_string_data = svg_object.data
-
-    if not return_pil_image:
-        return SVG(svg_string_data)
-
-    # Convert SVG string data to PNG bytes in memory
-    png_bytes = cairosvg.svg2png(bytestring=svg_string_data.encode('utf-8'))
-
-    # Load PNG bytes into a PIL Image
-    image_stream = io.BytesIO(png_bytes)
-    pil_image = Image.open(image_stream)
-
-    return pil_image
+    # If return_pil_image is True, draw_numbers_on_board already returns a PIL Image
+    if return_pil_image:
+        return result
+    
+    # Otherwise, it returns an SVG object, so extract the SVG string data
+    svg_string_data = result.data
+    return SVG(svg_string_data)
 
 
 def board_to_svg(board: chess.Board, size: int = 390) -> str:

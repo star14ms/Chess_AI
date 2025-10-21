@@ -43,14 +43,15 @@ def create_chess_network(cfg, device) -> nn.Module:
         ).to(device)
     return network
 
-def create_chess_env(cfg, render=False) -> ChessEnv:
+def create_chess_env(cfg, render=False, render_mode=None, show_possible_actions=False) -> ChessEnv:
     """Create and initialize the chess environment."""
     return ChessEnv(
         observation_mode=cfg.env.observation_mode,
-        render_mode=cfg.env.render_mode if render else None,
+        render_mode=cfg.env.render_mode if render and render_mode is None else render_mode if render else None,
         save_video_folder=cfg.env.save_video_folder if render else None,
         action_space_size=cfg.network.action_space_size,
-        history_steps=cfg.env.history_steps
+        history_steps=cfg.env.history_steps,
+        show_possible_actions=show_possible_actions
     )
 
 def get_chess_game_result(board: BaseChessBoard) -> float:
