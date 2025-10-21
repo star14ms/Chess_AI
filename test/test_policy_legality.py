@@ -179,7 +179,7 @@ def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.
                     stats['total_positions'] += 1
                     
                     # Get legal action IDs from board (1-indexed)
-                    legal_actions_1indexed = set(board.legal_actions())
+                    legal_actions_1indexed = set(board.legal_actions)
                     # Convert to 0-indexed for policy array indexing
                     legal_indices = set(action_id - 1 for action_id in legal_actions_1indexed)
                     
