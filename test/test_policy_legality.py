@@ -131,8 +131,7 @@ def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.
             batch_end = min(batch_start + batch_size, total_positions)
             batch = training_data[batch_start:batch_end]
             
-            if batch_start % 1000 == 0:
-                print(f"  Processed {batch_start}/{total_positions} positions...")
+            print(f"  Processed {batch_start}/{total_positions} positions...")
             
             # Prepare batch observations
             obs_batch = []

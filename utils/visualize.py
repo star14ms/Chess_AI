@@ -17,7 +17,7 @@ def draw_numbers_on_board(
     text_color: str = "red",
     font_size: int = None,
     line_height: str = "1.2em", # <-- Vertical distance between lines (adjust as needed)
-    board_size: int = 400,
+    image_size: int = 400,
     return_pil_image: bool = False,
     **kwargs
 ) -> Union[SVG, Image.Image]:
@@ -32,7 +32,7 @@ def draw_numbers_on_board(
         text_color: The color of the text to be drawn.
         font_size: The font size of the text.
         line_height: The vertical spacing between lines ('dy' attribute for <tspan>).
-        board_size: The size of the SVG board in pixels.
+        image_size: The size of the SVG board in pixels.
         return_pil_image: If True, returns a PIL.Image object instead of SVG.
         **kwargs: Additional keyword arguments to pass to chess.svg.board
                   (e.g., squares, arrows, orientation).
@@ -44,7 +44,7 @@ def draw_numbers_on_board(
         board = chess.Board()
 
     # Generate the base SVG
-    svg_string = chess.svg.board(board=board, size=board_size, **kwargs)
+    svg_string = chess.svg.board(board=board, size=image_size, **kwargs)
     square_size = chess.svg.SQUARE_SIZE
 
     all_text_elements = ""
@@ -187,7 +187,7 @@ def draw_possible_actions_on_board(
     new_board = chess.Board(board.fen())
 
     # Draw the labels (SANs or IDs) on the board, getting the SVG object
-    svg_object = draw_numbers_on_board(squares_to_labels, new_board, board_size=size, return_pil_image=return_pil_image)
+    svg_object = draw_numbers_on_board(squares_to_labels, new_board, image_size=size, return_pil_image=return_pil_image)
 
     # Extract the SVG string data
     svg_string_data = svg_object.data
@@ -213,7 +213,7 @@ def board_to_svg(board: chess.Board, size: int = 390) -> str:
         check=board.king(board.turn) if board.is_check() else None)
 
 
-def visualize_policy_on_board(board: chess.Board, mcts_policy: torch.Tensor, font_size: int = 12, board_size: int = 400, return_pil_image: bool = False) -> SVG | Image.Image:
+def visualize_policy_on_board(board: chess.Board, mcts_policy: torch.Tensor, font_size: int = 12, image_size: int = 400, return_pil_image: bool = False) -> SVG | Image.Image:
     """Visualizes the MCTS policy distribution on the chess board.
     
     Args:
@@ -235,7 +235,7 @@ def visualize_policy_on_board(board: chess.Board, mcts_policy: torch.Tensor, fon
             legal_policy[move.to_square].append(f'{board.san(move)} {np.int32(prob)}%')
         else:
             legal_policy[move.to_square] = [f'{board.san(move)} {np.int32(prob)}%']
-    pil_image = draw_numbers_on_board(legal_policy, board, font_size=font_size, board_size=board_size, return_pil_image=return_pil_image)
+    pil_image = draw_numbers_on_board(legal_policy, board, font_size=font_size, image_size=image_size, return_pil_image=return_pil_image)
     print(f'Probability of Legal Moves ({"W" if board.turn == chess.WHITE else "B"}): {np.round(prob_sum, 1)}%')
     return pil_image
 
