@@ -4,6 +4,14 @@ Test Model Policy Legality from Replay Buffer.
 This script loads a trained model and tests the legality of its policy predictions
 for all states in the replay buffer. It calculates statistics separately
 for white and black positions.
+
+Metrics calculated (matching train.py):
+1. Illegal probability mass: Sum of probability assigned to all illegal moves
+2. Illegal argmax ratio: Fraction of positions where the highest probability move is illegal
+3. Median/std illegal ratio: Per-position statistics of illegal probability mass
+
+Note: board.legal_actions() returns 1-indexed action IDs, but policy arrays are 0-indexed.
+We convert to 0-indexed before comparing with policy predictions.
 """
 
 import torch
@@ -24,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import network creation function
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'MCTS'))
-from training_modules.chess import create_chess_network
+from MCTS.training_modules.chess import create_chess_network
 
 
 def load_checkpoint(checkpoint_path: str) -> dict:
@@ -65,84 +73,6 @@ def decompress_replay_buffer(replay_buffer_state: dict) -> List[Tuple[np.ndarray
     return compact_buffer
 
 
-def get_legal_action_ids_4672(board: chess.Board) -> set:
-    """Get legal action IDs for 4672 action space."""
-    legal_ids = set()
-    
-    for move in board.legal_moves:
-        from_square = move.from_square
-        to_square = move.to_square
-        
-        from_rank = chess.square_rank(from_square)
-        from_file = chess.square_file(from_square)
-        to_rank = chess.square_rank(to_square)
-        to_file = chess.square_file(to_square)
-        
-        rank_diff = to_rank - from_rank
-        file_diff = to_file - from_file
-        
-        # Queen moves (8 directions × 7 distances = 56)
-        if rank_diff == 0 and file_diff != 0:  # Horizontal
-            direction_idx = 0 if file_diff > 0 else 4
-            distance = abs(file_diff) - 1
-        elif file_diff == 0 and rank_diff != 0:  # Vertical
-            direction_idx = 1 if rank_diff > 0 else 5
-            distance = abs(rank_diff) - 1
-        elif rank_diff == file_diff and rank_diff != 0:  # Diagonal /
-            direction_idx = 2 if rank_diff > 0 else 6
-            distance = abs(rank_diff) - 1
-        elif rank_diff == -file_diff and rank_diff != 0:  # Diagonal \
-            direction_idx = 3 if rank_diff > 0 else 7
-            distance = abs(rank_diff) - 1
-        # Knight moves (8 possible moves)
-        elif (abs(rank_diff), abs(file_diff)) in [(2, 1), (1, 2)]:
-            knight_moves = [
-                (2, 1), (1, 2), (-1, 2), (-2, 1),
-                (-2, -1), (-1, -2), (1, -2), (2, -1)
-            ]
-            try:
-                knight_idx = knight_moves.index((rank_diff, file_diff))
-                direction_idx = knight_idx
-                distance = 0
-                action_id = from_square * 73 + 56 + knight_idx
-                legal_ids.add(action_id)
-                continue
-            except ValueError:
-                continue
-        # Underpromotion (9 possible underpromotions per square)
-        elif move.promotion and move.promotion != chess.QUEEN:
-            # N, B, R for 3 forward directions (left, straight, right)
-            promotions = [chess.KNIGHT, chess.BISHOP, chess.ROOK]
-            try:
-                promo_idx = promotions.index(move.promotion)
-            except ValueError:
-                continue
-            
-            # Determine direction: left (-1), straight (0), right (+1)
-            if file_diff == -1:
-                dir_offset = 0
-            elif file_diff == 0:
-                dir_offset = 1
-            elif file_diff == 1:
-                dir_offset = 2
-            else:
-                continue
-            
-            underpromo_idx = promo_idx * 3 + dir_offset
-            action_id = from_square * 73 + 64 + underpromo_idx
-            legal_ids.add(action_id)
-            continue
-        else:
-            continue
-        
-        # Queen moves and queen promotions
-        if 0 <= direction_idx < 8 and 0 <= distance < 7:
-            action_id = from_square * 73 + direction_idx * 7 + distance
-            legal_ids.add(action_id)
-    
-    return legal_ids
-
-
 def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.ndarray, np.ndarray, str, float]], 
                          device: torch.device, batch_size: int = 128) -> Dict:
     """
@@ -174,7 +104,8 @@ def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.
         'illegal_policy_mass': 0.0,
         'num_legal_moves': [],
         'num_policy_moves': [],
-        'illegal_move_ratios': [],  # Track per-position illegal ratio
+        'illegal_move_ratios': [],  # Track per-position illegal ratio (probability mass)
+        'illegal_argmax_count': 0,  # Count positions where argmax is illegal
     }
     
     black_stats = {
@@ -185,6 +116,7 @@ def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.
         'num_legal_moves': [],
         'num_policy_moves': [],
         'illegal_move_ratios': [],
+        'illegal_argmax_count': 0,
     }
     
     errors = 0
@@ -247,8 +179,10 @@ def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.
                     stats = white_stats if is_white else black_stats
                     stats['total_positions'] += 1
                     
-                    # Get legal action IDs
-                    legal_ids = get_legal_action_ids_4672(board)
+                    # Get legal action IDs from board (1-indexed)
+                    legal_actions_1indexed = set(board.legal_actions())
+                    # Convert to 0-indexed for policy array indexing
+                    legal_indices = set(action_id - 1 for action_id in legal_actions_1indexed)
                     
                     # Check which policy actions are legal
                     policy_nonzero = np.where(policy_pred > 1e-6)[0]
@@ -256,24 +190,30 @@ def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.
                     legal_mass = 0.0
                     illegal_mass = 0.0
                     
-                    for action_id in range(len(policy_pred)):
-                        if policy_pred[action_id] > 1e-6:
-                            if action_id in legal_ids:
-                                legal_mass += policy_pred[action_id]
+                    for action_idx in range(len(policy_pred)):
+                        if policy_pred[action_idx] > 1e-6:
+                            if action_idx in legal_indices:
+                                legal_mass += policy_pred[action_idx]
                             else:
-                                illegal_mass += policy_pred[action_id]
+                                illegal_mass += policy_pred[action_idx]
                     
                     total_mass = legal_mass + illegal_mass
                     
                     stats['total_policy_mass'] += total_mass
                     stats['legal_policy_mass'] += legal_mass
                     stats['illegal_policy_mass'] += illegal_mass
-                    stats['num_legal_moves'].append(len(legal_ids))
+                    stats['num_legal_moves'].append(len(legal_actions_1indexed))
                     stats['num_policy_moves'].append(len(policy_nonzero))
                     
-                    # Track per-position illegal ratio
+                    # Track per-position illegal ratio (probability mass)
                     if total_mass > 0:
                         stats['illegal_move_ratios'].append(illegal_mass / total_mass)
+                    
+                    # Check if argmax is legal (like train.py does)
+                    predicted_action_idx = np.argmax(policy_pred)
+                    predicted_action_id = predicted_action_idx + 1  # Convert to 1-indexed
+                    if predicted_action_id not in legal_actions_1indexed:
+                        stats['illegal_argmax_count'] += 1
                     
                 except Exception as e:
                     errors += 1
@@ -292,11 +232,13 @@ def test_policy_legality(network: torch.nn.Module, training_data: List[Tuple[np.
         
         avg_legal_pct = (stats['legal_policy_mass'] / stats['total_policy_mass'] * 100) if stats['total_policy_mass'] > 0 else 0
         avg_illegal_pct = (stats['illegal_policy_mass'] / stats['total_policy_mass'] * 100) if stats['total_policy_mass'] > 0 else 0
+        illegal_argmax_ratio = stats['illegal_argmax_count'] / stats['total_positions'] if stats['total_positions'] > 0 else 0
         
         results[color_name.lower()] = {
             'positions': stats['total_positions'],
             'avg_legal_pct': avg_legal_pct,
             'avg_illegal_pct': avg_illegal_pct,
+            'illegal_argmax_ratio': illegal_argmax_ratio,
             'avg_num_legal_moves': np.mean(stats['num_legal_moves']) if stats['num_legal_moves'] else 0,
             'avg_num_policy_moves': np.mean(stats['num_policy_moves']) if stats['num_policy_moves'] else 0,
             'median_illegal_ratio': np.median(stats['illegal_move_ratios']) if stats['illegal_move_ratios'] else 0,
@@ -320,34 +262,43 @@ def print_results(results: Dict) -> None:
         stats = results[color_key]
         print(f"\n{color} to move:")
         print(f"  Positions analyzed: {stats['positions']}")
-        print(f"  Average legal move probability:   {stats['avg_legal_pct']:.2f}%")
-        print(f"  Average illegal move probability: {stats['avg_illegal_pct']:.2f}%")
-        print(f"  Median illegal ratio per position: {stats['median_illegal_ratio']*100:.2f}%")
-        print(f"  Std illegal ratio: {stats['std_illegal_ratio']*100:.2f}%")
+        print(f"  Average illegal move probability mass: {stats['avg_illegal_pct']:.2f}%")
+        print(f"  Average illegal argmax ratio:          {stats['illegal_argmax_ratio']*100:.2f}%")
+        print(f"  Median illegal ratio per position:     {stats['median_illegal_ratio']*100:.2f}%")
+        print(f"  Std illegal ratio:                     {stats['std_illegal_ratio']*100:.2f}%")
         print(f"  Average # legal moves:  {stats['avg_num_legal_moves']:.2f}")
         print(f"  Average # policy moves: {stats['avg_num_policy_moves']:.2f}")
     
     # Overall summary
     if 'white' in results and 'black' in results:
         total_positions = results['white']['positions'] + results['black']['positions']
-        weighted_legal_pct = (
-            results['white']['avg_legal_pct'] * results['white']['positions'] +
-            results['black']['avg_legal_pct'] * results['black']['positions']
+        weighted_illegal_prob = (
+            results['white']['avg_illegal_pct'] * results['white']['positions'] +
+            results['black']['avg_illegal_pct'] * results['black']['positions']
         ) / total_positions
-        weighted_illegal_pct = 100 - weighted_legal_pct
+        weighted_illegal_argmax = (
+            results['white']['illegal_argmax_ratio'] * results['white']['positions'] +
+            results['black']['illegal_argmax_ratio'] * results['black']['positions']
+        ) / total_positions
         
         print(f"\n{'='*60}")
         print(f"Overall:")
         print(f"  Total positions: {total_positions}")
-        print(f"  Weighted average legal probability:   {weighted_legal_pct:.2f}%")
-        print(f"  Weighted average illegal probability: {weighted_illegal_pct:.2f}%")
+        print(f"  Weighted average illegal probability mass: {weighted_illegal_prob:.2f}%")
+        print(f"  Weighted average illegal argmax ratio:     {weighted_illegal_argmax*100:.2f}%")
         
         # Check if there's a significant difference between colors
-        diff = abs(results['white']['avg_legal_pct'] - results['black']['avg_legal_pct'])
-        if diff < 5:
-            print(f"  ✓ Policy legality is balanced between colors (diff: {diff:.2f}%)")
+        diff_prob = abs(results['white']['avg_illegal_pct'] - results['black']['avg_illegal_pct'])
+        diff_argmax = abs(results['white']['illegal_argmax_ratio'] - results['black']['illegal_argmax_ratio']) * 100
+        print(f"\n  Color balance:")
+        if diff_prob < 5:
+            print(f"    ✓ Illegal probability mass is balanced (diff: {diff_prob:.2f}%)")
         else:
-            print(f"  ✗ Policy legality differs between colors (diff: {diff:.2f}%)")
+            print(f"    ✗ Illegal probability mass differs between colors (diff: {diff_prob:.2f}%)")
+        if diff_argmax < 5:
+            print(f"    ✓ Illegal argmax ratio is balanced (diff: {diff_argmax:.2f}%)")
+        else:
+            print(f"    ✗ Illegal argmax ratio differs between colors (diff: {diff_argmax:.2f}%)")
 
 
 def load_network(checkpoint: dict, cfg: DictConfig, device: torch.device) -> torch.nn.Module:
