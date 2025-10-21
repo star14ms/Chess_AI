@@ -236,7 +236,7 @@ def visualize_policy_on_board(board: chess.Board, mcts_policy: torch.Tensor, fon
         else:
             legal_policy[move.to_square] = [f'{board.san(move)} {np.int32(prob)}%']
     pil_image = draw_numbers_on_board(legal_policy, board, font_size=font_size, board_size=board_size, return_pil_image=return_pil_image)
-    print(f'Probability of Legal Moves: {np.round(prob_sum, 1)}%')
+    print(f'Probability of Legal Moves ({"W" if board.turn == chess.WHITE else "B"}): {np.round(prob_sum, 1)}%')
     return pil_image
 
 
