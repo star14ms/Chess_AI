@@ -16,15 +16,21 @@ import chess_gym  # noqa: F401
 from utils.policy_human import sample_action_v2 as heuristic_policy
 from chess_pygame.config import IMG_DIR
 
-# Optional DQN model imports
+# Optional DQN/MCTS model imports
 try:
     import torch  # type: ignore[import-not-found]
+    import numpy as np  # type: ignore[import-not-found]
     from omegaconf import OmegaConf  # type: ignore[import-not-found]
     from MCTS.training_modules.chess import create_chess_network  # type: ignore[import-not-found]
+    from MCTS.mcts_algorithm import MCTS  # type: ignore[import-not-found]
+    from MCTS.mcts_node import MCTSNode  # type: ignore[import-not-found]
 except Exception:
     torch = None  # type: ignore[assignment]
+    np = None  # type: ignore[assignment]
     OmegaConf = None  # type: ignore[assignment]
     create_chess_network = None  # type: ignore[assignment]
+    MCTS = None  # type: ignore[assignment]
+    MCTSNode = None  # type: ignore[assignment]
 
 try:
     import pygame  # Optional; only used when --pygame
@@ -115,10 +121,11 @@ def parse_human_input_to_action(env: gym.Env, raw: str) -> Optional[int]:
 
 _DQN_MODEL = None
 _DQN_DEVICE = None
+_DQN_CFG = None
 
 
 def _load_dqn_model(action_space_size: int):
-    global _DQN_MODEL, _DQN_DEVICE
+    global _DQN_MODEL, _DQN_DEVICE, _DQN_CFG
     if torch is None or OmegaConf is None or create_chess_network is None:
         raise RuntimeError("Required packages for DQN are not available. Install torch and omegaconf.")
 
@@ -130,6 +137,7 @@ def _load_dqn_model(action_space_size: int):
     cfg_path = os.path.join(os.path.abspath('.'), 'config', 'train_mcts.yaml')
     checkpoint_path = os.path.join(os.path.abspath('.'), 'checkpoints', 'model.pth')
     cfg = OmegaConf.load(cfg_path)
+    _DQN_CFG = cfg  # Store config for MCTS use
 
     # Warn if action space sizes mismatch
     try:
@@ -140,7 +148,7 @@ def _load_dqn_model(action_space_size: int):
         pass
 
     model = create_chess_network(cfg, _DQN_DEVICE)
-    state = torch.load(checkpoint_path, map_location='cpu')
+    state = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     state_dict = state.get('model_state_dict', state)
     model.load_state_dict(state_dict)
     model.eval()
@@ -148,7 +156,7 @@ def _load_dqn_model(action_space_size: int):
     _DQN_MODEL = model
 
 
-def choose_ai_action(env: gym.Env, mode: str) -> int:
+def choose_ai_action(env: gym.Env, mode: str, mcts_iterations: int = 400) -> int:
     board = env.action_space.board
     if mode == "heuristic":
         # Enable multiprocessing with auto workers for faster root evaluation
@@ -160,6 +168,64 @@ def choose_ai_action(env: gym.Env, mode: str) -> int:
                 return random.choice(list(legal))
             return env.action_space.sample()
         return int(action_id)
+    if mode == "mcts":
+        # Ensure model is loaded
+        if _DQN_MODEL is None:
+            action_space_size = getattr(env, 'action_space_size', 4672)
+            _load_dqn_model(action_space_size)
+
+        # Safety: if still None, fallback
+        if _DQN_MODEL is None or torch is None or MCTS is None or MCTSNode is None or np is None:
+            legal = getattr(board, "legal_actions", None)
+            if legal:
+                return random.choice(list(legal))
+            return env.action_space.sample()
+
+        # Use MCTS for action selection (guarantees legal moves)
+        try:
+            # Create MCTS root node
+            root_node = MCTSNode(board.copy())
+            
+            # Initialize MCTS
+            mcts_player = MCTS(
+                network=_DQN_MODEL,
+                device=_DQN_DEVICE,
+                env=None,  # No rendering during MCTS
+                C_puct=_DQN_CFG.mcts.c_puct,
+                dirichlet_alpha=_DQN_CFG.mcts.dirichlet_alpha,
+                dirichlet_epsilon=_DQN_CFG.mcts.dirichlet_epsilon,
+                action_space_size=_DQN_CFG.network.action_space_size,
+                history_steps=_DQN_CFG.env.history_steps
+            )
+            
+            # Run MCTS search
+            mcts_player.search(
+                root_node, 
+                iterations=mcts_iterations,
+                batch_size=_DQN_CFG.mcts.batch_size,
+                progress=None  # No progress bar
+            )
+            
+            # Get policy distribution from MCTS
+            temperature = 0.1  # Low temperature for near-deterministic play
+            mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
+            
+            # Select highest probability move (deterministic)
+            action_id = int(np.argmax(mcts_policy) + 1)  # +1 for 1-indexed
+            
+            # Verify action is legal
+            legal = getattr(board, "legal_actions", None)
+            if legal and action_id not in legal:
+                print(f"[Warning] MCTS selected illegal action {action_id}, falling back to random legal move")
+                return random.choice(list(legal))
+            
+            return action_id
+        except Exception as e:
+            print(f"[Error] MCTS failed: {e}. Falling back to random legal move.")
+            legal = getattr(board, "legal_actions", None)
+            if legal:
+                return random.choice(list(legal))
+            return env.action_space.sample()
     if mode == "dqn":
         # Ensure model is loaded
         if _DQN_MODEL is None:
@@ -371,7 +437,7 @@ def draw_board(surface, board: chess.Board, images, cell: int, human_white_botto
         pygame.draw.rect(surface, sel_color, pygame.Rect(sx, sy, cell, cell), width=4)
 
 
-def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: int = 800, choose_side: bool = False) -> None:
+def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: int = 800, choose_side: bool = False, mcts_iterations: int = 400) -> None:
     if pygame is None:
         raise RuntimeError("pygame is not installed. Install it or run without --pygame.")
     pygame.init()
@@ -447,7 +513,7 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
         # AI opens if human plays Black (human at bottom False)
         if (not human_white_bottom) and board.turn:
             t0 = time.perf_counter()
-            ai_action = choose_ai_action(env, ai_mode)
+            ai_action = choose_ai_action(env, ai_mode, mcts_iterations)
             dt = time.perf_counter() - t0
             try:
                 print(f"AI decision time: {dt:.3f}s")
@@ -556,7 +622,7 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
                                         # Then AI responds if game continues
                                         if not terminated and not truncated:
                                             t0 = time.perf_counter()
-                                            ai_action = choose_ai_action(env, ai_mode)
+                                            ai_action = choose_ai_action(env, ai_mode, mcts_iterations)
                                             dt = time.perf_counter() - t0
                                             try:
                                                 print(f"AI decision time: {dt:.3f}s")
@@ -635,7 +701,7 @@ def run_pygame(env: gym.Env, human_is_white: bool, ai_mode: str, window_size: in
 def main() -> int:
     parser = argparse.ArgumentParser(description="Play Chess: Human vs AI using chess-gym env")
     parser.add_argument("--side", choices=["white", "black", "w", "b"], default="white", help="Choose your side")
-    parser.add_argument("--ai", choices=["heuristic", "random", "dqn"], default="heuristic", help="AI policy")
+    parser.add_argument("--ai", choices=["heuristic", "random", "dqn", "mcts"], default="mcts", help="AI policy (mcts=neural net with MCTS search)")
     parser.add_argument("--fen", type=str, default=None, help="Start position FEN")
     parser.add_argument("--max-steps", type=int, default=512, help="Max plies (half-moves)")
     parser.add_argument("--show-legal", action="store_true", help="Print legal actions each turn")
@@ -644,14 +710,15 @@ def main() -> int:
     parser.add_argument("--pygame", action="store_true", default=True, help="Use pygame UI instead of CLI input")
     parser.add_argument("--choose-side", action="store_true", help="Show side selection at startup in pygame mode")
     parser.add_argument("--window", type=int, default=800, help="Window size (pixels)")
+    parser.add_argument("--mcts-iterations", type=int, default=400, help="Number of MCTS iterations per move (only for --ai mcts)")
     parser.set_defaults(use_4672=True)
     args = parser.parse_args()
 
     human_is_white = args.side in ("white", "w")
 
-    # If DQN is selected, prefer 4672 action space to match checkpoint
-    if args.ai == "dqn" and not args.use_4672:
-        print("[Info] Forcing 4672 action space for DQN policy to match checkpoint.")
+    # If DQN or MCTS is selected, prefer 4672 action space to match checkpoint
+    if args.ai in ("dqn", "mcts") and not args.use_4672:
+        print(f"[Info] Forcing 4672 action space for {args.ai.upper()} policy to match checkpoint.")
         args.use_4672 = True
 
     env = create_env(use_4672_action_space=args.use_4672, show_possible_actions=args.show_legal)
@@ -667,14 +734,14 @@ def main() -> int:
     steps = 0
 
     if args.pygame:
-        run_pygame(env, human_is_white, args.ai, window_size=args.window, choose_side=args.choose_side)
+        run_pygame(env, human_is_white, args.ai, window_size=args.window, choose_side=args.choose_side, mcts_iterations=args.mcts_iterations)
         env.close()
         return 0
     else:
         if not human_is_white and board.turn:  # AI starts if human chose black
             # Measure AI think time
             t0 = time.perf_counter()
-            ai_action = choose_ai_action(env, args.ai)
+            ai_action = choose_ai_action(env, args.ai, args.mcts_iterations)
             dt = time.perf_counter() - t0
             try:
                 print(f"AI decision time: {dt:.3f}s")
@@ -715,7 +782,7 @@ def main() -> int:
 
         # Measure AI think time
         t0 = time.perf_counter()
-        ai_action = choose_ai_action(env, args.ai)
+        ai_action = choose_ai_action(env, args.ai, args.mcts_iterations)
         dt = time.perf_counter() - t0
         try:
             print(f"AI decision time: {dt:.3f}s")
