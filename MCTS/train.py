@@ -551,7 +551,26 @@ def run_training_loop(cfg: DictConfig) -> None:
         try:
             checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             network.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            # Ensure network is on correct device before loading optimizer state
+            network.to(device)
+            
+            # Load optimizer state with proper device handling
+            if 'optimizer_state_dict' in checkpoint:
+                try:
+                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    # Move optimizer state tensors to correct device
+                    for state in optimizer.state.values():
+                        for k, v in state.items():
+                            if isinstance(v, torch.Tensor):
+                                state[k] = v.to(device)
+                    progress.print(f"Successfully loaded optimizer state (Adam step count: {optimizer.state[optimizer.param_groups[0]['params'][0]].get('step', 0) if optimizer.state else 0})")
+                except Exception as e:
+                    progress.print(f"Warning: Failed to load optimizer state: {e}")
+                    progress.print("Optimizer will start fresh (this will cause higher initial losses)")
+            else:
+                progress.print("Warning: No optimizer state found in checkpoint")
+                progress.print("Optimizer will start fresh (this will cause higher initial losses)")
+            
             start_iter = int(checkpoint.get('iteration', 0))
             total_games_simulated = int(checkpoint.get('total_games_simulated', 0))
             
@@ -946,6 +965,28 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         # progress.print("Starting training phase...")
         network.to(device).train()
+        
+        # CRITICAL: Refresh optimizer parameter references after moving network
+        # When network.to(device) creates new parameter tensors, optimizer must be updated
+        if use_multiprocessing_flag:
+            # Save optimizer state before refreshing
+            opt_state = optimizer.state_dict()
+            # Recreate optimizer with new parameter references
+            if opt_cfg.type == "Adam":
+                optimizer = optim.Adam(network.parameters(), lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+            elif opt_cfg.type == "SGD":
+                momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                optimizer = optim.SGD(network.parameters(), lr=opt_cfg.learning_rate, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+            # Restore optimizer state (this preserves momentum, adaptive rates, etc.)
+            try:
+                optimizer.load_state_dict(opt_state)
+                # Ensure optimizer state tensors are on correct device
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(device)
+            except Exception as e:
+                progress.print(f"Warning: Could not restore optimizer state after device move: {e}")
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_illegal_moves_in_iteration = 0
