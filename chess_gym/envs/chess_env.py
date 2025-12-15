@@ -382,7 +382,12 @@ class ChessEnv(gym.Env):
         observation = self._observe()
         result = self.board.result()
         reward = (1 if result == '1-0' else -1 if result == '0-1' else 0)
-        terminated = self.board.is_game_over(claim_draw=self.claim_draw)
+        # Check for game termination: is_game_over handles most cases, but we also need to check
+        # for automatic termination conditions (fivefold repetition and 75-move rule) that don't
+        # require a claim. Threefold repetition requires a claim, but fivefold is automatic.
+        terminated = (self.board.is_game_over(claim_draw=self.claim_draw) or 
+                     self.board.is_fivefold_repetition() or 
+                     self.board.is_seventyfive_moves())
         truncated = False
         info = {
             'turn': self.board.turn,
