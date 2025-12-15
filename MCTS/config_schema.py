@@ -63,6 +63,7 @@ class TrainingConfig:
     game_history_dir: Optional[str] = "./output/" # Directory to save game history files (moves in SAN notation). Set to None to disable.
     progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
     initial_board_fen: str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" #except pawns
+    max_training_time_seconds: Optional[int] = None # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
 
 @dataclass
 class Config:

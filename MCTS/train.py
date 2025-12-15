@@ -600,6 +600,9 @@ def run_training_loop(cfg: DictConfig) -> None:
     else:
         progress.print("No existing checkpoint found. Starting training from scratch...")
 
+    # Track iteration durations for time prediction
+    iteration_durations = []  # List to store duration of each completed iteration
+    
     # Use num_training_iterations from cfg
     for iteration in range(start_iter, cfg.training.num_training_iterations):
         iteration_start_time = time.time()
@@ -1071,6 +1074,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_elapsed_time = int(time.time() - total_training_start_time)
         progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)})")
         
+        # Track iteration duration for time prediction
+        iteration_durations.append(iteration_duration)
+        
         # Record metrics for learning curve visualization
         history['policy_loss'].append(avg_policy_loss)
         history['value_loss'].append(avg_value_loss)
@@ -1090,6 +1096,24 @@ def run_training_loop(cfg: DictConfig) -> None:
         
         checkpoint_size_mb = os.path.getsize(os.path.join(checkpoint_dir, "model.pth")) / (1024 * 1024)
         progress.print(f"Checkpoint saved at iteration {iteration + 1} with {len(replay_buffer)} experiences in replay buffer ({checkpoint_size_mb:.1f}MB)")
+        
+        # Check if training would exceed maximum time after next iteration
+        # Do this AFTER saving checkpoint so current iteration's work is preserved
+        if cfg.training.max_training_time_seconds is not None:
+            # Calculate average iteration time from completed iterations
+            if len(iteration_durations) > 0:
+                avg_iteration_time = sum(iteration_durations) / len(iteration_durations)
+                # Predict total time after completing the next iteration
+                predicted_total_time = total_elapsed_time + avg_iteration_time
+                
+                if predicted_total_time > cfg.training.max_training_time_seconds:
+                    progress.print(f"\n⚠️  Maximum training time limit reached!")
+                    progress.print(f"   Current elapsed time: {format_time(total_elapsed_time)}")
+                    progress.print(f"   Average iteration time: {format_time(int(avg_iteration_time))}")
+                    progress.print(f"   Predicted total time after next iteration: {format_time(int(predicted_total_time))}")
+                    progress.print(f"   Maximum allowed time: {format_time(cfg.training.max_training_time_seconds)}")
+                    progress.print(f"   Stopping training at iteration {iteration + 1} to respect time limit.")
+                    break
 
     # Final training summary
     total_training_time = time.time() - total_training_start_time

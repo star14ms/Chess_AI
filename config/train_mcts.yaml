@@ -79,3 +79,4 @@ training:
   game_history_dir: ./game_history # Directory to save game history files. Set to null to disable.
   initial_board_fen: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
   progress_bar: true
+  max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
