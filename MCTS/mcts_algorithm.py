@@ -16,7 +16,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from MCTS.mcts_node import MCTSNode
-from chess_gym.chess_custom import FullyTrackedBoard, LegacyChessBoard
+from chess_gym.chess_custom import FullyTrackedBoard
 
 # --- MCTS Algorithm ---
 class MCTS:
@@ -90,12 +90,7 @@ class MCTS:
 
         for action_id in legal_action_ids:
             if action_id not in leaf_node.children:
-                # Restore board state before each expansion
-                if isinstance(self.env.board, FullyTrackedBoard) and original_tracker is not None:
-                    self.env.board.set_fen(original_fen, original_tracker)
-                else:
-                    self.env.board.set_fen(original_fen)
-                
+                self.env.board.set_fen(original_fen, original_tracker)
                 move = leaf_board.action_id_to_move(action_id)
                 if move is None: continue
 
@@ -111,40 +106,21 @@ class MCTS:
                     prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
 
                 child_board = self.env.board.copy()
-                
-                # Verify move stack is preserved (safety check)
-                if not hasattr(child_board, 'move_stack') or len(child_board.move_stack) == 0:
-                    # If move stack is empty, something went wrong - skip this child
-                    print(f"Warning: Move stack lost during MCTS sequential expansion for action_id {action_id}")
-                    continue
-                
                 child_node = MCTSNode(
                     board=child_board,
                     parent=leaf_node,
                     prior_p=prior_p,
                     action_id_leading_here=action_id
                 )
-                
-                # Verify child node terminal state is correctly detected
-                # (This ensures repetitions are caught immediately)
-                if child_node.is_terminal():
-                    # Terminal node created - this is fine, it will be handled in _expand_and_evaluate
-                    pass
-                
                 leaf_node.children[action_id] = child_node
 
-        # Restore board state after expansion
-        if isinstance(self.env.board, FullyTrackedBoard) and original_tracker is not None:
-            self.env.board.set_fen(original_fen, original_tracker)
-        else:
-            self.env.board.set_fen(original_fen)
+        self.env.board.set_fen(original_fen, original_tracker)
 
     def _expand_parallel(self, leaf_node: MCTSNode, probs_to_use: torch.Tensor,
                          uniform_prob: float, use_uniform_fallback: bool):
         """Expands leaf node's children using board.copy() and board.push().
 
         Assumes leaf_node is not terminal.
-        Ensures move stack is preserved for repetition detection.
         """
         leaf_board = leaf_node.get_board()
         for action_id in leaf_board.legal_actions:
@@ -158,103 +134,34 @@ class MCTS:
                     move = sim_board.action_id_to_move(action_id)
                     if move is None:
                         continue
-                    
-                    # Push the move (this maintains the move stack)
                     sim_board.push(move)
-                    
-                    # Verify move stack is preserved (safety check)
-                    if not hasattr(sim_board, 'move_stack') or len(sim_board.move_stack) == 0:
-                        # If move stack is empty, something went wrong - skip this child
-                        print(f"Warning: Move stack lost during MCTS expansion for action_id {action_id}")
-                        continue
-                    
                     child_node = MCTSNode(
                         board=sim_board,
                         parent=leaf_node,
                         prior_p=prior_p,
                         action_id_leading_here=action_id
                     )
-                    
-                    # Verify child node is not immediately terminal due to repetition
-                    # (This is expected behavior, but we want to ensure it's detected)
-                    if child_node.is_terminal():
-                        # Terminal node created - this is fine, it will be handled in _expand_and_evaluate
-                        pass
-                    
                     leaf_node.children[action_id] = child_node
                 except Exception as e:
                     print(f"Error during MCTS board.push expansion for action_id {action_id} from FEN {leaf_board.fen()}: {e}")
-                    import traceback
-                    traceback.print_exc()
 
     # --- Helper Methods for Batched MCTS ---
 
     def _get_terminal_value(self, leaf_node: MCTSNode) -> float:
-        """Returns value for terminal node (1.0, -1.0, or 0.0).
-        
-        Handles all terminal conditions including:
-        - Checkmate (1.0 or -1.0)
-        - Stalemate (0.0)
-        - Repetition draws (0.0)
-        - 75-move rule (0.0)
-        - Insufficient material (0.0)
-        - 50-move rule (0.0)
-        """
+        """Returns value for terminal node (1.0, -1.0, or 0.0)."""
         leaf_board = leaf_node.get_board()
-        try:
-            result_str = leaf_board.result(claim_draw=True)
-            if result_str == "1-0":
-                return 1.0
-            elif result_str == "0-1":
-                return -1.0
-            else:
-                return 0.0  # Draw (including repetition draws)
-        except Exception as e:
-            # If result() fails, check outcome directly
-            print(f"Warning: Error getting result in _get_terminal_value: {e}")
-            try:
-                outcome = leaf_board.outcome(claim_draw=True)
-                if outcome:
-                    if outcome.winner == chess.WHITE:
-                        return 1.0
-                    elif outcome.winner == chess.BLACK:
-                        return -1.0
-                    else:
-                        return 0.0  # Draw
-            except Exception:
-                pass
-            # Default to draw on error
-            return 0.0
+        result_str = leaf_board.result(claim_draw=True)
+        if result_str == "1-0":
+            return 1.0
+        elif result_str == "0-1":
+            return -1.0
+        else:
+            return 0.0  # Draw
 
     def _prepare_observation(self, leaf_node: MCTSNode) -> torch.Tensor:
-        """Prepares observation tensor for a leaf node. Returns None if terminal.
-        
-        Checks for terminal states including repetitions before preparing observation.
-        """
+        """Prepares observation tensor for a leaf node. Returns None if terminal."""
         leaf_board = leaf_node.get_board()
-        # Check for terminal state with explicit repetition checks
-        is_terminal = False
-        try:
-            is_terminal = leaf_board.is_game_over(claim_draw=True)
-            # Additional explicit checks for repetition (safety net)
-            if not is_terminal:
-                if hasattr(leaf_board, 'is_fivefold_repetition'):
-                    try:
-                        if leaf_board.is_fivefold_repetition():
-                            is_terminal = True
-                    except (AttributeError, TypeError):
-                        pass
-                if not is_terminal and hasattr(leaf_board, 'can_claim_threefold_repetition'):
-                    try:
-                        if leaf_board.can_claim_threefold_repetition():
-                            is_terminal = True
-                    except (AttributeError, TypeError):
-                        pass
-        except Exception as e:
-            print(f"Warning: Error checking terminal state in _prepare_observation: {e}")
-            is_terminal = False
-        
-        if is_terminal:
+        if leaf_board.is_game_over(claim_draw=True):
             return None
         steps = getattr(self.env, 'history_steps', None) if self.env is not None else None
         if steps is None:
@@ -324,47 +231,13 @@ class MCTS:
             leaf_board = leaf_node.get_board()
 
             # 1. Handle Terminal Node
-            # Check for terminal state with explicit repetition checks
-            is_terminal = False
-            try:
-                is_terminal = leaf_board.is_game_over(claim_draw=True)
-                
-                # Additional explicit checks for repetition (safety net)
-                if not is_terminal:
-                    # Check for fivefold repetition (automatic draw)
-                    if hasattr(leaf_board, 'is_fivefold_repetition'):
-                        try:
-                            if leaf_board.is_fivefold_repetition():
-                                is_terminal = True
-                        except (AttributeError, TypeError):
-                            pass
-                    
-                    # Check for threefold repetition (claimable draw - treat as terminal in MCTS)
-                    if not is_terminal and hasattr(leaf_board, 'can_claim_threefold_repetition'):
-                        try:
-                            if leaf_board.can_claim_threefold_repetition():
-                                is_terminal = True
-                        except (AttributeError, TypeError):
-                            pass
-            except Exception as e:
-                print(f"Warning: Error checking terminal state in _expand_and_evaluate: {e}")
-                is_terminal = False
-            
-            if is_terminal:
-                try:
-                    result_str = leaf_board.result(claim_draw=True)
-                    if result_str == "1-0": 
-                        value = 1.0
-                    elif result_str == "0-1": 
-                        value = -1.0
-                    else: 
-                        value = 0.0  # Draw (including repetition draws)
-                    leaf_node.is_expanded = True
-                    # No expansion needed for terminal nodes
-                except Exception as e:
-                    print(f"Warning: Error getting result for terminal node: {e}")
-                    value = 0.0  # Default to draw on error
-                    leaf_node.is_expanded = True
+            if leaf_board.is_game_over(claim_draw=True):
+                result_str = leaf_board.result(claim_draw=True)
+                if result_str == "1-0": value = 1.0
+                elif result_str == "0-1": value = -1.0
+                else: value = 0.0 # Draw
+                leaf_node.is_expanded = True
+                # No expansion needed for terminal nodes
             else:
                 # 2. Non-Terminal: Get Network Prediction
                 # Use env's configured history_steps if available; otherwise fallback to configured value
@@ -505,10 +378,8 @@ class MCTS:
         
         if self.env is not None:
             root_fen = self.env.board.fen()
-            root_piece_tracker = None
             if isinstance(self.env.board, FullyTrackedBoard):
                 root_piece_tracker = self.env.board.piece_tracker
-            # Note: root_node.board.copy() was used to create root_node, so it has the move stack preserved
 
         mcts_task_id = None
         if progress is not None:
@@ -544,43 +415,8 @@ class MCTS:
             progress.stop_task(mcts_task_id)
             progress.update(mcts_task_id, visible=False)
 
-        # Restore board state after search (handles both LegacyChessBoard and FullyTrackedBoard)
-        # Important: We need to restore the move stack for repetition detection to work
-        # The root_node.board was created with board.copy(), so it has the move stack preserved
-        if self.env is not None:
-            root_board = root_node.get_board()
-            root_move_stack = list(root_board.move_stack)  # Get move stack from root_node's board
-            
-            # Restore board position
-            if isinstance(self.env.board, FullyTrackedBoard) and root_piece_tracker is not None:
-                self.env.board.set_fen(root_fen, root_piece_tracker)
-            elif isinstance(self.env.board, LegacyChessBoard):
-                self.env.board.set_fen(root_fen)
-            
-            # Restore move stack by replaying moves from the starting position
-            # We need to get the starting position first (before any moves)
-            if root_move_stack:
-                # Get starting position by popping all moves from root_board
-                start_board = root_board.copy()
-                while start_board.move_stack:
-                    start_board.pop()
-                start_fen = start_board.fen()
-                
-                # Reset to starting position
-                if isinstance(self.env.board, FullyTrackedBoard) and root_piece_tracker is not None:
-                    # For FullyTrackedBoard, we need to get the starting piece tracker
-                    start_tracker = getattr(start_board, 'piece_tracker', None)
-                    self.env.board.set_fen(start_fen, start_tracker)
-                else:
-                    self.env.board.set_fen(start_fen)
-                
-                # Replay all moves
-                for move in root_move_stack:
-                    if move in self.env.board.legal_moves:
-                        self.env.board.push(move)
-                    else:
-                        # If move is not legal, something went wrong - break to avoid corruption
-                        break
+        if self.env is not None and isinstance(self.env.board, FullyTrackedBoard):
+            self.env.board.set_fen(root_fen, root_piece_tracker)
 
     # --- Get Best Move / Policy --- 
     # Returns Action ID corresponding to the best move
