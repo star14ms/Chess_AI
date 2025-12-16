@@ -19,6 +19,21 @@ from MCTS.mcts_node import MCTSNode
 from chess_gym.chess_custom import FullyTrackedBoard
 
 # --- MCTS Algorithm ---
+def _restore_chess_stack(dst: chess.Board, src: chess.Board) -> None:
+    """Restore python-chess internal stack state after set_fen().
+
+    This project sometimes calls set_fen() (e.g., for rendering/debug). python-chess resets
+    internal history used for repetition detection (move stack + undo stack). When the FEN
+    represents the *same* position, it's safe to copy the stacks back from a saved board.
+    """
+    # Public move stack (list[chess.Move])
+    if hasattr(src, "move_stack") and hasattr(dst, "move_stack"):
+        dst.move_stack = list(src.move_stack)
+    # Internal undo stack used by python-chess for pop()/repetition tracking.
+    # Name is stable across python-chess versions, but keep this defensive.
+    if hasattr(src, "_stack") and hasattr(dst, "_stack"):
+        dst._stack = list(src._stack)
+
 class MCTS:
     def __init__(self,
                  network: torch.nn.Module,
@@ -91,6 +106,7 @@ class MCTS:
         for action_id in legal_action_ids:
             if action_id not in leaf_node.children:
                 self.env.board.set_fen(original_fen, original_tracker)
+                _restore_chess_stack(self.env.board, leaf_board)
                 move = leaf_board.action_id_to_move(action_id)
                 if move is None: continue
 
@@ -105,7 +121,8 @@ class MCTS:
                 if 0 <= action_id_0based < probs_to_use.shape[0]:
                     prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
 
-                child_board = self.env.board.copy()
+                # Preserve full stack so terminal detection (repetition) works inside nodes.
+                child_board = self.env.board.copy(stack=True) if hasattr(self.env.board, "copy") else self.env.board.copy()
                 child_node = MCTSNode(
                     board=child_board,
                     parent=leaf_node,
@@ -115,6 +132,7 @@ class MCTS:
                 leaf_node.children[action_id] = child_node
 
         self.env.board.set_fen(original_fen, original_tracker)
+        _restore_chess_stack(self.env.board, leaf_board)
 
     def _expand_parallel(self, leaf_node: MCTSNode, probs_to_use: torch.Tensor,
                          uniform_prob: float, use_uniform_fallback: bool):
@@ -130,7 +148,7 @@ class MCTS:
                 prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
             if action_id not in leaf_node.children:
                 try:
-                    sim_board = leaf_board.copy()
+                    sim_board = leaf_board.copy(stack=True) if hasattr(leaf_board, "copy") else leaf_board.copy()
                     move = sim_board.action_id_to_move(action_id)
                     if move is None:
                         continue
@@ -380,6 +398,8 @@ class MCTS:
             root_fen = self.env.board.fen()
             if isinstance(self.env.board, FullyTrackedBoard):
                 root_piece_tracker = self.env.board.piece_tracker
+            # Save the stack from the root node (it should be created with stack=True).
+            root_board = root_node.get_board()
 
         mcts_task_id = None
         if progress is not None:
@@ -417,6 +437,7 @@ class MCTS:
 
         if self.env is not None and isinstance(self.env.board, FullyTrackedBoard):
             self.env.board.set_fen(root_fen, root_piece_tracker)
+            _restore_chess_stack(self.env.board, root_board)
 
     # --- Get Best Move / Policy --- 
     # Returns Action ID corresponding to the best move

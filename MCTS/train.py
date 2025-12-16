@@ -304,7 +304,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         fen = env.board.fen()
         
         if cfg.mcts.iterations > 0:
-            root_node = MCTSNode(env.board.copy())
+            # Preserve stack so repetition detection works in MCTS nodes.
+            root_node = MCTSNode(env.board.copy(stack=True))
             mcts_env = env if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False) else None
             mcts_player = MCTS(
                 network,
@@ -327,11 +328,18 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             action_to_take = np.random.choice(legal_actions)
 
         current_obs = obs
-        board_copy_at_state = env.board.copy()
+        board_copy_at_state = env.board.copy(stack=True)
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
         # Convert action to move and get SAN notation before making the move
+        # set_fen() resets python-chess internal stacks; preserve and restore them immediately.
+        board_stack_snapshot = env.board.copy(stack=True)
         env.board.set_fen(fen)
+        # Restore stacks so repetition detection stays intact for later outcome().
+        if hasattr(env.board, "move_stack"):
+            env.board.move_stack = list(board_stack_snapshot.move_stack)
+        if hasattr(env.board, "_stack") and hasattr(board_stack_snapshot, "_stack"):
+            env.board._stack = list(board_stack_snapshot._stack)
         if action_to_take in env.board.legal_actions:
             move = env.action_space._action_to_move(action_to_take)
             san_move = env.board.san(move)
