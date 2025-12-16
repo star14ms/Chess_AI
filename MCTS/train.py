@@ -392,6 +392,28 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Defer real progress creation until we know whether to display
     progress = NullProgress(rich=cfg.training.progress_bar)
 
+    # Coerce optional numeric config values that may arrive as strings
+    # (e.g., Hydra CLI overrides like training.max_training_time_seconds="3600")
+    def _parse_optional_seconds(value):
+        if value is None:
+            return None
+        # OmegaConf may store numbers as strings depending on overrides/env
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in ("", "none", "null"):
+                return None
+            # Allow "3600" or "3600.0"
+            return int(float(s))
+        if isinstance(value, (int, float)):
+            return int(value)
+        raise TypeError(
+            f"training.max_training_time_seconds must be int/float/str/None, got {type(value)}: {value!r}"
+        )
+
+    max_training_time_seconds = _parse_optional_seconds(
+        cfg.training.get("max_training_time_seconds", None)
+    )
+
     # --- Setup ---
     # Ensure factories are initialized in the main process
     initialize_factories_from_cfg(cfg)
@@ -672,9 +694,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                             if task_id_selfplay is not None:
                                 progress.update(task_id_selfplay, advance=1, total=max(min_games, collected_games))
                             break
-                        # Update game outcome counters (first player's perspective)
+                        # Update game outcome counters (final result)
                         try:
-                            result_value = game_data[0][3]
+                            result_value = game_info.get('result', None)
                             if result_value is None or result_value == 0:
                                 num_draws += 1
                                 draw_reasons[game_info['termination']] += 1
@@ -710,9 +732,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 if task_id_selfplay is not None:
                                     progress.update(task_id_selfplay, advance=1)
                                 break
-                            # Update game outcome counters (first player's perspective)
+                            # Update game outcome counters (final result)
                             try:
-                                result_value = game_data[0][3]
+                                result_value = game_info.get('result', None)
                                 if result_value is None or result_value == 0:
                                     num_draws += 1
                                     draw_reasons[game_info['termination']] += 1
@@ -750,7 +772,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 break
                             # Update game outcome counters
                             try:
-                                result_value = game_data[0][3]
+                                result_value = game_info.get('result', None)
                                 if result_value is None or result_value == 0:
                                     num_draws += 1
                                     draw_reasons[game_info['termination']] += 1
@@ -889,10 +911,10 @@ def run_training_loop(cfg: DictConfig) -> None:
                 games_data_collected.extend(game_data)
                 games_completed_this_iter += 1
                 game_moves_list.append(game_info)
-                # Infer final game result from the first tuple's value target (first player's perspective)
+                # Count outcomes from the final game result (chess: +1 white, -1 black, 0 draw)
                 if game_data:
                     try:
-                        result_value = game_data[0][3]
+                        result_value = game_info.get('result', None)
                         if result_value is None or result_value == 0:
                             num_draws += 1
                             draw_reasons[game_info['termination']] += 1
@@ -1105,7 +1127,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         # Check if training would exceed maximum time after next iteration
         # Do this AFTER saving checkpoint so current iteration's work is preserved
         # Recalculate total_elapsed_time to include checkpoint saving time
-        if cfg.training.max_training_time_seconds is not None:
+        if max_training_time_seconds is not None:
             # Recalculate elapsed time after checkpoint saving to include that overhead
             total_elapsed_time_after_checkpoint = int(time.time() - total_training_start_time)
                     
@@ -1119,12 +1141,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                 # Use the updated elapsed time that includes checkpoint saving
                 predicted_total_time = total_elapsed_time_after_checkpoint + avg_iteration_time
                 
-                if predicted_total_time > cfg.training.max_training_time_seconds:
+                if predicted_total_time > max_training_time_seconds:
                     progress.print(f"\n⚠️  Maximum training time limit reached!")
                     progress.print(f"   Current elapsed time: {format_time(total_elapsed_time_after_checkpoint)}")
                     progress.print(f"   Average iteration time: {format_time(int(avg_iteration_time))}")
                     progress.print(f"   Predicted total time after next iteration: {format_time(int(predicted_total_time))}")
-                    progress.print(f"   Maximum allowed time: {format_time(cfg.training.max_training_time_seconds)}")
+                    progress.print(f"   Maximum allowed time: {format_time(max_training_time_seconds)}")
                     progress.print(f"   Stopping training at iteration {iteration + 1} to respect time limit.")
                     break
 
