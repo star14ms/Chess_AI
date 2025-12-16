@@ -301,7 +301,6 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 
     while not terminated and not truncated and move_count < max_moves:
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
-        fen = env.board.fen()
         
         if cfg.mcts.iterations > 0:
             root_node = MCTSNode(env.board.copy())
@@ -330,11 +329,14 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         board_copy_at_state = env.board.copy()
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
         
-        # Convert action to move and get SAN notation before making the move
-        env.board.set_fen(fen)
+        # Get SAN notation - convert action to move and get notation from current board state
+        # Don't reset the board (set_fen) as it clears the move stack needed for repetition detection
         if action_to_take in env.board.legal_actions:
             move = env.action_space._action_to_move(action_to_take)
-            san_move = env.board.san(move)
+            try:
+                san_move = env.board.san(move)
+            except:
+                san_move = move.uci()  # Fallback to UCI if SAN fails
         else:
             san_move = "ILLEGAL"
         move_list_san.append(san_move)
@@ -351,7 +353,11 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # Get game outcome/termination reason
     outcome = env.board.outcome(claim_draw=True)
     if outcome:
-        termination_reason = outcome.termination.name
+        # Handle both enum and string termination values
+        if hasattr(outcome.termination, 'name'):
+            termination_reason = outcome.termination.name
+        else:
+            termination_reason = str(outcome.termination)
     elif truncated or move_count >= max_moves:
         termination_reason = "MAX_MOVES"
     else:

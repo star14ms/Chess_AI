@@ -123,7 +123,135 @@ class BaseChessBoard(chess.Board):
         """Returns the outcome of the game."""
         if self.foul:
             return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
-        return super().outcome()
+        
+        # Save board state before calling super().outcome() which may modify the board
+        current_fen = self.fen()
+        current_move_stack = list(self.move_stack) if hasattr(self, 'move_stack') else []
+        
+        try:
+            result = super().outcome(claim_draw=claim_draw)
+            # Restore board state if it was modified
+            if self.fen() != current_fen or len(self.move_stack) != len(current_move_stack):
+                self.set_fen(current_fen)
+                # Restore move stack by replaying moves
+                for move in current_move_stack:
+                    if move is not None:
+                        try:
+                            super().push(move)
+                        except:
+                            pass
+            return result
+        except (AttributeError, TypeError):
+            # If outcome() fails, check manually without modifying the board
+            # Check for basic termination conditions
+            if self.is_checkmate():
+                return chess.Outcome(chess.Termination.CHECKMATE, not self.turn)
+            if self.is_stalemate():
+                return chess.Outcome(chess.Termination.STALEMATE, None)
+            if self.is_insufficient_material():
+                return chess.Outcome(chess.Termination.INSUFFICIENT_MATERIAL, None)
+            if hasattr(self, 'is_seventyfive_moves') and self.is_seventyfive_moves():
+                return chess.Outcome(chess.Termination.SEVENTYFIVE_MOVES, None)
+            if self.is_fivefold_repetition():
+                return chess.Outcome(chess.Termination.FIVEFOLD_REPETITION, None)
+            if claim_draw and self.can_claim_threefold_repetition():
+                return chess.Outcome(chess.Termination.THREEFOLD_REPETITION, None)
+            if claim_draw and hasattr(self, 'can_claim_fifty_moves') and self.can_claim_fifty_moves():
+                return chess.Outcome(chess.Termination.FIFTY_MOVES, None)
+            
+            return None
+    
+    def can_claim_threefold_repetition(self) -> bool:
+        """Check if threefold repetition can be claimed, handling errors gracefully."""
+        try:
+            return super().can_claim_threefold_repetition()
+        except (AttributeError, TypeError):
+            # If the built-in method fails (e.g., due to move stack issues), 
+            # check manually by counting position occurrences in the move history
+            if len(self.move_stack) < 4:  # Need at least 4 moves for 3 repetitions
+                return False
+            
+            # Get current position key (FEN without move counters)
+            fen_parts = self.fen().split()
+            if len(fen_parts) < 4:
+                return False
+            current_key = ' '.join(fen_parts[:4])
+            
+            # Count how many times this position has occurred
+            # We need to check all positions: starting position + positions after each move
+            count = 1  # Current position (after last move)
+            
+            # Get starting position by popping all moves
+            board_copy = self.copy()
+            start_positions = []
+            while len(board_copy.move_stack) > 0:
+                board_copy.pop()
+                fen_parts_copy = board_copy.fen().split()
+                if len(fen_parts_copy) >= 4:
+                    key = ' '.join(fen_parts_copy[:4])
+                    start_positions.append(key)
+            
+            # Starting position is the last one after popping all moves
+            if start_positions:
+                start_key = start_positions[-1]
+                if start_key == current_key:
+                    count += 1
+                    if count >= 3:
+                        return True
+                
+                # Check all intermediate positions
+                for key in start_positions[:-1]:  # All except the last (which is start)
+                    if key == current_key:
+                        count += 1
+                        if count >= 3:
+                            return True
+            
+            return False
+    
+    def is_fivefold_repetition(self) -> bool:
+        """Check if fivefold repetition has occurred, handling errors gracefully."""
+        try:
+            return super().is_fivefold_repetition()
+        except (AttributeError, TypeError):
+            # If the built-in method fails, check manually
+            if len(self.move_stack) < 8:  # Need at least 8 moves for 5 repetitions
+                return False
+            
+            # Get current position key
+            fen_parts = self.fen().split()
+            if len(fen_parts) < 4:
+                return False
+            current_key = ' '.join(fen_parts[:4])
+            
+            # Count repetitions by checking all positions
+            count = 1  # Current position
+            
+            # Get all positions by popping moves
+            board_copy = self.copy()
+            all_positions = []
+            while len(board_copy.move_stack) > 0:
+                board_copy.pop()
+                fen_parts_copy = board_copy.fen().split()
+                if len(fen_parts_copy) >= 4:
+                    key = ' '.join(fen_parts_copy[:4])
+                    all_positions.append(key)
+            
+            # Check starting position and all intermediate positions
+            if all_positions:
+                start_key = all_positions[-1]  # Starting position
+                if start_key == current_key:
+                    count += 1
+                    if count >= 5:
+                        return True
+                
+                # Check intermediate positions
+                for key in all_positions[:-1]:
+                    if key == current_key:
+                        count += 1
+                        if count >= 5:
+                            return True
+            
+            return False
 
     def push(self, move: chess.Move | None):
         """Pushes a move to the board, handling illegal moves."""

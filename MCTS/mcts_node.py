@@ -38,11 +38,47 @@ class MCTSNode:
         return self.board
 
     def is_terminal(self) -> bool:
-        """Checks if the node represents a terminal state."""
+        """Checks if the node represents a terminal state.
+        
+        Detects all terminal conditions including:
+        - Checkmate
+        - Stalemate
+        - Threefold repetition (if claim_draw=True)
+        - Fivefold repetition
+        - 75-move rule
+        - Insufficient material
+        - 50-move rule (if claim_draw=True)
+        """
         if self._is_terminal is None:
             # Calculate on demand and cache
             board = self.get_board()
-            self._is_terminal = board.is_game_over(claim_draw=True)
+            try:
+                # Check for game over (includes repetition detection)
+                self._is_terminal = board.is_game_over(claim_draw=True)
+                
+                # Additional explicit checks for repetition (safety net)
+                if not self._is_terminal:
+                    # Check for fivefold repetition (automatic draw)
+                    if hasattr(board, 'is_fivefold_repetition'):
+                        try:
+                            if board.is_fivefold_repetition():
+                                self._is_terminal = True
+                        except (AttributeError, TypeError):
+                            pass  # Method might not be available or error
+                    
+                    # Check for threefold repetition (claimable draw)
+                    if not self._is_terminal and hasattr(board, 'can_claim_threefold_repetition'):
+                        try:
+                            if board.can_claim_threefold_repetition():
+                                # In MCTS, we treat claimable draws as terminal
+                                self._is_terminal = True
+                        except (AttributeError, TypeError):
+                            pass  # Method might not be available or error
+            except Exception as e:
+                # If there's an error checking terminal state, assume non-terminal
+                # This prevents crashes but might miss some terminal states
+                print(f"Warning: Error checking terminal state in MCTS node: {e}")
+                self._is_terminal = False
         return self._is_terminal
 
     def Q(self) -> float:

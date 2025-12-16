@@ -51,7 +51,8 @@ def create_chess_env(cfg, render=False, render_mode=None, show_possible_actions=
         save_video_folder=cfg.env.save_video_folder if render else None,
         action_space_size=cfg.network.action_space_size,
         history_steps=cfg.env.history_steps,
-        show_possible_actions=show_possible_actions
+        show_possible_actions=show_possible_actions,
+        claim_draw=True  # Explicitly enable draw claiming for repetition detection
     )
 
 def get_chess_game_result(board: BaseChessBoard) -> float:
