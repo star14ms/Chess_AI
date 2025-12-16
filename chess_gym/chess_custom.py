@@ -123,24 +123,11 @@ class BaseChessBoard(chess.Board):
         """Returns the outcome of the game."""
         if self.foul:
             return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
-        
-        # Save board state before calling super().outcome() which may modify the board
-        current_fen = self.fen()
-        current_move_stack = list(self.move_stack) if hasattr(self, 'move_stack') else []
-        
+
+        # python-chess' outcome() should not mutate board state; attempting to "restore"
+        # state here can corrupt move stacks and repetition tracking, causing premature draws.
         try:
-            result = super().outcome(claim_draw=claim_draw)
-            # Restore board state if it was modified
-            if self.fen() != current_fen or len(self.move_stack) != len(current_move_stack):
-                self.set_fen(current_fen)
-                # Restore move stack by replaying moves
-                for move in current_move_stack:
-                    if move is not None:
-                        try:
-                            super().push(move)
-                        except:
-                            pass
-            return result
+            return super().outcome(claim_draw=claim_draw)
         except (AttributeError, TypeError):
             # If outcome() fails, check manually without modifying the board
             # Check for basic termination conditions
@@ -168,7 +155,9 @@ class BaseChessBoard(chess.Board):
         except (AttributeError, TypeError):
             # If the built-in method fails (e.g., due to move stack issues), 
             # check manually by counting position occurrences in the move history
-            if len(self.move_stack) < 4:  # Need at least 4 moves for 3 repetitions
+            # Earliest possible threefold claim is after 8 plies (4 full moves):
+            # you need to reach the same position three times.
+            if len(self.move_stack) < 8:
                 return False
             
             # Get current position key (FEN without move counters)
