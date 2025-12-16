@@ -385,9 +385,22 @@ class ChessEnv(gym.Env):
         # Check for game termination: is_game_over handles most cases, but we also need to check
         # for automatic termination conditions (fivefold repetition and 75-move rule) that don't
         # require a claim. Threefold repetition requires a claim, but fivefold is automatic.
-        terminated = (self.board.is_game_over(claim_draw=self.claim_draw) or 
-                     self.board.is_fivefold_repetition() or 
-                     self.board.is_seventyfive_moves())
+        terminated = self.board.is_game_over(claim_draw=self.claim_draw)
+        
+        # Check for fivefold repetition (automatic draw) - with fallback for compatibility
+        if hasattr(self.board, 'is_fivefold_repetition'):
+            terminated = terminated or self.board.is_fivefold_repetition()
+        
+        # Check for 75-move rule (automatic draw) - with fallback for older python-chess versions
+        if hasattr(self.board, 'is_seventyfive_moves'):
+            terminated = terminated or self.board.is_seventyfive_moves()
+        else:
+            # Fallback: manually check 75-move rule (150 half-moves since last capture/pawn move)
+            # This matches the implementation in python-chess 1.11.2+
+            # The rule: game is automatically drawn if halfmove_clock >= 150 and there are legal moves
+            if self.board.halfmove_clock >= 150 and any(self.board.generate_legal_moves()):
+                terminated = True
+        
         truncated = False
         info = {
             'turn': self.board.turn,

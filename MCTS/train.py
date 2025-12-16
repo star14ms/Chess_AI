@@ -1074,9 +1074,6 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_elapsed_time = int(time.time() - total_training_start_time)
         progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)})")
         
-        # Track iteration duration for time prediction
-        iteration_durations.append(iteration_duration)
-        
         # Record metrics for learning curve visualization
         history['policy_loss'].append(avg_policy_loss)
         history['value_loss'].append(avg_value_loss)
@@ -1099,16 +1096,24 @@ def run_training_loop(cfg: DictConfig) -> None:
         
         # Check if training would exceed maximum time after next iteration
         # Do this AFTER saving checkpoint so current iteration's work is preserved
+        # Recalculate total_elapsed_time to include checkpoint saving time
         if cfg.training.max_training_time_seconds is not None:
+            # Recalculate elapsed time after checkpoint saving to include that overhead
+            total_elapsed_time_after_checkpoint = int(time.time() - total_training_start_time)
+                    
+            # Track iteration duration for time prediction
+            iteration_durations.append(total_elapsed_time_after_checkpoint)
+            
             # Calculate average iteration time from completed iterations
             if len(iteration_durations) > 0:
                 avg_iteration_time = sum(iteration_durations) / len(iteration_durations)
                 # Predict total time after completing the next iteration
-                predicted_total_time = total_elapsed_time + avg_iteration_time
+                # Use the updated elapsed time that includes checkpoint saving
+                predicted_total_time = total_elapsed_time_after_checkpoint + avg_iteration_time
                 
                 if predicted_total_time > cfg.training.max_training_time_seconds:
                     progress.print(f"\n⚠️  Maximum training time limit reached!")
-                    progress.print(f"   Current elapsed time: {format_time(total_elapsed_time)}")
+                    progress.print(f"   Current elapsed time: {format_time(total_elapsed_time_after_checkpoint)}")
                     progress.print(f"   Average iteration time: {format_time(int(avg_iteration_time))}")
                     progress.print(f"   Predicted total time after next iteration: {format_time(int(predicted_total_time))}")
                     progress.print(f"   Maximum allowed time: {format_time(cfg.training.max_training_time_seconds)}")
