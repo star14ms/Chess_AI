@@ -68,6 +68,78 @@ class MCTS:
             node.N -= virtual_loss
             node.W += virtual_loss
 
+    # --- Dynamic Batching ---
+
+    def _get_optimal_batch_size(self, root_node: MCTSNode, max_batch_size: int) -> int:
+        """Dynamically determine optimal batch size based on available GPU memory.
+        
+        Args:
+            root_node: Root node of MCTS search (used for observation shape estimation)
+            max_batch_size: Maximum batch size from config
+            
+        Returns:
+            Optimal batch size (at least 1, at most max_batch_size)
+        """
+        if self.device.type != 'cuda':
+            # For CPU/MPS, use smaller batches to avoid memory issues
+            return min(max_batch_size, 4)
+        
+        try:
+            # Get current GPU memory usage
+            # Only synchronize, don't clear cache on every call (too expensive)
+            torch.cuda.synchronize(self.device)
+            
+            # Get memory info
+            allocated = torch.cuda.memory_allocated(self.device)
+            reserved = torch.cuda.memory_reserved(self.device)
+            total_memory = torch.cuda.get_device_properties(self.device).total_memory
+            
+            # Calculate free memory (use reserved as it's more conservative)
+            free_memory = total_memory - reserved
+            
+            # Only clear cache if memory is getting tight (>80% used)
+            if reserved > total_memory * 0.8:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize(self.device)
+                reserved = torch.cuda.memory_reserved(self.device)
+                free_memory = total_memory - reserved
+            
+            # Estimate memory per sample:
+            # - Observation tensor: (history_steps * channels, board_size, board_size)
+            #   For chess: ~(8 * 119, 8, 8) = ~30KB per observation
+            # - Network forward pass: depends on model size
+            #   Conservative estimate: 50-100MB per sample for forward + backward (though we use no_grad)
+            #   With no_grad: ~20-50MB per sample is more realistic
+            
+            # Get observation shape to estimate more accurately
+            try:
+                test_obs = self._prepare_observation(root_node)
+                if test_obs is not None:
+                    obs_size_bytes = test_obs.element_size() * test_obs.nelement()
+                    # Estimate network forward pass memory (rough heuristic: 10-20x observation size)
+                    # This is conservative - actual depends on network architecture
+                    memory_per_sample = obs_size_bytes * 15  # ~15x for network computation
+                else:
+                    # Fallback estimate
+                    memory_per_sample = 50 * 1024 * 1024  # 50MB conservative
+            except:
+                # Fallback if observation preparation fails
+                memory_per_sample = 50 * 1024 * 1024  # 50MB conservative
+            
+            # Calculate optimal batch size
+            # Reserve 20% of free memory for safety
+            usable_memory = free_memory * 0.8
+            optimal_batch = int(usable_memory / memory_per_sample) if memory_per_sample > 0 else max_batch_size
+            
+            # Clamp to reasonable bounds
+            optimal_batch = max(1, min(optimal_batch, max_batch_size))
+            
+            return optimal_batch
+            
+        except Exception as e:
+            # Fallback to config value if memory query fails
+            return max_batch_size
+
     # --- MCTS Phases ---
 
     def _select(self, root_node: MCTSNode) -> Tuple[MCTSNode, List[MCTSNode]]:
@@ -407,14 +479,24 @@ class MCTS:
             progress.start_task(mcts_task_id)
 
         if batch_size > 1:
-            # Batched search path
+            # Batched search path with dynamic batching
             sims_done = 0
+            # Calculate optimal batch size once at start (will be recalculated periodically)
+            optimal_batch_size = self._get_optimal_batch_size(root_node, batch_size)
+            recalc_interval = max(100, optimal_batch_size * 10)  # Recalculate every N simulations or every 10 batches
+            
             while sims_done < iterations:
-                actual_batch = min(batch_size, iterations - sims_done)
+                # Periodically recalculate optimal batch size to adapt to changing memory conditions
+                if sims_done > 0 and sims_done % recalc_interval == 0:
+                    optimal_batch_size = self._get_optimal_batch_size(root_node, batch_size)
+                    recalc_interval = max(100, optimal_batch_size * 10)
+                
+                # Use dynamic batch size, but don't exceed remaining iterations
+                actual_batch = min(optimal_batch_size, iterations - sims_done)
                 performed = self._search_batched(root_node, actual_batch)
                 sims_done += performed
                 if mcts_task_id is not None and progress is not None:
-                    progress.update(mcts_task_id, advance=performed, description=f"  ├─ MCTS Sims ({sims_done}/{iterations})")
+                    progress.update(mcts_task_id, advance=performed, description=f"  ├─ MCTS Sims ({sims_done}/{iterations}) [batch={actual_batch}]")
         else:
             # Sequential search path (original logic)
             for i in range(iterations):
