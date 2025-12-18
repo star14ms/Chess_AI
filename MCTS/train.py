@@ -482,6 +482,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # Initialize Optimizer using optimizer config
     opt_cfg = cfg.optimizer
+    # Will be set from checkpoint if available, otherwise use config value
+    actual_learning_rate = opt_cfg.learning_rate
     if opt_cfg.type == "Adam":
         optimizer = optim.Adam(network.parameters(), lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
     elif opt_cfg.type == "SGD":
@@ -587,16 +589,44 @@ def run_training_loop(cfg: DictConfig) -> None:
             # Load optimizer state with proper device handling
             if 'optimizer_state_dict' in checkpoint:
                 try:
-                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    # Extract learning rate from checkpoint before loading state
+                    # This preserves the actual learning rate used during training
+                    checkpoint_opt_state = checkpoint['optimizer_state_dict']
+                    if 'param_groups' in checkpoint_opt_state and len(checkpoint_opt_state['param_groups']) > 0:
+                        checkpoint_lr = checkpoint_opt_state['param_groups'][0].get('lr', opt_cfg.learning_rate)
+                        if checkpoint_lr != opt_cfg.learning_rate:
+                            actual_learning_rate = checkpoint_lr
+                            progress.print(f"Using learning rate from checkpoint: {checkpoint_lr} (config had: {opt_cfg.learning_rate})")
+                        else:
+                            actual_learning_rate = checkpoint_lr
+                    
+                    optimizer.load_state_dict(checkpoint_opt_state)
                     # Move optimizer state tensors to correct device
                     for state in optimizer.state.values():
                         for k, v in state.items():
                             if isinstance(v, torch.Tensor):
                                 state[k] = v.to(device)
-                    progress.print(f"Successfully loaded optimizer state (Adam step count: {optimizer.state[optimizer.param_groups[0]['params'][0]].get('step', 0) if optimizer.state else 0})")
+                    
+                    # Verify learning rate was restored correctly
+                    restored_lr = optimizer.param_groups[0]['lr']
+                    if abs(restored_lr - actual_learning_rate) > 1e-8:
+                        progress.print(f"Warning: Learning rate mismatch! Checkpoint had {actual_learning_rate}, restored to {restored_lr}")
+                        # Fix it
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = actual_learning_rate
+                    
+                    # Log optimizer state info
+                    if opt_cfg.type == "Adam" and optimizer.state:
+                        first_param_id = optimizer.param_groups[0]['params'][0]
+                        step_count = optimizer.state[first_param_id].get('step', 0) if first_param_id in optimizer.state else 0
+                        progress.print(f"Successfully loaded optimizer state: LR={restored_lr:.2e}, Adam step={step_count}")
+                    else:
+                        progress.print(f"Successfully loaded optimizer state: LR={restored_lr:.2e}")
                 except Exception as e:
                     progress.print(f"Warning: Failed to load optimizer state: {e}")
                     progress.print("Optimizer will start fresh (this will cause higher initial losses)")
+                    import traceback
+                    traceback.print_exc()
             else:
                 progress.print("Warning: No optimizer state found in checkpoint")
                 progress.print("Optimizer will start fresh (this will cause higher initial losses)")
@@ -1004,12 +1034,14 @@ def run_training_loop(cfg: DictConfig) -> None:
         if use_multiprocessing_flag:
             # Save optimizer state before refreshing
             opt_state = optimizer.state_dict()
-            # Recreate optimizer with new parameter references
+            # Extract current learning rate from optimizer state to preserve it
+            current_lr = optimizer.param_groups[0]['lr']
+            # Recreate optimizer with new parameter references, using preserved learning rate
             if opt_cfg.type == "Adam":
-                optimizer = optim.Adam(network.parameters(), lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+                optimizer = optim.Adam(network.parameters(), lr=current_lr, weight_decay=opt_cfg.weight_decay)
             elif opt_cfg.type == "SGD":
                 momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
-                optimizer = optim.SGD(network.parameters(), lr=opt_cfg.learning_rate, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+                optimizer = optim.SGD(network.parameters(), lr=current_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
             # Restore optimizer state (this preserves momentum, adaptive rates, etc.)
             try:
                 optimizer.load_state_dict(opt_state)
@@ -1018,8 +1050,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                     for k, v in state.items():
                         if isinstance(v, torch.Tensor):
                             state[k] = v.to(device)
+                # Verify learning rate was preserved
+                restored_lr = optimizer.param_groups[0]['lr']
+                if abs(restored_lr - current_lr) > 1e-8:
+                    # Fix learning rate if it wasn't preserved correctly
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = current_lr
             except Exception as e:
                 progress.print(f"Warning: Could not restore optimizer state after device move: {e}")
+                # At minimum, preserve the learning rate
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = current_lr
+                import traceback
+                traceback.print_exc()
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_illegal_moves_in_iteration = 0
