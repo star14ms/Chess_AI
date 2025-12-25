@@ -708,6 +708,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         # Track pre-generated games (for continual mode)
         games_from_queue = 0
         games_waited_for = 0
+        # Track games per device
+        device_contributions = defaultdict(int)
 
         if continual_enabled:
             # Drain queue to collect games for this iteration
@@ -730,6 +732,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                         games_data_collected.extend(game_data)
                         collected_games += 1
                         game_moves_list.append(game_info)
+                        # Track device contribution
+                        if 'device' in game_info:
+                            device_contributions[game_info['device']] += 1
                         # Check if we've collected enough experiences to fill the buffer
                         if len(games_data_collected) >= max_experiences:
                             # Stop collecting - would replace entire buffer
@@ -769,6 +774,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                             games_data_collected.extend(game_data)
                             collected_games += 1
                             game_moves_list.append(game_info)
+                            # Track device contribution
+                            if 'device' in game_info:
+                                device_contributions[game_info['device']] += 1
                             # Check if we've hit the buffer limit
                             if len(games_data_collected) >= max_experiences:
                                 if task_id_selfplay is not None:
@@ -807,6 +815,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                             games_data_collected.extend(game_data)
                             collected_games += 1
                             game_moves_list.append(game_info)
+                            # Track device contribution
+                            if 'device' in game_info:
+                                device_contributions[game_info['device']] += 1
                             # Check if we've hit the buffer limit
                             if len(games_data_collected) >= max_experiences:
                                 if task_id_selfplay is not None:
@@ -953,6 +964,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                 games_data_collected.extend(game_data)
                 games_completed_this_iter += 1
                 game_moves_list.append(game_info)
+                # Track device contribution (sequential mode uses training device)
+                device_contributions[str(device)] += 1
                 # Count outcomes from the final game result (chess: +1 white, -1 black, 0 draw)
                 if game_data:
                     try:
@@ -1006,7 +1019,13 @@ def run_training_loop(cfg: DictConfig) -> None:
             draw_breakdown = ", ".join([f"{k}: {v}" for k, v in sorted(draw_reasons.items(), key=lambda x: -x[1])])
             draw_info = f" [{draw_breakdown}]"
         
-        progress.print(f"Self-play: {games_completed_this_iter} games{mode_info}, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info} | {format_time(self_play_duration)}")
+        # Build device contributions string
+        device_info = ""
+        if device_contributions:
+            device_breakdown = ", ".join([f"{dev}: {count}" for dev, count in sorted(device_contributions.items(), key=lambda x: -x[1])])
+            device_info = f" | Devices: {device_breakdown}"
+        
+        progress.print(f"Self-play: {games_completed_this_iter} games{mode_info}, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info}{device_info} | {format_time(self_play_duration)}")
         
         # Save game moves to file
         if game_moves_list and game_history_dir:
