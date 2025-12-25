@@ -307,8 +307,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         fen = env.board.fen()
         
         if cfg.mcts.iterations > 0:
-            # Preserve stack so repetition detection works in MCTS nodes.
-            root_node = MCTSNode(env.board.copy(stack=True))
+            # Use stack=False for MCTS nodes - they only need current position (FEN) for exploration.
+            # Repetition detection is handled in the actual game board, not in MCTS tree nodes.
+            root_node = MCTSNode(env.board.copy(stack=False))
             mcts_env = env if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False) else None
             mcts_player = MCTS(
                 network,

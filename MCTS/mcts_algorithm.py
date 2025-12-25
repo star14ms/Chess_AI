@@ -193,8 +193,9 @@ class MCTS:
                 if 0 <= action_id_0based < probs_to_use.shape[0]:
                     prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
 
-                # Preserve full stack so terminal detection (repetition) works inside nodes.
-                child_board = self.env.board.copy(stack=True) if hasattr(self.env.board, "copy") else self.env.board.copy()
+                # Use stack=False for MCTS nodes - terminal detection (checkmate/stalemate) works from FEN alone.
+                # Repetition detection is not needed in MCTS exploration, only in the actual game.
+                child_board = self.env.board.copy(stack=False) if hasattr(self.env.board, "copy") else self.env.board.copy()
                 child_node = MCTSNode(
                     board=child_board,
                     parent=leaf_node,
@@ -220,7 +221,9 @@ class MCTS:
                 prior_p = uniform_prob if use_uniform_fallback else probs_to_use[action_id_0based].item()
             if action_id not in leaf_node.children:
                 try:
-                    sim_board = leaf_board.copy(stack=True) if hasattr(leaf_board, "copy") else leaf_board.copy()
+                    # Use stack=False for MCTS nodes - terminal detection works from FEN alone.
+                    # This avoids expensive deep copying of move history during MCTS exploration.
+                    sim_board = leaf_board.copy(stack=False) if hasattr(leaf_board, "copy") else leaf_board.copy()
                     move = sim_board.action_id_to_move(action_id)
                     if move is None:
                         continue
@@ -470,8 +473,8 @@ class MCTS:
             root_fen = self.env.board.fen()
             if isinstance(self.env.board, FullyTrackedBoard):
                 root_piece_tracker = self.env.board.piece_tracker
-            # Save the stack from the root node (it should be created with stack=True).
-            root_board = root_node.get_board()
+            # Save the stack from the actual game board (not from root_node, which uses stack=False for performance).
+            root_board = self.env.board.copy(stack=True)
 
         mcts_task_id = None
         if progress is not None:
