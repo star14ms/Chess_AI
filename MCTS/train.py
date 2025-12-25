@@ -126,11 +126,14 @@ def continual_self_play_worker(checkpoint_path: str, cfg: DictConfig, device_str
         except Exception:
             pass
 
-        # Play one game and enqueue
+        # Play one game and enqueue (include device info so we know which GPU finished)
         try:
             game_data, game_info = run_self_play_game(cfg, network if cfg.mcts.iterations > 0 else None, env=None, progress=None, device=device)
             if game_data:
-                out_queue.put((game_data, game_info))
+                # Include device string in game_info so we can track which GPU finished
+                game_info_with_device = game_info.copy()
+                game_info_with_device['device'] = device_str
+                out_queue.put((game_data, game_info_with_device))
         except Exception:
             # Continue on errors to keep the actor alive
             pass
@@ -417,27 +420,14 @@ def run_training_loop(cfg: DictConfig) -> None:
     # --- Setup ---
     # Ensure factories are initialized in the main process
     initialize_factories_from_cfg(cfg)
-    # Training device selection with auto fallback
-    device_cfg = str(cfg.training.device).lower()
-    if device_cfg == "auto":
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-    elif device_cfg == "cuda":
-        if not torch.cuda.is_available():
-            raise ValueError("CUDA is not available")
+    # Training device selection: always use fastest available accelerator
+    # Priority: CUDA > MPS > CPU
+    if torch.cuda.is_available():
         device = torch.device("cuda")
-    elif device_cfg == "mps":
-        if not (getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()):
-            raise ValueError("MPS is not available")
+    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         device = torch.device("mps")
-    elif device_cfg == "cpu":
-        device = torch.device("cpu")
     else:
-        raise ValueError(f"Unsupported training.device: {cfg.training.device}")
+        device = torch.device("cpu")
     log_str_trining_device = f"{device} for training"
 
     # Print action space size
@@ -525,29 +515,14 @@ def run_training_loop(cfg: DictConfig) -> None:
     stop_event = manager.Event()
     continual_enabled = bool(cfg.training.get('continual_training', False))
     actors = []
+    actor_device_map = {}  # Map process to device string for dynamic GPU assignment
 
     # --- Mode selection for self-play ---
+    # Note: Actor launching for continual mode happens after checkpoint loading
+    # to check buffer size and exclude training device if we have enough data
     if continual_enabled:
-        # Launch persistent actors (mixed devices)
-        available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        desired_processes = max(1, num_workers if num_workers > 0 else 1)
-        device_pool = []
-        gpu_slots = min(available_gpus, max(0, desired_processes - 1)) if desired_processes > 1 else 0
-        for g in range(gpu_slots):
-            device_pool.append(f"cuda:{g}")
-        while len(device_pool) < desired_processes:
-            device_pool.append('cpu')
-        checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
-        for dev in device_pool:
-            p = multiprocessing.get_context("spawn").Process(
-                target=continual_self_play_worker,
-                args=(checkpoint_path_for_actors, cfg, dev, sp_queue, stop_event)
-            )
-            p.daemon = True
-            p.start()
-            actors.append(p)
-        progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
-        # For continual mode, keep training device as configured
+        # Will launch actors after checkpoint loading
+        pass
     elif use_multiprocessing_flag and num_workers > 1:
         device = "cpu"
         # Describe mixed actors plan
@@ -659,6 +634,42 @@ def run_training_loop(cfg: DictConfig) -> None:
             start_iter = 0
     else:
         progress.print("No existing checkpoint found. Starting training from scratch...")
+
+    # --- Launch continual self-play actors (after checkpoint loading) ---
+    if continual_enabled:
+        # Always use all available GPUs for self-play initially
+        # Training GPU will be dynamically assigned to whichever GPU finishes first when we have enough data
+        available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        desired_processes = max(1, num_workers if num_workers > 0 else 1)
+        device_pool = []
+        
+        # Use all available GPUs for self-play (training GPU will be assigned dynamically)
+        gpu_slots = min(available_gpus, desired_processes)
+        for g in range(gpu_slots):
+            device_pool.append(f"cuda:{g}")
+        
+        # Fill remaining slots with CPU workers
+        while len(device_pool) < desired_processes:
+            device_pool.append('cpu')
+        
+        checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
+        for dev in device_pool:
+            p = multiprocessing.get_context("spawn").Process(
+                target=continual_self_play_worker,
+                args=(checkpoint_path_for_actors, cfg, dev, sp_queue, stop_event)
+            )
+            p.daemon = True
+            p.start()
+            actors.append(p)
+            if dev.startswith('cuda:'):
+                actor_device_map[p] = dev
+        
+        has_enough_data = len(replay_buffer) >= cfg.training.batch_size
+        if has_enough_data:
+            progress.print(f"Buffer has enough data ({len(replay_buffer)} >= {cfg.training.batch_size}), training GPU will be assigned dynamically to first available GPU")
+        else:
+            progress.print(f"Buffer too small ({len(replay_buffer)} < {cfg.training.batch_size}), using all {gpu_slots} GPU(s) for self-play")
+        progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
 
     # Track iteration durations for time prediction
     iteration_durations = []  # List to store duration of each completed iteration
@@ -1018,6 +1029,42 @@ def run_training_loop(cfg: DictConfig) -> None:
             progress.print("Not enough data in buffer to start training. Skipping phase.")
             continue
         
+        # Dynamic GPU assignment: if we have enough data and using GPU, wait for first available GPU
+        training_device = device
+        if continual_enabled and device.type == 'cuda' and len(replay_buffer) >= cfg.training.batch_size:
+            # Wait for whichever GPU finishes its current self-play game first
+            # Wait for next game from queue to identify which GPU just finished
+            try:
+                game_result = sp_queue.get(timeout=1.0)
+                game_data, game_info = game_result
+                # Extract which GPU this game came from
+                if 'device' in game_info:
+                    finished_gpu_str = game_info['device']
+                    if finished_gpu_str.startswith('cuda:'):
+                        training_device = torch.device(finished_gpu_str)
+                        progress.print(f"Assigned training to {training_device} (GPU that finished first)")
+                        # Put the game back in queue since we just wanted to know which GPU finished
+                        sp_queue.put((game_data, game_info))
+                    else:
+                        # CPU finished, use first available GPU instead
+                        available_gpu_ids = [int(dev.split(':')[1]) for p, dev in actor_device_map.items() if dev.startswith('cuda:') and p.is_alive()]
+                        if available_gpu_ids:
+                            training_device = torch.device(f"cuda:{available_gpu_ids[0]}")
+                            progress.print(f"Assigned training to {training_device} (CPU finished, using first GPU)")
+                        sp_queue.put((game_data, game_info))
+                else:
+                    # Old format without device info, use first GPU
+                    available_gpu_ids = [int(dev.split(':')[1]) for p, dev in actor_device_map.items() if dev.startswith('cuda:') and p.is_alive()]
+                    if available_gpu_ids:
+                        training_device = torch.device(f"cuda:{available_gpu_ids[0]}")
+                    sp_queue.put((game_data, game_info))
+            except queue.Empty:
+                # No game finished yet, use first available GPU
+                available_gpu_ids = [int(dev.split(':')[1]) for p, dev in actor_device_map.items() if dev.startswith('cuda:') and p.is_alive()]
+                if available_gpu_ids:
+                    training_device = torch.device(f"cuda:{available_gpu_ids[0]}")
+                    progress.print(f"Assigned training to {training_device} (no game finished yet, using first GPU)")
+        
         training_columns = (
             TextColumn("[progress.description]{task.description}"), BarColumn(),
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
@@ -1027,7 +1074,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.columns = training_columns
 
         # progress.print("Starting training phase...")
-        network.to(device).train()
+        network.to(training_device).train()
         
         # CRITICAL: Refresh optimizer parameter references after moving network
         # When network.to(device) creates new parameter tensors, optimizer must be updated
