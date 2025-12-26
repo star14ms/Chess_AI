@@ -674,6 +674,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # Track iteration durations for time prediction
     iteration_durations = []  # List to store duration of each completed iteration
+    previous_total_elapsed_time = 0  # Track previous total elapsed time to calculate iteration duration
     
     # Use num_training_iterations from cfg
     for iteration in range(start_iter, cfg.training.num_training_iterations):
@@ -1240,9 +1241,14 @@ def run_training_loop(cfg: DictConfig) -> None:
         if max_training_time_seconds is not None:
             # Recalculate elapsed time after checkpoint saving to include that overhead
             total_elapsed_time_after_checkpoint = int(time.time() - total_training_start_time)
+            
+            # Calculate actual iteration duration (including checkpoint saving time)
+            # Duration is the difference between current and previous total elapsed time
+            actual_iteration_duration = total_elapsed_time_after_checkpoint - previous_total_elapsed_time
+            previous_total_elapsed_time = total_elapsed_time_after_checkpoint
                     
             # Track iteration duration for time prediction
-            iteration_durations.append(total_elapsed_time_after_checkpoint)
+            iteration_durations.append(actual_iteration_duration)
             
             # Calculate average iteration time from completed iterations
             if len(iteration_durations) > 0:
