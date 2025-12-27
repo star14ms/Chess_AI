@@ -297,6 +297,10 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     action_space_size = cfg.network.action_space_size
     max_moves = cfg.training.max_game_moves
 
+    # Track MCTS tree statistics
+    tree_stats_list = []  # Store stats for each move
+    gpu_cleanup_interval = 5  # Clean GPU memory every N moves
+
     task_id_game = None
     if progress is not None:
         task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
@@ -323,7 +327,29 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             )
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
+            
+            # Monitor MCTS tree size
+            try:
+                tree_stats = root_node.get_tree_stats()
+                tree_stats_list.append(tree_stats)
+            except Exception:
+                # If tree stats calculation fails, continue without it
+                pass
+            
             action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1 # +1 because actions are 1-indexed
+            
+            # Explicit cleanup: Delete MCTS tree and player to free memory immediately
+            del root_node
+            del mcts_player
+            mcts_policy = None  # Help GC
+            
+            # Periodic GPU memory cleanup
+            if device.type == 'cuda' and (move_count + 1) % gpu_cleanup_interval == 0:
+                try:
+                    torch.cuda.synchronize(device)
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
         else:
             mcts_policy = np.zeros(cfg.network.action_space_size)
             legal_actions = get_legal_actions(env.board)
@@ -357,6 +383,10 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves}) | temp={temperature:.3f}", advance=1)
 
         move_count += 1
+        
+        # Force garbage collection periodically to help with memory cleanup
+        if move_count % gpu_cleanup_interval == 0:
+            gc.collect()
 
     final_value = get_game_result(env.board)
     
@@ -379,12 +409,24 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     if progress is not None and task_id_game is not None:
         progress.update(task_id_game, visible=False)
     
+    # Calculate average tree statistics
+    avg_tree_stats = {}
+    if tree_stats_list:
+        avg_tree_stats = {
+            'avg_nodes': sum(s['node_count'] for s in tree_stats_list) / len(tree_stats_list),
+            'max_nodes': max(s['node_count'] for s in tree_stats_list),
+            'avg_depth': sum(s['max_depth'] for s in tree_stats_list) / len(tree_stats_list),
+            'max_depth': max(s['max_depth'] for s in tree_stats_list),
+            'avg_branching': sum(s['avg_branching'] for s in tree_stats_list) / len(tree_stats_list)
+        }
+    
     # Return game data, move list in SAN, and termination reason
     game_info = {
         'moves_san': ' '.join(move_list_san),
         'termination': termination_reason,
         'move_count': move_count,
-        'result': final_value
+        'result': final_value,
+        'tree_stats': avg_tree_stats if avg_tree_stats else None
     }
 
     return (full_game_data, game_info)
@@ -1026,7 +1068,19 @@ def run_training_loop(cfg: DictConfig) -> None:
             device_breakdown = ", ".join([f"{dev}: {count}" for dev, count in sorted(device_contributions.items(), key=lambda x: -x[1])])
             device_info = f" | Devices: {device_breakdown}"
         
-        progress.print(f"Self-play: {games_completed_this_iter} games{mode_info}, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info}{device_info} | {format_time(self_play_duration)}")
+        # Collect and aggregate MCTS tree statistics
+        tree_stats_info = ""
+        if game_moves_list:
+            tree_stats_all = [g.get('tree_stats') for g in game_moves_list if g.get('tree_stats')]
+            if tree_stats_all:
+                avg_nodes = sum(s['avg_nodes'] for s in tree_stats_all) / len(tree_stats_all)
+                max_nodes = max(s['max_nodes'] for s in tree_stats_all)
+                avg_depth = sum(s['avg_depth'] for s in tree_stats_all) / len(tree_stats_all)
+                max_depth = max(s['max_depth'] for s in tree_stats_all)
+                avg_branching = sum(s['avg_branching'] for s in tree_stats_all) / len(tree_stats_all)
+                tree_stats_info = f" | MCTS: nodes={avg_nodes:.0f}/{max_nodes:.0f}, depth={avg_depth:.1f}/{max_depth:.0f}, branch={avg_branching:.2f}"
+        
+        progress.print(f"Self-play: {games_completed_this_iter} games{mode_info}, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}")
         
         # Save game moves to file
         if game_moves_list and game_history_dir:

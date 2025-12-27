@@ -77,6 +77,39 @@ class MCTSNode:
             return self
         return best_child
 
+    def count_nodes(self) -> int:
+        """Recursively count the total number of nodes in the subtree rooted at this node."""
+        count = 1  # Count this node
+        for child in self.children.values():
+            count += child.count_nodes()
+        return count
+    
+    def get_max_depth(self) -> int:
+        """Get the maximum depth of the subtree rooted at this node."""
+        if not self.children:
+            return 0
+        return 1 + max((child.get_max_depth() for child in self.children.values()), default=0)
+    
+    def get_tree_stats(self) -> dict:
+        """Get statistics about the tree: node count, max depth, and average branching factor."""
+        node_count = self.count_nodes()
+        max_depth = self.get_max_depth()
+        # Calculate average branching factor (children per node)
+        total_children = sum(len(node.children) for node in self._all_nodes())
+        total_nodes = node_count
+        avg_branching = total_children / total_nodes if total_nodes > 0 else 0.0
+        return {
+            'node_count': node_count,
+            'max_depth': max_depth,
+            'avg_branching': avg_branching
+        }
+    
+    def _all_nodes(self):
+        """Generator that yields all nodes in the subtree."""
+        yield self
+        for child in self.children.values():
+            yield from child._all_nodes()
+    
     # Maybe add __repr__ for debugging
     def __repr__(self):
         return f"MCTSNode(fen='{self.board.fen()}', N={self.N}, W={self.W:.2f}, Q={self.Q():.2f}, P={self.prior_p:.3f})" 
