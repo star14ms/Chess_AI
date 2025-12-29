@@ -366,10 +366,19 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         board_stack_snapshot = env.board.copy(stack=True)
         env.board.set_fen(fen)
         # Restore stacks so repetition detection stays intact for later outcome().
+        # Filter out None values to prevent AttributeError in repetition checking
         if hasattr(env.board, "move_stack"):
-            env.board.move_stack = list(board_stack_snapshot.move_stack)
+            env.board.move_stack = [move for move in board_stack_snapshot.move_stack if move is not None]
         if hasattr(env.board, "_stack") and hasattr(board_stack_snapshot, "_stack"):
-            env.board._stack = list(board_stack_snapshot._stack)
+            # Filter out None values and tuples/lists with None as first element
+            filtered_stack = []
+            for item in board_stack_snapshot._stack:
+                if item is None:
+                    continue
+                if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] is None:
+                    continue
+                filtered_stack.append(item)
+            env.board._stack = filtered_stack
         if action_to_take in env.board.legal_actions:
             move = env.action_space._action_to_move(action_to_take)
             san_move = env.board.san(move)

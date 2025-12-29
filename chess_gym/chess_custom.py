@@ -123,7 +123,38 @@ class BaseChessBoard(chess.Board):
         """Returns the outcome of the game."""
         if self.foul:
             return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
+        # Check for None moves in the stack before calling parent outcome()
+        # This prevents AttributeError when checking repetition
+        if hasattr(self, 'move_stack') and self.move_stack:
+            if any(move is None for move in self.move_stack):
+                # If there are None moves, return illegal move outcome
+                return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
+        # Also check internal _stack for None values
+        if hasattr(self, '_stack') and self._stack:
+            # The _stack contains tuples/lists, check if any contain None moves
+            for item in self._stack:
+                if item is None:
+                    return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
+                # Some versions use tuples like (move, ...), check the first element
+                if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] is None:
+                    return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
         return super().outcome()
+    
+    def is_repetition(self, count: int = 3) -> bool:
+        """Check for repetition, handling None moves in the stack."""
+        # Filter out None moves from the stack before checking repetition
+        if hasattr(self, 'move_stack') and self.move_stack:
+            if any(move is None for move in self.move_stack):
+                # If there are None moves, we can't reliably check repetition
+                return False
+        # Also check internal _stack for None values
+        if hasattr(self, '_stack') and self._stack:
+            for item in self._stack:
+                if item is None:
+                    return False
+                if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] is None:
+                    return False
+        return super().is_repetition(count)
 
     def push(self, move: chess.Move | None):
         """Pushes a move to the board, handling illegal moves."""

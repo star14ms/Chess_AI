@@ -27,12 +27,21 @@ def _restore_chess_stack(dst: chess.Board, src: chess.Board) -> None:
     represents the *same* position, it's safe to copy the stacks back from a saved board.
     """
     # Public move stack (list[chess.Move])
+    # Filter out None values to prevent AttributeError in repetition checking
     if hasattr(src, "move_stack") and hasattr(dst, "move_stack"):
-        dst.move_stack = list(src.move_stack)
+        dst.move_stack = [move for move in src.move_stack if move is not None]
     # Internal undo stack used by python-chess for pop()/repetition tracking.
     # Name is stable across python-chess versions, but keep this defensive.
+    # Filter out None values and tuples/lists with None as first element
     if hasattr(src, "_stack") and hasattr(dst, "_stack"):
-        dst._stack = list(src._stack)
+        filtered_stack = []
+        for item in src._stack:
+            if item is None:
+                continue
+            if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] is None:
+                continue
+            filtered_stack.append(item)
+        dst._stack = filtered_stack
 
 class MCTS:
     def __init__(self,
