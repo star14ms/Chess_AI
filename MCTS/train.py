@@ -159,14 +159,43 @@ class ReplayBuffer:
         for experience in game_data:
             self.add(experience)
 
-    def sample(self, batch_size):
+    def sample(self, batch_size, action_space_size=None):
         if len(self.buffer) < batch_size:
             return None
         batch_indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         batch = [self.buffer[i] for i in batch_indices]
 
         states = np.array([exp[0] for exp in batch], dtype=np.float32)
-        policy_targets = np.array([exp[1] for exp in batch], dtype=np.float32)
+        
+        # Normalize policy targets to expected action space size
+        # This handles cases where checkpoint data has different action space sizes
+        if action_space_size is None:
+            # Try to infer from first policy target
+            first_policy = batch[0][1]
+            if isinstance(first_policy, np.ndarray):
+                action_space_size = len(first_policy)
+            else:
+                action_space_size = 4672  # Default fallback
+        
+        normalized_policies = []
+        for exp in batch:
+            policy = exp[1]
+            if isinstance(policy, np.ndarray):
+                if len(policy) == action_space_size:
+                    normalized_policies.append(policy)
+                elif len(policy) < action_space_size:
+                    # Pad with zeros if smaller
+                    padded = np.zeros(action_space_size, dtype=np.float32)
+                    padded[:len(policy)] = policy
+                    normalized_policies.append(padded)
+                else:
+                    # Truncate if larger
+                    normalized_policies.append(policy[:action_space_size])
+            else:
+                # Create zero array if not an array (shouldn't happen, but defensive)
+                normalized_policies.append(np.zeros(action_space_size, dtype=np.float32))
+        
+        policy_targets = np.array(normalized_policies, dtype=np.float32)
         # Ensure FENs are handled as a list of strings, not converted to numpy array directly if they vary in length etc.
         # fens = [exp[2] for exp in batch] 
         boards = [exp[2] for exp in batch] # Now these are board objects
@@ -195,6 +224,16 @@ class ReplayBuffer:
         compact_buffer = []
         for exp in self.buffer:
             state, policy, board, value = exp
+            # Handle None policy - replace with zero array of default action space size
+            if policy is None:
+                # Default action space size (4672 for legacy, can be overridden)
+                default_action_space = 4672
+                policy = np.zeros(default_action_space, dtype=np.float32)
+            elif not isinstance(policy, np.ndarray):
+                # If policy is not an array, create zero array
+                default_action_space = 4672
+                policy = np.zeros(default_action_space, dtype=np.float32)
+            
             # Serialize board based on environment type
             if env_type == 'chess':
                 # Convert board to FEN string (much smaller than board object)
@@ -338,10 +377,14 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             
             action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1 # +1 because actions are 1-indexed
             
+            # Save a copy of mcts_policy before cleanup (needed for game_history)
+            mcts_policy_copy = mcts_policy.copy()
+            
             # Explicit cleanup: Delete MCTS tree and player to free memory immediately
             del root_node
             del mcts_player
             mcts_policy = None  # Help GC
+            mcts_policy = mcts_policy_copy  # Restore for game_history
             
             # Periodic GPU memory cleanup
             if device.type == 'cuda' and (move_count + 1) % gpu_cleanup_interval == 0:
@@ -360,25 +403,26 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         current_obs = obs
         board_copy_at_state = env.board.copy(stack=True)
         game_history.append((current_obs, mcts_policy, board_copy_at_state))
+        # Clear mcts_policy after appending to help GC
+        mcts_policy = None
         
         # Convert action to move and get SAN notation before making the move
-        # set_fen() resets python-chess internal stacks; preserve and restore them immediately.
-        board_stack_snapshot = env.board.copy(stack=True)
-        env.board.set_fen(fen)
-        # Restore stacks so repetition detection stays intact for later outcome().
-        # Filter out None values to prevent AttributeError in repetition checking
-        if hasattr(env.board, "move_stack"):
-            env.board.move_stack = [move for move in board_stack_snapshot.move_stack if move is not None]
-        if hasattr(env.board, "_stack") and hasattr(board_stack_snapshot, "_stack"):
-            # Filter out None values and tuples/lists with None as first element
-            filtered_stack = []
-            for item in board_stack_snapshot._stack:
-                if item is None:
-                    continue
-                if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] is None:
-                    continue
-                filtered_stack.append(item)
-            env.board._stack = filtered_stack
+        # Skip set_fen() - the board is already in the correct state
+        # MCTS doesn't modify the board when mcts_env is None (normal training mode)
+        # Only restore stacks if MCTS might have modified the board (when rendering)
+        if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False):
+            # MCTS might have modified the board, so restore from snapshot
+            board_stack_snapshot = env.board.copy(stack=True)
+            env.board.set_fen(fen)
+            env.board.foul = False
+            # Rebuild _stack by replaying moves from move_stack
+            if hasattr(env.board, "move_stack") and hasattr(board_stack_snapshot, "move_stack"):
+                valid_moves = [move for move in board_stack_snapshot.move_stack if move is not None]
+                for move in valid_moves:
+                    try:
+                        env.board.push(move)
+                    except Exception:
+                        break
         if action_to_take in env.board.legal_actions:
             move = env.action_space._action_to_move(action_to_take)
             san_move = env.board.san(move)
@@ -1216,7 +1260,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         )
         # Use values from cfg
         for epoch in range(cfg.training.num_training_steps):
-            batch = replay_buffer.sample(cfg.training.batch_size)
+            batch = replay_buffer.sample(cfg.training.batch_size, action_space_size=cfg.network.action_space_size)
             if batch is None: continue
 
             # states_np, policy_targets_np, fens_batch, value_targets_np = batch

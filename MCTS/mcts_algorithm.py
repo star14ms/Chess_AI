@@ -32,14 +32,16 @@ def _restore_chess_stack(dst: chess.Board, src: chess.Board) -> None:
         dst.move_stack = [move for move in src.move_stack if move is not None]
     # Internal undo stack used by python-chess for pop()/repetition tracking.
     # Name is stable across python-chess versions, but keep this defensive.
-    # Filter out None values and tuples/lists with None as first element
+    # Filter None values from _stack to prevent AttributeError in repetition checks
     if hasattr(src, "_stack") and hasattr(dst, "_stack"):
         filtered_stack = []
         for item in src._stack:
             if item is None:
                 continue
-            if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] is None:
-                continue
+            # Check if it's a tuple/list and if the first element (move) is None
+            if isinstance(item, (tuple, list)) and len(item) > 0:
+                if item[0] is None:
+                    continue
             filtered_stack.append(item)
         dst._stack = filtered_stack
 
