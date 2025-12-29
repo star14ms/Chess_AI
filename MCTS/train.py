@@ -680,16 +680,26 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # --- Launch continual self-play actors (after checkpoint loading) ---
     if continual_enabled:
+        # Helper function to get available accelerators (CUDA and MPS)
+        def get_available_accelerators():
+            accelerators = []
+            if torch.cuda.is_available():
+                for g in range(torch.cuda.device_count()):
+                    accelerators.append(f"cuda:{g}")
+            if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+                accelerators.append("mps")
+            return accelerators
+        
         # Always use all available GPUs for self-play initially
         # Training GPU will be dynamically assigned to whichever GPU finishes first when we have enough data
-        available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        available_accelerators = get_available_accelerators()
         desired_processes = max(1, num_workers if num_workers > 0 else 1)
         device_pool = []
         
-        # Use all available GPUs for self-play (training GPU will be assigned dynamically)
-        gpu_slots = min(available_gpus, desired_processes)
-        for g in range(gpu_slots):
-            device_pool.append(f"cuda:{g}")
+        # Use all available accelerators for self-play (training GPU will be assigned dynamically)
+        accelerator_slots = min(len(available_accelerators), desired_processes)
+        for i in range(accelerator_slots):
+            device_pool.append(available_accelerators[i])
         
         # Fill remaining slots with CPU workers
         while len(device_pool) < desired_processes:
@@ -704,14 +714,15 @@ def run_training_loop(cfg: DictConfig) -> None:
             p.daemon = True
             p.start()
             actors.append(p)
-            if dev.startswith('cuda:'):
+            # Track both CUDA and MPS devices (not just CUDA)
+            if dev.startswith('cuda:') or dev == 'mps':
                 actor_device_map[p] = dev
         
         has_enough_data = len(replay_buffer) >= cfg.training.batch_size
         if has_enough_data:
-            progress.print(f"Buffer has enough data ({len(replay_buffer)} >= {cfg.training.batch_size}), training GPU will be assigned dynamically to first available GPU")
+            progress.print(f"Buffer has enough data ({len(replay_buffer)} >= {cfg.training.batch_size}), training accelerator will be assigned dynamically to first available accelerator")
         else:
-            progress.print(f"Buffer too small ({len(replay_buffer)} < {cfg.training.batch_size}), using all {gpu_slots} GPU(s) for self-play")
+            progress.print(f"Buffer too small ({len(replay_buffer)} < {cfg.training.batch_size}), using all {accelerator_slots} accelerator(s) for self-play")
         progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
 
     # Track iteration durations for time prediction
@@ -1104,41 +1115,41 @@ def run_training_loop(cfg: DictConfig) -> None:
             progress.print("Not enough data in buffer to start training. Skipping phase.")
             continue
         
-        # Dynamic GPU assignment: if we have enough data and using GPU, wait for first available GPU
+        # Dynamic accelerator assignment: if we have enough data and using GPU/MPS, wait for first available accelerator
         training_device = device
-        if continual_enabled and device.type == 'cuda' and len(replay_buffer) >= cfg.training.batch_size:
-            # Wait for whichever GPU finishes its current self-play game first
-            # Wait for next game from queue to identify which GPU just finished
+        if continual_enabled and device.type in ('cuda', 'mps') and len(replay_buffer) >= cfg.training.batch_size:
+            # Wait for whichever accelerator finishes its current self-play game first
+            # Wait for next game from queue to identify which accelerator just finished
             try:
                 game_result = sp_queue.get(timeout=1.0)
                 game_data, game_info = game_result
-                # Extract which GPU this game came from
+                # Extract which accelerator this game came from
                 if 'device' in game_info:
-                    finished_gpu_str = game_info['device']
-                    if finished_gpu_str.startswith('cuda:'):
-                        training_device = torch.device(finished_gpu_str)
-                        progress.print(f"Assigned training to {training_device} (GPU that finished first)")
-                        # Put the game back in queue since we just wanted to know which GPU finished
+                    finished_device_str = game_info['device']
+                    if finished_device_str.startswith('cuda:') or finished_device_str == 'mps':
+                        training_device = torch.device(finished_device_str)
+                        progress.print(f"Assigned training to {training_device} (accelerator that finished first)")
+                        # Put the game back in queue since we just wanted to know which accelerator finished
                         sp_queue.put((game_data, game_info))
                     else:
-                        # CPU finished, use first available GPU instead
-                        available_gpu_ids = [int(dev.split(':')[1]) for p, dev in actor_device_map.items() if dev.startswith('cuda:') and p.is_alive()]
-                        if available_gpu_ids:
-                            training_device = torch.device(f"cuda:{available_gpu_ids[0]}")
-                            progress.print(f"Assigned training to {training_device} (CPU finished, using first GPU)")
+                        # CPU finished, use first available accelerator instead
+                        available_accelerators = [dev for p, dev in actor_device_map.items() if (dev.startswith('cuda:') or dev == 'mps') and p.is_alive()]
+                        if available_accelerators:
+                            training_device = torch.device(available_accelerators[0])
+                            progress.print(f"Assigned training to {training_device} (CPU finished, using first available accelerator)")
                         sp_queue.put((game_data, game_info))
                 else:
-                    # Old format without device info, use first GPU
-                    available_gpu_ids = [int(dev.split(':')[1]) for p, dev in actor_device_map.items() if dev.startswith('cuda:') and p.is_alive()]
-                    if available_gpu_ids:
-                        training_device = torch.device(f"cuda:{available_gpu_ids[0]}")
+                    # Old format without device info, use first available accelerator
+                    available_accelerators = [dev for p, dev in actor_device_map.items() if (dev.startswith('cuda:') or dev == 'mps') and p.is_alive()]
+                    if available_accelerators:
+                        training_device = torch.device(available_accelerators[0])
                     sp_queue.put((game_data, game_info))
             except queue.Empty:
-                # No game finished yet, use first available GPU
-                available_gpu_ids = [int(dev.split(':')[1]) for p, dev in actor_device_map.items() if dev.startswith('cuda:') and p.is_alive()]
-                if available_gpu_ids:
-                    training_device = torch.device(f"cuda:{available_gpu_ids[0]}")
-                    progress.print(f"Assigned training to {training_device} (no game finished yet, using first GPU)")
+                # No game finished yet, use first available accelerator
+                available_accelerators = [dev for p, dev in actor_device_map.items() if (dev.startswith('cuda:') or dev == 'mps') and p.is_alive()]
+                if available_accelerators:
+                    training_device = torch.device(available_accelerators[0])
+                    progress.print(f"Assigned training to {training_device} (no game finished yet, using first available accelerator)")
         
         training_columns = (
             TextColumn("[progress.description]{task.description}"), BarColumn(),
