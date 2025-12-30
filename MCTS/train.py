@@ -341,7 +341,10 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     gpu_cleanup_interval = 5  # Clean GPU memory every N moves
 
     # Manual position tracking for repetition detection (fallback if board's move_stack is corrupted)
+    # This tracks positions independently of the board's move_stack, making it robust even when
+    # the board state is reset or copied during MCTS exploration or rendering
     position_counts = {}  # Track position occurrences for repetition detection
+    position_tracking_errors = 0  # Track errors in position tracking for debugging
 
     task_id_game = None
     if progress is not None:
@@ -351,6 +354,19 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     while not terminated and not truncated and move_count < max_moves:
         temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
         fen = env.board.fen()
+        
+        # Backup position tracking before MCTS (in case board gets modified during exploration)
+        # This ensures we have a position snapshot even if the board state changes
+        try:
+            fen_parts = fen.split()
+            if len(fen_parts) >= 4:
+                position_key = ' '.join(fen_parts[:4])  # Board position, active color, castling, en passant
+                # Initialize count if not present (actual increment happens after move)
+                if position_key not in position_counts:
+                    position_counts[position_key] = 0
+        except Exception as e:
+            position_tracking_errors += 1
+            # Log but continue - this is just a backup, main tracking happens after env.step()
         
         if cfg.mcts.iterations > 0:
             # Use stack=False for MCTS nodes - they only need current position (FEN) for exploration.
@@ -496,27 +512,57 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         obs, _, terminated, truncated, info = env.step(action_to_take)
         
         # Manual repetition detection (fallback if board's move_stack is corrupted)
-        # Track position using FEN without move counters (first 4 parts)
+        # Track position using FEN without move counters (first 4 parts: board, active color, castling, en passant)
+        # This works independently of the board's move_stack, so it's reliable even when
+        # the board state is reset or copied during MCTS exploration or rendering
         try:
-            fen_parts = env.board.fen().split()
+            current_fen = env.board.fen()
+            fen_parts = current_fen.split()
+            
+            # Validate FEN format (python-chess FEN should have at least 4 parts)
             if len(fen_parts) >= 4:
-                position_key = ' '.join(fen_parts[:4])  # Exclude move counters and en passant
+                # Use first 4 parts to uniquely identify position:
+                # 1. Board position (piece placement)
+                # 2. Active color (w/b)
+                # 3. Castling rights
+                # 4. En passant target square
+                # We exclude move counters (parts 5-6) as they don't affect position identity
+                position_key = ' '.join(fen_parts[:4])
                 position_counts[position_key] = position_counts.get(position_key, 0) + 1
                 repetition_count = position_counts[position_key]
                 
-                # Fivefold repetition - automatic draw (FIDE rule)
+                # Fivefold repetition - automatic draw (FIDE rule 9.6.2)
+                # This is mandatory and doesn't require a claim
                 if repetition_count >= 5:
                     terminated = True
                     if progress is not None:
                         progress.update(task_id_game, description=f"Terminated: FIVEfold repetition (move {move_count+1})", advance=0)
-                # Threefold repetition - claimable draw (if claim_draw is enabled)
+                # Threefold repetition - claimable draw (FIDE rule 9.6.1)
+                # Only terminates if claim_draw is enabled (which it is by default)
                 elif repetition_count >= 3 and env.claim_draw:
                     terminated = True
                     if progress is not None:
                         progress.update(task_id_game, description=f"Terminated: THREEfold repetition (move {move_count+1})", advance=0)
-        except Exception:
-            # If position tracking fails, continue without it (rely on board's detection)
-            pass
+            else:
+                # FEN format unexpected - this shouldn't happen with python-chess
+                position_tracking_errors += 1
+                # Log warning but continue - rely on board's detection if available
+                import warnings
+                warnings.warn(
+                    f"Unexpected FEN format at move {move_count+1}: "
+                    f"expected >=4 parts, got {len(fen_parts)}. "
+                    f"FEN: {current_fen[:100]}",
+                    RuntimeWarning
+                )
+        except Exception as e:
+            # If position tracking fails, log it but continue (rely on board's detection if available)
+            position_tracking_errors += 1
+            import warnings
+            warnings.warn(
+                f"Position tracking failed at move {move_count+1}: {e}. "
+                f"Falling back to board's repetition detection.",
+                RuntimeWarning
+            )
         
         # #region agent log
         try:
@@ -560,6 +606,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             termination_reason = "THREEFOLD_REPETITION"
             manual_repetition = True
     
+    # If we didn't detect manual repetition, check board's outcome
+    # (Note: board's detection may have failed if move_stack was corrupted)
     if not manual_repetition:
         outcome = env.board.outcome(claim_draw=True)
         if outcome:
@@ -568,6 +616,16 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             termination_reason = "MAX_MOVES"
         else:
             termination_reason = "UNKNOWN"
+    
+    # Log position tracking statistics for debugging (if there were errors)
+    if position_tracking_errors > 0:
+        import warnings
+        warnings.warn(
+            f"Position tracking encountered {position_tracking_errors} error(s) during game. "
+            f"Total positions tracked: {len(position_counts)}, "
+            f"Max repetition: {max(position_counts.values()) if position_counts else 0}",
+            RuntimeWarning
+        )
 
     full_game_data = []
     for i, (state_obs, policy_target, board_at_state) in enumerate(game_history):
