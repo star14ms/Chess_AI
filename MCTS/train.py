@@ -374,6 +374,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             # Repetition detection is handled in the actual game board, not in MCTS tree nodes.
             root_node = MCTSNode(env.board.copy(stack=False))
             mcts_env = env if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False) else None
+            draw_reward = cfg.training.get('draw_reward', -0.1)
             mcts_player = MCTS(
                 network,
                 device=device,
@@ -382,7 +383,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 dirichlet_alpha=dirichlet_alpha,
                 dirichlet_epsilon=dirichlet_epsilon,
                 action_space_size=action_space_size,
-                history_steps=cfg.env.history_steps
+                history_steps=cfg.env.history_steps,
+                draw_reward=draw_reward
             )
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
@@ -516,14 +518,17 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         if move_count % gpu_cleanup_interval == 0:
             gc.collect()
 
+    # Get draw reward from config
+    draw_reward = cfg.training.get('draw_reward', -0.1)
+    
     # Get final game result from white's perspective (for logging/statistics and training)
     # calculate_chess_reward returns from previous player's perspective, so we need to convert
     from MCTS.training_modules.chess import calculate_chess_reward
-    final_value_from_prev = calculate_chess_reward(env.board, claim_draw=True)
+    final_value_from_prev = calculate_chess_reward(env.board, claim_draw=True, draw_reward=draw_reward)
     # Convert to white's perspective: if env.board.turn is BLACK, previous was WHITE, so value is already from white
-    # If env.board.turn is WHITE, previous was BLACK, so we need to flip (except for draws which stay -0.1)
-    if final_value_from_prev == -0.1:
-        final_value = -0.1  # Draws are -0.1 from both perspectives
+    # If env.board.turn is WHITE, previous was BLACK, so we need to flip (except for draws which stay draw_reward)
+    if abs(final_value_from_prev - draw_reward) < 0.01:
+        final_value = draw_reward  # Draws are draw_reward from both perspectives
     else:
         final_value = final_value_from_prev if env.board.turn == chess.BLACK else -final_value_from_prev
     
@@ -535,9 +540,13 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         if max_repetition >= 5:
             termination_reason = "FIVEFOLD_REPETITION"
             manual_repetition = True
+            # Force draw result for fivefold repetition
+            final_value = draw_reward
         elif max_repetition >= 3:
             termination_reason = "THREEFOLD_REPETITION"
             manual_repetition = True
+            # Force draw result for threefold repetition
+            final_value = draw_reward
     
     # If we didn't detect manual repetition, check board's outcome
     # (Note: board's detection may have failed if move_stack was corrupted)
@@ -545,8 +554,13 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         outcome = env.board.outcome(claim_draw=True)
         if outcome:
             termination_reason = outcome.termination.name
+            # If board detected a draw (threefold/fivefold repetition, stalemate, etc.), ensure result is draw
+            if outcome.winner is None:  # Draw
+                final_value = draw_reward
         elif truncated or move_count >= max_moves:
             termination_reason = "MAX_MOVES"
+            # Max moves is typically a draw
+            final_value = draw_reward
         else:
             termination_reason = "UNKNOWN"
     
@@ -590,7 +604,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         'termination': termination_reason,
         'move_count': move_count,
         'result': final_value,
-        'tree_stats': avg_tree_stats if avg_tree_stats else None
+        'tree_stats': avg_tree_stats if avg_tree_stats else None,
+        'draw_reward': draw_reward  # Store draw_reward for reference in statistics
     }
 
     return (full_game_data, game_info)
@@ -914,6 +929,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         games_data_collected = []
         iteration_start_time_selfplay = time.time()
+        # Get draw reward from config for this iteration
+        draw_reward = cfg.training.get('draw_reward', -0.1)
         # Track game-level outcomes from the first player's perspective
         num_wins = 0
         num_losses = 0
@@ -962,7 +979,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                         # Update game outcome counters (final result)
                         try:
                             result_value = game_info.get('result', None)
-                            if result_value is None or result_value == 0:
+                            game_draw_reward = game_info.get('draw_reward', draw_reward)
+                            # Draws use draw_reward, wins are +1.0, losses are -1.0
+                            if result_value is None or abs(result_value - game_draw_reward) < 0.01:
                                 num_draws += 1
                                 draw_reasons[game_info['termination']] += 1
                             elif result_value > 0:
@@ -1003,7 +1022,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                             # Update game outcome counters (final result)
                             try:
                                 result_value = game_info.get('result', None)
-                                if result_value is None or result_value == 0:
+                                game_draw_reward = game_info.get('draw_reward', draw_reward)
+                                # Draws use draw_reward, wins are +1.0, losses are -1.0
+                                if result_value is None or abs(result_value - game_draw_reward) < 0.01:
                                     num_draws += 1
                                     draw_reasons[game_info['termination']] += 1
                                 elif result_value > 0:
@@ -1044,7 +1065,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                             # Update game outcome counters
                             try:
                                 result_value = game_info.get('result', None)
-                                if result_value is None or result_value == 0:
+                                game_draw_reward = game_info.get('draw_reward', draw_reward)
+                                # Draws use draw_reward, wins are +1.0, losses are -1.0
+                                if result_value is None or abs(result_value - game_draw_reward) < 0.01:
                                     num_draws += 1
                                     draw_reasons[game_info['termination']] += 1
                                 elif result_value > 0:
@@ -1127,7 +1150,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                         # Infer final game result from the first tuple's value target (first player's perspective)
                         try:
                             result_value = game_data[0][3]
-                            if result_value is None or result_value == 0:
+                            game_draw_reward = game_info.get('draw_reward', draw_reward)
+                            # Draws use draw_reward, wins are +1.0, losses are -1.0
+                            if result_value is None or abs(result_value - game_draw_reward) < 0.01:
                                 num_draws += 1
                                 draw_reasons[game_info['termination']] += 1
                             elif result_value > 0:
@@ -1184,11 +1209,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                 game_moves_list.append(game_info)
                 # Track device contribution (sequential mode uses training device)
                 device_contributions[str(device)] += 1
-                # Count outcomes from the final game result (chess: +1 white, -1 black, 0 draw)
+                # Count outcomes from the final game result (chess: +1 white, -1 black, draw_reward for draw)
                 if game_data:
                     try:
                         result_value = game_info.get('result', None)
-                        if result_value is None or result_value == 0:
+                        game_draw_reward = game_info.get('draw_reward', draw_reward)
+                        # Draws use draw_reward, wins are +1.0, losses are -1.0
+                        if result_value is None or abs(result_value - game_draw_reward) < 0.01:
                             num_draws += 1
                             draw_reasons[game_info['termination']] += 1
                         elif result_value > 0:
@@ -1262,7 +1289,15 @@ def run_training_loop(cfg: DictConfig) -> None:
             games_file = os.path.join(game_history_dir, f"games_iter_{iteration+1}.txt")
             with open(games_file, 'w') as f:
                 for i, game_info in enumerate(game_moves_list):
-                    result_str = "1-0" if game_info['result'] > 0 else "0-1" if game_info['result'] < 0 else "1/2-1/2"
+                    # Draws use draw_reward, wins are +1.0, losses are -1.0
+                    result_value = game_info.get('result', None)
+                    game_draw_reward = game_info.get('draw_reward', draw_reward)
+                    if result_value is None or abs(result_value - game_draw_reward) < 0.01:
+                        result_str = "1/2-1/2"
+                    elif result_value > 0:
+                        result_str = "1-0"
+                    else:
+                        result_str = "0-1"
                     f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
                     f.write(f"{game_info['moves_san']}\n\n")
 

@@ -64,6 +64,7 @@ class TrainingConfig:
     progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
     initial_board_fen: str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" #except pawns
     max_training_time_seconds: Optional[int] = None # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
+    draw_reward: float = -0.1 # Reward value for draws (applies to both players equally)
 
 @dataclass
 class Config:

@@ -56,7 +56,8 @@ class MCTS:
                  dirichlet_alpha: float = 0.3,
                  dirichlet_epsilon: float = 0.25,
                  action_space_size: int = 1700,
-                 history_steps: int = 8):  # Number of history planes to use when env is None
+                 history_steps: int = 8,  # Number of history planes to use when env is None
+                 draw_reward: float = -0.1):  # Reward value for draws
         self.network = network
         self.device = torch.device(device)
         self.env = env # If None, board.push() will be used for expansion
@@ -65,6 +66,7 @@ class MCTS:
         self.dirichlet_epsilon = dirichlet_epsilon
         self.action_space_size = action_space_size  # Store action space size
         self.history_steps = max(1, int(history_steps))
+        self.draw_reward = draw_reward
         self.network.eval()
 
     # --- Virtual Loss Helpers ---
@@ -258,7 +260,7 @@ class MCTS:
         leaf_board = leaf_node.get_board()
         from MCTS.training_modules.chess import calculate_chess_reward
         # Get reward from the perspective of the previous player (who just moved to reach this terminal state)
-        return calculate_chess_reward(leaf_board, claim_draw=True)
+        return calculate_chess_reward(leaf_board, claim_draw=True, draw_reward=self.draw_reward)
 
     def _prepare_observation(self, leaf_node: MCTSNode) -> torch.Tensor:
         """Prepares observation tensor for a leaf node. Returns None if terminal."""
@@ -336,7 +338,7 @@ class MCTS:
             if leaf_board.is_game_over(claim_draw=True):
                 # Get reward from the perspective of the previous player (who just moved to reach this terminal state)
                 from MCTS.training_modules.chess import calculate_chess_reward
-                value = calculate_chess_reward(leaf_board, claim_draw=True)
+                value = calculate_chess_reward(leaf_board, claim_draw=True, draw_reward=self.draw_reward)
                 leaf_node.is_expanded = True
                 # No expansion needed for terminal nodes
             else:
