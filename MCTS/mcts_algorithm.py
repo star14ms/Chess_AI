@@ -8,6 +8,8 @@ from typing import Tuple, List
 import chess
 import sys
 import os
+import json
+import time
 
 # Ensure utils and chess_gym can be found
 # Get the absolute path of the project root directory
@@ -354,6 +356,17 @@ class MCTS:
                     policy_logits, value_pred = self.network(obs_tensor)
                 policy_logits = policy_logits.squeeze(0)
                 value = value_pred.item() # Use network's value prediction
+                
+                # #region agent log
+                try:
+                    if leaf_node.parent is None:  # Only log at root node
+                        legal_actions = list(leaf_board.legal_actions)
+                        legal_logits = [float(policy_logits[aid-1].item()) for aid in legal_actions if 1 <= aid <= len(policy_logits)]
+                        top_5_legal = sorted(zip(legal_actions, legal_logits), key=lambda x: x[1], reverse=True)[:5] if legal_logits else []
+                        with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"mcts_algorithm.py:358","message":"network output at root","data":{"is_root":True,"value":float(value),"top_5_legal_logits":[(int(aid),float(logit)) for aid,logit in top_5_legal],"legal_logits_stats":{"min":float(min(legal_logits)) if legal_logits else 0,"max":float(max(legal_logits)) if legal_logits else 0,"mean":float(np.mean(legal_logits)) if legal_logits else 0}},"timestamp":int(time.time()*1000)})+'\n')
+                except: pass
+                # #endregion
 
                 # 3. Calculate Probabilities (mask illegal moves before softmax)
                 legal_actions = list(leaf_board.legal_actions)
@@ -531,9 +544,29 @@ class MCTS:
             progress.stop_task(mcts_task_id)
             progress.update(mcts_task_id, visible=False)
 
+        # #region agent log
+        import json
+        import time
+        try:
+            if self.env is not None:
+                fen_before_restore = self.env.board.fen()
+                move_stack_before_restore = len(self.env.board.move_stack) if hasattr(self.env.board, 'move_stack') else 0
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"mcts_algorithm.py:547","message":"before MCTS restore","data":{"fen":fen_before_restore[:80],"move_stack_len":move_stack_before_restore,"root_fen":root_fen[:80] if self.env is not None else "None"},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         if self.env is not None and isinstance(self.env.board, FullyTrackedBoard):
             self.env.board.set_fen(root_fen, root_piece_tracker)
             _restore_chess_stack(self.env.board, root_board)
+        # #region agent log
+        try:
+            if self.env is not None:
+                fen_after_restore = self.env.board.fen()
+                move_stack_after_restore = len(self.env.board.move_stack) if hasattr(self.env.board, 'move_stack') else 0
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"mcts_algorithm.py:549","message":"after MCTS restore","data":{"fen":fen_after_restore[:80],"move_stack_len":move_stack_after_restore,"fen_changed":fen_before_restore != fen_after_restore if self.env is not None else False},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
 
     # --- Get Best Move / Policy --- 
     # Returns Action ID corresponding to the best move
@@ -597,28 +630,61 @@ class MCTS:
         """
         Calculates the MCTS policy distribution (pi) based on visit counts.
         """
-        policy_pi = np.zeros(self.network.action_space_size, dtype=np.float32)
-        if not root_node.children:
-            legal_action_ids = list(root_node.board.legal_actions)
+        # #region agent log
+        try:
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A,B,C,D","location":"mcts_algorithm.py:596","message":"get_policy_distribution entry","data":{"temperature":temperature,"has_children":bool(root_node.children),"root_N":root_node.N},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
+        policy_pi = np.zeros(self.action_space_size, dtype=np.float32)
+        legal_action_ids = list(root_node.board.legal_actions)
+        
+        if not root_node.children or not legal_action_ids:
+            # No children explored or no legal moves
             num_legal = len(legal_action_ids)
             if num_legal > 0:
                 uniform_prob = 1.0 / num_legal
                 for action_id in legal_action_ids:
-                    if action_id is not None and 1 <= action_id <= self.network.action_space_size:
+                    if action_id is not None and 1 <= action_id <= self.action_space_size:
                         policy_pi[action_id - 1] = uniform_prob
             return policy_pi
-        children_action_ids = list(root_node.children.keys())
-        visit_counts = np.array([root_node.children[aid].N for aid in children_action_ids], dtype=float)
-        total_visits = root_node.N
-        if total_visits == 0 or not children_action_ids:
-            legal_action_ids = list(root_node.board.legal_actions)
+        
+        # Filter children to only include legal actions
+        legal_children = {aid: root_node.children[aid] for aid in root_node.children.keys() 
+                         if aid in legal_action_ids}
+        
+        if not legal_children:
+            # No legal children explored, return uniform over legal moves
             num_legal = len(legal_action_ids)
             if num_legal > 0:
                 uniform_prob = 1.0 / num_legal
                 for action_id in legal_action_ids:
-                    if action_id is not None and 1 <= action_id <= self.network.action_space_size:
+                    if action_id is not None and 1 <= action_id <= self.action_space_size:
                         policy_pi[action_id - 1] = uniform_prob
             return policy_pi
+        
+        children_action_ids = list(legal_children.keys())
+        visit_counts = np.array([legal_children[aid].N for aid in children_action_ids], dtype=float)
+        total_visits = sum(visit_counts)
+        
+        # #region agent log
+        try:
+            top_5_visits = sorted(zip(children_action_ids, visit_counts), key=lambda x: x[1], reverse=True)[:5]
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A,B","location":"mcts_algorithm.py:627","message":"visit counts before policy","data":{"total_visits":int(total_visits),"num_children":len(children_action_ids),"num_legal":len(legal_action_ids),"top_5_visits":[(int(aid),int(v)) for aid,v in top_5_visits],"visit_counts_stats":{"min":float(np.min(visit_counts)),"max":float(np.max(visit_counts)),"mean":float(np.mean(visit_counts)),"std":float(np.std(visit_counts))}},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
+        
+        if total_visits == 0:
+            # No visits yet, return uniform over explored legal moves
+            num_legal = len(children_action_ids)
+            if num_legal > 0:
+                uniform_prob = 1.0 / num_legal
+                for action_id in children_action_ids:
+                    if action_id is not None and 1 <= action_id <= self.action_space_size:
+                        policy_pi[action_id - 1] = uniform_prob
+            return policy_pi
+        
         if temperature == 0:
             max_visits = np.max(visit_counts)
             if max_visits == 0:
@@ -627,7 +693,7 @@ class MCTS:
                 best_action_ids = [aid for aid, count in zip(children_action_ids, visit_counts) if count == max_visits]
             prob = 1.0 / len(best_action_ids) if best_action_ids else 0.0
             for action_id in best_action_ids:
-                if action_id is not None and 1 <= action_id <= self.network.action_space_size:
+                if action_id is not None and 1 <= action_id <= self.action_space_size:
                     policy_pi[action_id - 1] = prob
         else:
             visit_counts_temp = visit_counts**(1.0 / temperature)
@@ -637,17 +703,32 @@ class MCTS:
             else:
                 probabilities = visit_counts_temp / sum_counts_temp
             for action_id, prob in zip(children_action_ids, probabilities):
-                if action_id is not None and 1 <= action_id <= self.network.action_space_size:
+                if action_id is not None and 1 <= action_id <= self.action_space_size:
                     policy_pi[action_id - 1] = prob
+        
+        # Normalize the policy
         current_sum = np.sum(policy_pi)
         if current_sum > 1e-6:
             policy_pi /= current_sum
-        elif len(children_action_ids) > 0:
-            uniform_prob = 1.0 / len(children_action_ids)
-            for action_id in children_action_ids:
-                if action_id is not None and 1 <= action_id <= self.network.action_space_size:
-                    policy_pi[action_id - 1] = uniform_prob
-            final_sum = np.sum(policy_pi)
-            if final_sum > 1e-6:
-                policy_pi /= final_sum
+        else:
+            # Fallback: uniform over legal moves that were explored
+            num_legal = len(children_action_ids)
+            if num_legal > 0:
+                uniform_prob = 1.0 / num_legal
+                for action_id in children_action_ids:
+                    if action_id is not None and 1 <= action_id <= self.action_space_size:
+                        policy_pi[action_id - 1] = uniform_prob
+                final_sum = np.sum(policy_pi)
+                if final_sum > 1e-6:
+                    policy_pi /= final_sum
+        
+        # #region agent log
+        try:
+            non_zero_probs = [(i+1, float(p)) for i, p in enumerate(policy_pi) if p > 1e-6]
+            top_5_probs = sorted(non_zero_probs, key=lambda x: x[1], reverse=True)[:5]
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C,D","location":"mcts_algorithm.py:665","message":"policy distribution after normalization","data":{"policy_sum":float(current_sum),"num_non_zero":len(non_zero_probs),"top_5_probs":top_5_probs,"entropy":float(-np.sum(policy_pi * np.log(policy_pi + 1e-10)))},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
+        
         return policy_pi 

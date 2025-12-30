@@ -121,15 +121,10 @@ class BaseChessBoard(chess.Board):
 
     def outcome(self, claim_draw: bool = False) -> chess.Outcome:
         """Returns the outcome of the game."""
-        # Clean move_stack of None values before checking outcome
-        # This prevents AttributeError when is_repetition() iterates through move_stack
-        if hasattr(self, 'move_stack') and self.move_stack:
-            if any(move is None for move in self.move_stack):
-                self.move_stack = [move for move in self.move_stack if move is not None]
-                # Clear _stack to keep it in sync with the filtered move_stack
-                # python-chess will rebuild _stack when needed
-                if hasattr(self, '_stack'):
-                    self._stack = []
+        # Save a copy of the board before calling outcome to prevent reset
+        # This is the safest way to restore the board state if it gets reset
+        board_copy = self.copy(stack=True)
+        
         if self.foul:
             return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
         
@@ -142,21 +137,119 @@ class BaseChessBoard(chess.Board):
                 self._stack = [item for item in self._stack if item is not None]
         
         try:
+            # #region agent log
+            import json
+            import time
+            try:
+                saved_fen = self.fen()
+                saved_move_stack_len = len(self.move_stack) if hasattr(self, 'move_stack') else 0
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_custom.py:141","message":"before super().outcome","data":{"saved_fen":saved_fen[:80],"saved_move_stack_len":saved_move_stack_len},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
             outcome_result = super().outcome(claim_draw=claim_draw)
+            # #region agent log
+            try:
+                current_fen_after = self.fen()
+                current_move_stack_len_after = len(self.move_stack) if hasattr(self, 'move_stack') else 0
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_custom.py:150","message":"after super().outcome","data":{"current_fen":current_fen_after[:80],"current_move_stack_len":current_move_stack_len_after,"saved_fen":saved_fen[:80],"saved_move_stack_len":saved_move_stack_len,"needs_restore":current_fen_after != saved_fen or current_move_stack_len_after != saved_move_stack_len},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
+            # Check if board was reset and restore if needed
+            current_fen = self.fen()
+            current_move_stack_len = len(self.move_stack) if hasattr(self, 'move_stack') else 0
+            saved_fen = board_copy.fen()
+            saved_move_stack_len = len(board_copy.move_stack) if hasattr(board_copy, 'move_stack') else 0
+            if current_fen != saved_fen or current_move_stack_len != saved_move_stack_len:
+                # #region agent log
+                try:
+                    with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_custom.py:162","message":"restoring board state from copy","data":{"current_fen":current_fen[:80],"saved_fen":saved_fen[:80]},"timestamp":int(time.time()*1000)})+'\n')
+                except: pass
+                # #endregion
+                # Board was reset, restore it from the copy
+                self.set_fen(saved_fen)
+                # Restore move_stack and _stack from the copy
+                if hasattr(self, 'move_stack') and hasattr(board_copy, 'move_stack'):
+                    self.move_stack = [move for move in board_copy.move_stack if move is not None]
+                if hasattr(self, '_stack') and hasattr(board_copy, '_stack'):
+                    # Filter None values from _stack
+                    filtered_stack = []
+                    for item in board_copy._stack:
+                        if item is None:
+                            continue
+                        if isinstance(item, (tuple, list)) and len(item) > 0:
+                            if item[0] is None:
+                                continue
+                        filtered_stack.append(item)
+                    self._stack = filtered_stack
+                # #region agent log
+                try:
+                    fen_after_restore = self.fen()
+                    move_stack_len_after_restore = len(self.move_stack) if hasattr(self, 'move_stack') else 0
+                    with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_custom.py:178","message":"after restore from copy","data":{"fen":fen_after_restore[:80],"move_stack_len":move_stack_len_after_restore,"restored_correctly":fen_after_restore == saved_fen},"timestamp":int(time.time()*1000)})+'\n')
+                except: pass
+                # #endregion
             return outcome_result
         except AttributeError as e:
-            # If _stack has None values causing AttributeError, clear _stack and retry once
-            # This allows the game to continue instead of terminating early
+            # If _stack has None values causing AttributeError, try to handle it without clearing _stack
+            # Clearing _stack causes python-chess to reset the board
             if "'NoneType'" in str(e) or "from_square" in str(e):
-                # Clear _stack to let python-chess rebuild it from move_stack
-                if hasattr(self, '_stack'):
-                    self._stack = []
-                # Retry once after clearing _stack
+                # Instead of clearing _stack, try to filter it more carefully
+                # Only clear if absolutely necessary, and restore board state after
+                if hasattr(self, '_stack') and self._stack:
+                    # Try filtering _stack more carefully
+                    filtered_stack = []
+                    for item in self._stack:
+                        if item is None:
+                            continue
+                        # Check if it's a tuple/list and if the first element (move) is None
+                        if isinstance(item, (tuple, list)) and len(item) > 0:
+                            if item[0] is None:
+                                continue
+                        filtered_stack.append(item)
+                    self._stack = filtered_stack
+                # Retry once after filtering _stack
                 try:
                     outcome_result = super().outcome(claim_draw=claim_draw)
+                    # Check if board was reset and restore if needed
+                    current_fen = self.fen()
+                    current_move_stack_len = len(self.move_stack) if hasattr(self, 'move_stack') else 0
+                    if current_fen != saved_fen or current_move_stack_len != len(saved_move_stack):
+                        self.set_fen(saved_fen)
+                        # Restore move_stack by replaying moves
+                        if hasattr(self, 'move_stack') and saved_move_stack:
+                            self.move_stack.clear()
+                            for move in saved_move_stack:
+                                if move is not None:
+                                    try:
+                                        self.push(move)
+                                    except Exception:
+                                        break
+                        # Restore _stack if it was saved
+                        if hasattr(self, '_stack') and saved_stack:
+                            self._stack = list(saved_stack)
                     return outcome_result
                 except (AttributeError, Exception):
                     # If retry also fails, return None (no outcome) to allow game to continue
+                    # Restore board state before returning
+                    current_fen = self.fen()
+                    if current_fen != saved_fen:
+                        self.set_fen(saved_fen)
+                        # Restore move_stack by replaying moves
+                        if hasattr(self, 'move_stack') and saved_move_stack:
+                            self.move_stack.clear()
+                            for move in saved_move_stack:
+                                if move is not None:
+                                    try:
+                                        self.push(move)
+                                    except Exception:
+                                        break
+                        # Restore _stack if it was saved
+                        if hasattr(self, '_stack') and saved_stack:
+                            self._stack = list(saved_stack)
                     return None  # Return None instead of ILLEGAL_MOVE to allow game to continue
             raise
     

@@ -370,22 +370,87 @@ class ChessEnv(gym.Env):
         return observation
 
     def step(self, action):
+        # #region agent log
+        import json
+        import time
+        try:
+            fen_before = self.board.fen()
+            move_stack_before = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:372","message":"env.step entry","data":{"action":int(action),"fen":fen_before[:80],"move_stack_len":move_stack_before,"is_legal":action in self.board.legal_actions},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         # Convert the action to a chess move using MoveSpace
         if action in self.board.legal_actions:
             move = self.action_space._action_to_move(action)
         else:
             move = None
 
+        # #region agent log
+        try:
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:380","message":"before board.push","data":{"move":str(move) if move else "None","foul_before":getattr(self.board,'foul',False)},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         # Push the move regardless of legality
         self.board.push(move)
+        # #region agent log
+        try:
+            fen_after_push = self.board.fen()
+            move_stack_after = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            foul_after = getattr(self.board, 'foul', False)
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:380","message":"after board.push","data":{"fen":fen_after_push[:80],"move_stack_len":move_stack_after,"foul_after":foul_after,"fen_changed":fen_before != fen_after_push,"move_stack_changed":move_stack_before != move_stack_after},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
 
+        # #region agent log
+        try:
+            fen_before_observe = self.board.fen()
+            move_stack_before_observe = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:407","message":"before _observe","data":{"fen":fen_before_observe[:80],"move_stack_len":move_stack_before_observe},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         observation = self._observe()
+        # #region agent log
+        try:
+            fen_after_observe = self.board.fen()
+            move_stack_after_observe = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:407","message":"after _observe","data":{"fen":fen_after_observe[:80],"move_stack_len":move_stack_after_observe,"fen_changed":fen_before_observe != fen_after_observe,"move_stack_changed":move_stack_before_observe != move_stack_after_observe},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         result = self.board.result()
         reward = (1 if result == '1-0' else -1 if result == '0-1' else 0)
+        # #region agent log
+        try:
+            fen_after_result = self.board.fen()
+            move_stack_after_result = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:409","message":"after result","data":{"fen":fen_after_result[:80],"move_stack_len":move_stack_after_result,"fen_changed":fen_after_observe != fen_after_result,"move_stack_changed":move_stack_after_observe != move_stack_after_result},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         # Check for game termination: is_game_over handles most cases, but we also need to check
         # for automatic termination conditions (fivefold repetition and 75-move rule) that don't
         # require a claim. Threefold repetition requires a claim, but fivefold is automatic.
+        # #region agent log
+        try:
+            fen_before_is_game_over = self.board.fen()
+            move_stack_before_is_game_over = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:437","message":"before is_game_over","data":{"fen":fen_before_is_game_over[:80],"move_stack_len":move_stack_before_is_game_over},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         terminated = self.board.is_game_over(claim_draw=self.claim_draw)
+        # #region agent log
+        try:
+            fen_after_is_game_over = self.board.fen()
+            move_stack_after_is_game_over = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:437","message":"after is_game_over","data":{"fen":fen_after_is_game_over[:80],"move_stack_len":move_stack_after_is_game_over,"fen_changed":fen_before_is_game_over != fen_after_is_game_over},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         
         # Check for fivefold repetition (automatic draw) - with fallback for compatibility
         if hasattr(self.board, 'is_fivefold_repetition'):
@@ -402,6 +467,14 @@ class ChessEnv(gym.Env):
                 terminated = True
         
         truncated = False
+        # #region agent log
+        try:
+            fen_before_info = self.board.fen()
+            move_stack_before_info = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:454","message":"before info dict","data":{"fen":fen_before_info[:80],"move_stack_len":move_stack_before_info},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         info = {
             'turn': self.board.turn,
             'castling_rights': self.board.castling_rights,
@@ -411,14 +484,47 @@ class ChessEnv(gym.Env):
             'chess960': self.board.chess960,
             'ep_square': self.board.ep_square
         }
+        # #region agent log
+        try:
+            fen_after_info = self.board.fen()
+            move_stack_after_info = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:462","message":"after info dict","data":{"fen":fen_after_info[:80],"move_stack_len":move_stack_after_info,"fen_changed":fen_before_info != fen_after_info},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         
         # --- Record Frame --- 
+        # #region agent log
+        try:
+            fen_before_render = self.board.fen()
+            move_stack_before_render = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:465","message":"before render","data":{"fen":fen_before_render[:80],"move_stack_len":move_stack_before_render},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         if self.render_mode is not None or self.save_video_folder is not None:
             frame = self.render() # Get frame via rgb_array mode
 
             if self.save_video_folder is not None and frame is not None: # Ensure render returned something
                 self.recorded_frames.append(frame)
+        # #region agent log
+        try:
+            fen_after_render = self.board.fen()
+            move_stack_after_render = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:470","message":"after render","data":{"fen":fen_after_render[:80],"move_stack_len":move_stack_after_render,"fen_changed":fen_before_render != fen_after_render},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         # --- End Record Frame --- 
+
+        # #region agent log
+        try:
+            fen_before_return = self.board.fen()
+            move_stack_before_return = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_env.py:472","message":"before return from env.step","data":{"fen":fen_before_return[:80],"move_stack_len":move_stack_before_return},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
 
         return observation, reward, terminated, truncated, info
 

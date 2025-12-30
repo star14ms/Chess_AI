@@ -364,7 +364,21 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 action_space_size=action_space_size,
                 history_steps=cfg.env.history_steps
             )
+            # #region agent log
+            import json
+            import time
+            try:
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"train.py:367","message":"before MCTS search","data":{"move_count":move_count,"mcts_iterations":mcts_iterations,"temperature":temperature,"fen":fen[:80],"move_stack_len":len(env.board.move_stack) if hasattr(env.board,'move_stack') else 0},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
+            # #region agent log
+            try:
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"train.py:368","message":"after MCTS search","data":{"root_N":root_node.N,"num_children":len(root_node.children) if root_node.children else 0},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
             
             # Monitor MCTS tree size
@@ -375,7 +389,21 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 # If tree stats calculation fails, continue without it
                 pass
             
+            # #region agent log
+            try:
+                top_5_policy = sorted([(i+1, float(p)) for i, p in enumerate(mcts_policy) if p > 1e-6], key=lambda x: x[1], reverse=True)[:5]
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C,D,E","location":"train.py:378","message":"before action selection","data":{"temperature":temperature,"top_5_policy":top_5_policy,"policy_entropy":float(-np.sum(mcts_policy * np.log(mcts_policy + 1e-10)))},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
             action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1 # +1 because actions are 1-indexed
+            # #region agent log
+            try:
+                move_str = env.board.san(env.action_space._action_to_move(action_to_take)) if action_to_take in env.board.legal_actions else "ILLEGAL"
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"train.py:378","message":"action selected","data":{"action_id":int(action_to_take),"move_san":move_str,"policy_prob":float(mcts_policy[action_to_take-1])},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
             
             # Save a copy of mcts_policy before cleanup (needed for game_history)
             mcts_policy_copy = mcts_policy.copy()
@@ -410,9 +438,23 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         # Skip set_fen() - the board is already in the correct state
         # MCTS doesn't modify the board when mcts_env is None (normal training mode)
         # Only restore stacks if MCTS might have modified the board (when rendering)
+        # #region agent log
+        try:
+            fen_before_restore_check = env.board.fen()
+            move_stack_before_restore_check = len(env.board.move_stack) if hasattr(env.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"train.py:441","message":"before restore check","data":{"fen":fen_before_restore_check[:80],"move_stack_len":move_stack_before_restore_check,"render_mode":cfg.env.render_mode,"use_multiprocessing":cfg.training.get('use_multiprocessing', False),"will_restore":cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False)},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False):
             # MCTS might have modified the board, so restore from snapshot
             board_stack_snapshot = env.board.copy(stack=True)
+            # #region agent log
+            try:
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"train.py:444","message":"restoring board","data":{"fen_before":env.board.fen()[:80],"fen_to_restore":fen[:80]},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
             env.board.set_fen(fen)
             env.board.foul = False
             # Rebuild _stack by replaying moves from move_stack
@@ -423,14 +465,51 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                         env.board.push(move)
                     except Exception:
                         break
+            # #region agent log
+            try:
+                fen_after_restore = env.board.fen()
+                move_stack_after_restore = len(env.board.move_stack) if hasattr(env.board, 'move_stack') else 0
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"train.py:453","message":"after restore","data":{"fen":fen_after_restore[:80],"move_stack_len":move_stack_after_restore},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
+        # #region agent log
+        try:
+            fen_before_step = env.board.fen()
+            move_stack_before = len(env.board.move_stack) if hasattr(env.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"train.py:454","message":"before env.step","data":{"move_count":move_count,"action_id":int(action_to_take),"fen":fen_before_step[:80],"move_stack_len":move_stack_before,"is_legal":action_to_take in env.board.legal_actions},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
+        
         if action_to_take in env.board.legal_actions:
             move = env.action_space._action_to_move(action_to_take)
             san_move = env.board.san(move)
         else:
             san_move = "ILLEGAL"
+            move = None
         move_list_san.append(san_move)
         
         obs, _, terminated, truncated, info = env.step(action_to_take)
+        
+        # #region agent log
+        try:
+            # Log immediately after env.step() returns
+            fen_immediately_after = env.board.fen()
+            move_stack_immediately_after = len(env.board.move_stack) if hasattr(env.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"train.py:493","message":"immediately after env.step returns","data":{"move_count":move_count,"action_id":int(action_to_take),"fen":fen_immediately_after[:80],"move_stack_len":move_stack_immediately_after},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
+        
+        # #region agent log
+        try:
+            fen_after_step = env.board.fen()
+            move_stack_after = len(env.board.move_stack) if hasattr(env.board, 'move_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"train.py:471","message":"after env.step","data":{"move_count":move_count,"action_id":int(action_to_take),"move":str(move) if move else "None","fen_before":fen_before_step[:80],"fen_after":fen_after_step[:80],"fen_changed":fen_before_step != fen_after_step,"move_stack_before":move_stack_before,"move_stack_after":move_stack_after,"move_stack_changed":move_stack_before != move_stack_after},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
 
         if progress is not None:
             progress.update(task_id_game, description=f"Max Moves ({move_count+1}/{max_moves}) | temp={temperature:.3f}", advance=1)
