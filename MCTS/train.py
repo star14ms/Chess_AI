@@ -340,6 +340,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     tree_stats_list = []  # Store stats for each move
     gpu_cleanup_interval = 5  # Clean GPU memory every N moves
 
+    # Manual position tracking for repetition detection (fallback if board's move_stack is corrupted)
+    position_counts = {}  # Track position occurrences for repetition detection
+
     task_id_game = None
     if progress is not None:
         task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
@@ -492,6 +495,29 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         
         obs, _, terminated, truncated, info = env.step(action_to_take)
         
+        # Manual repetition detection (fallback if board's move_stack is corrupted)
+        # Track position using FEN without move counters (first 4 parts)
+        try:
+            fen_parts = env.board.fen().split()
+            if len(fen_parts) >= 4:
+                position_key = ' '.join(fen_parts[:4])  # Exclude move counters and en passant
+                position_counts[position_key] = position_counts.get(position_key, 0) + 1
+                repetition_count = position_counts[position_key]
+                
+                # Fivefold repetition - automatic draw (FIDE rule)
+                if repetition_count >= 5:
+                    terminated = True
+                    if progress is not None:
+                        progress.update(task_id_game, description=f"Terminated: FIVEfold repetition (move {move_count+1})", advance=0)
+                # Threefold repetition - claimable draw (if claim_draw is enabled)
+                elif repetition_count >= 3 and env.claim_draw:
+                    terminated = True
+                    if progress is not None:
+                        progress.update(task_id_game, description=f"Terminated: THREEfold repetition (move {move_count+1})", advance=0)
+        except Exception:
+            # If position tracking fails, continue without it (rely on board's detection)
+            pass
+        
         # #region agent log
         try:
             # Log immediately after env.step() returns
@@ -523,13 +549,25 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     final_value = get_game_result(env.board)
     
     # Get game outcome/termination reason
-    outcome = env.board.outcome(claim_draw=True)
-    if outcome:
-        termination_reason = outcome.termination.name
-    elif truncated or move_count >= max_moves:
-        termination_reason = "MAX_MOVES"
-    else:
-        termination_reason = "UNKNOWN"
+    # Check if we terminated due to manual repetition detection
+    manual_repetition = False
+    if position_counts:
+        max_repetition = max(position_counts.values()) if position_counts.values() else 0
+        if max_repetition >= 5:
+            termination_reason = "FIVEFOLD_REPETITION"
+            manual_repetition = True
+        elif max_repetition >= 3:
+            termination_reason = "THREEFOLD_REPETITION"
+            manual_repetition = True
+    
+    if not manual_repetition:
+        outcome = env.board.outcome(claim_draw=True)
+        if outcome:
+            termination_reason = outcome.termination.name
+        elif truncated or move_count >= max_moves:
+            termination_reason = "MAX_MOVES"
+        else:
+            termination_reason = "UNKNOWN"
 
     full_game_data = []
     for i, (state_obs, policy_target, board_at_state) in enumerate(game_history):

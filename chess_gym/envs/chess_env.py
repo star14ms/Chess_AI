@@ -453,8 +453,23 @@ class ChessEnv(gym.Env):
         # #endregion
         
         # Check for fivefold repetition (automatic draw) - with fallback for compatibility
+        # #region agent log
+        try:
+            move_stack_len = len(self.board.move_stack) if hasattr(self.board, 'move_stack') else 0
+            stack_len = len(self.board._stack) if hasattr(self.board, '_stack') else 0
+            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_env.py:456","message":"before is_fivefold_repetition","data":{"move_stack_len":move_stack_len,"stack_len":stack_len},"timestamp":int(time.time()*1000)})+'\n')
+        except: pass
+        # #endregion
         if hasattr(self.board, 'is_fivefold_repetition'):
-            terminated = terminated or self.board.is_fivefold_repetition()
+            fivefold_result = self.board.is_fivefold_repetition()
+            # #region agent log
+            try:
+                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_env.py:457","message":"after is_fivefold_repetition","data":{"result":fivefold_result},"timestamp":int(time.time()*1000)})+'\n')
+            except: pass
+            # #endregion
+            terminated = terminated or fivefold_result
         
         # Check for 75-move rule (automatic draw) - with fallback for older python-chess versions
         if hasattr(self.board, 'is_seventyfive_moves'):
