@@ -54,12 +54,44 @@ def create_chess_env(cfg, render=False, render_mode=None, show_possible_actions=
         show_possible_actions=show_possible_actions
     )
 
+def calculate_chess_reward(board: BaseChessBoard, claim_draw: bool = True) -> float:
+    """Calculate the reward for a chess game state from the previous player's perspective.
+    
+    Note: After board.push(move), board.turn changes to the next player. So the reward
+    is calculated from the perspective of the player who just moved (previous turn = not board.turn).
+    
+    Args:
+        board: The chess board state (after a move has been pushed)
+        claim_draw: Whether to claim draws (for threefold repetition)
+    
+    Returns:
+        float: Reward value from the previous player's perspective (who just moved)
+        - -1.0 if foul (previous player made illegal move)
+        - +1.0 if previous player's side won
+        - -1.0 if previous player's side lost
+        - -0.1 for draws (equally penalized for both colors)
+    """
+    # If foul: previous player made illegal move, always -1.0 from their perspective
+    if hasattr(board, 'foul') and board.foul:
+        return -1.0
+    
+    result_str = board.result(claim_draw=claim_draw)
+    # After push(move), board.turn is the next player, so previous turn is the opposite
+    previous_turn = not board.turn
+    
+    if result_str == "1-0":
+        # White won - reward is +1.0 if previous turn was white, else -1.0
+        return 1.0 if previous_turn == chess.WHITE else -1.0
+    elif result_str == "0-1":
+        # Black won - reward is +1.0 if previous turn was black, else -1.0
+        return 1.0 if previous_turn == chess.BLACK else -1.0
+    else:
+        # Draw: -0.1 for all draws
+        return -0.1
+
 def get_chess_game_result(board: BaseChessBoard) -> float:
     """Get the game result from a chess board."""
-    result_str = board.result(claim_draw=True)
-    if result_str == "1-0": return 1.0  # White won
-    elif result_str == "0-1": return -1.0  # Black won
-    else: return 0.0  # Draw
+    return calculate_chess_reward(board, claim_draw=True)
 
 def is_white_turn(board: BaseChessBoard) -> bool:
     """Check if it's white's turn on the chess board."""

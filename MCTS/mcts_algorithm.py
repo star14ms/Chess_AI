@@ -254,15 +254,11 @@ class MCTS:
     # --- Helper Methods for Batched MCTS ---
 
     def _get_terminal_value(self, leaf_node: MCTSNode) -> float:
-        """Returns value for terminal node (1.0, -1.0, or 0.0)."""
+        """Returns value for terminal node from the previous player's perspective (who just moved)."""
         leaf_board = leaf_node.get_board()
-        result_str = leaf_board.result(claim_draw=True)
-        if result_str == "1-0":
-            return 1.0
-        elif result_str == "0-1":
-            return -1.0
-        else:
-            return 0.0  # Draw
+        from MCTS.training_modules.chess import calculate_chess_reward
+        # Get reward from the perspective of the previous player (who just moved to reach this terminal state)
+        return calculate_chess_reward(leaf_board, claim_draw=True)
 
     def _prepare_observation(self, leaf_node: MCTSNode) -> torch.Tensor:
         """Prepares observation tensor for a leaf node. Returns None if terminal."""
@@ -338,10 +334,9 @@ class MCTS:
 
             # 1. Handle Terminal Node
             if leaf_board.is_game_over(claim_draw=True):
-                result_str = leaf_board.result(claim_draw=True)
-                if result_str == "1-0": value = 1.0
-                elif result_str == "0-1": value = -1.0
-                else: value = 0.0 # Draw
+                # Get reward from the perspective of the previous player (who just moved to reach this terminal state)
+                from MCTS.training_modules.chess import calculate_chess_reward
+                value = calculate_chess_reward(leaf_board, claim_draw=True)
                 leaf_node.is_expanded = True
                 # No expansion needed for terminal nodes
             else:
@@ -414,9 +409,17 @@ class MCTS:
         return value
 
     def _backpropagate(self, search_path: List[MCTSNode], value: float, leaf_node_turn: chess.Color):
-        """Phase 4: Backpropagates value up the search path."""
+        """Phase 4: Backpropagates value up the search path.
+        
+        Note: value is from the previous player's perspective (not leaf_node_turn), as returned by calculate_chess_reward.
+        This method converts it to each node's previous player's perspective (not node_turn).
+        Since both are "previous player" perspectives, we flip when the current turns differ.
+        """
         for node in reversed(search_path):
             node_turn = node.get_board().turn
+            # value is from previous player's perspective at leaf (not leaf_node_turn)
+            # Convert to previous player's perspective at this node (not node_turn)
+            # If current turns are the same, previous turns are the same, so no flip
             current_node_perspective_value = value if node_turn == leaf_node_turn else -value
             node.N += 1
             node.W += current_node_perspective_value

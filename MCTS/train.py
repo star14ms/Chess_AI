@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from torch import nn
 import pickle
 import gzip
+import chess
 
 # Assuming files are in the MCTS directory relative to the project root
 from mcts_node import MCTSNode
@@ -515,7 +516,16 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         if move_count % gpu_cleanup_interval == 0:
             gc.collect()
 
-    final_value = get_game_result(env.board)
+    # Get final game result from white's perspective (for logging/statistics and training)
+    # calculate_chess_reward returns from previous player's perspective, so we need to convert
+    from MCTS.training_modules.chess import calculate_chess_reward
+    final_value_from_prev = calculate_chess_reward(env.board, claim_draw=True)
+    # Convert to white's perspective: if env.board.turn is BLACK, previous was WHITE, so value is already from white
+    # If env.board.turn is WHITE, previous was BLACK, so we need to flip (except for draws which stay -0.1)
+    if final_value_from_prev == -0.1:
+        final_value = -0.1  # Draws are -0.1 from both perspectives
+    else:
+        final_value = final_value_from_prev if env.board.turn == chess.BLACK else -final_value_from_prev
     
     # Get game outcome/termination reason
     # Check if we terminated due to manual repetition detection
@@ -552,9 +562,12 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 
     full_game_data = []
     for i, (state_obs, policy_target, board_at_state) in enumerate(game_history):
+        # Use final game result, adjusted for the player whose turn it is at this state
+        # board_at_state is BEFORE the move, so board_at_state.turn is the player who will make the move
+        # The reward should be from their perspective (they will move, then get the final result)
         is_first_player = is_first_player_turn(board_at_state)
+        # Flip final_value if this state is from black's perspective
         value_target = final_value if is_first_player else -final_value
-        value_target = -value_target if env.board.foul else value_target
         full_game_data.append((state_obs, policy_target, board_at_state, value_target))
     
     if progress is not None and task_id_game is not None:
@@ -1449,7 +1462,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
         
         checkpoint_size_mb = os.path.getsize(os.path.join(checkpoint_dir, "model.pth")) / (1024 * 1024)
-        progress.print(f"Checkpoint saved at iteration {iteration + 1} with {len(replay_buffer)} experiences in replay buffer ({checkpoint_size_mb:.1f}MB)")
+        progress.print(f"Checkpoint saved at iteration {iteration + 1} with {len(replay_buffer)} experiences in replay buffer ({checkpoint_size_mb:.1f} MB)")
         
         # Check if training would exceed maximum time after next iteration
         # Do this AFTER saving checkpoint so current iteration's work is preserved

@@ -380,8 +380,9 @@ class ChessEnv(gym.Env):
         self.board.push(move)
 
         observation = self._observe()
-        result = self.board.result()
-        reward = (1 if result == '1-0' else -1 if result == '0-1' else 0)
+        # Use centralized reward calculation from the previous player's perspective (who just moved)
+        from MCTS.training_modules.chess import calculate_chess_reward
+        reward = calculate_chess_reward(self.board, claim_draw=self.claim_draw)
         # Check for game termination: is_game_over handles most cases, but we also need to check
         # for automatic termination conditions (fivefold repetition and 75-move rule) that don't
         # require a claim. Threefold repetition requires a claim, but fivefold is automatic.
