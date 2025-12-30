@@ -137,25 +137,7 @@ class BaseChessBoard(chess.Board):
                 self._stack = [item for item in self._stack if item is not None]
         
         try:
-            # #region agent log
-            import json
-            import time
-            try:
-                saved_fen = self.fen()
-                saved_move_stack_len = len(self.move_stack) if hasattr(self, 'move_stack') else 0
-                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_custom.py:141","message":"before super().outcome","data":{"saved_fen":saved_fen[:80],"saved_move_stack_len":saved_move_stack_len},"timestamp":int(time.time()*1000)})+'\n')
-            except: pass
-            # #endregion
             outcome_result = super().outcome(claim_draw=claim_draw)
-            # #region agent log
-            try:
-                current_fen_after = self.fen()
-                current_move_stack_len_after = len(self.move_stack) if hasattr(self, 'move_stack') else 0
-                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"chess_custom.py:150","message":"after super().outcome","data":{"current_fen":current_fen_after[:80],"current_move_stack_len":current_move_stack_len_after,"saved_fen":saved_fen[:80],"saved_move_stack_len":saved_move_stack_len,"needs_restore":current_fen_after != saved_fen or current_move_stack_len_after != saved_move_stack_len},"timestamp":int(time.time()*1000)})+'\n')
-            except: pass
-            # #endregion
             # ALWAYS restore move_stack and _stack after super().outcome() if they were present
             # This is critical because super().outcome() may call is_repetition() multiple times,
             # and we need to preserve stacks for subsequent calls (e.g., is_fivefold_repetition())
@@ -166,20 +148,7 @@ class BaseChessBoard(chess.Board):
             needs_restore = current_fen != saved_fen or current_move_stack_len != saved_move_stack_len
             should_restore_stacks = saved_move_stack_len > 0  # Always restore if stacks were present
             
-            # #region agent log
-            try:
-                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_custom.py:162","message":"checking if restore needed","data":{"current_fen":current_fen[:80],"saved_fen":saved_fen[:80],"current_move_stack_len":current_move_stack_len,"saved_move_stack_len":saved_move_stack_len,"needs_restore":needs_restore,"should_restore_stacks":should_restore_stacks},"timestamp":int(time.time()*1000)})+'\n')
-            except: pass
-            # #endregion
-            
             if needs_restore:
-                # #region agent log
-                try:
-                    with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F,G","location":"chess_custom.py:175","message":"restoring board state from copy","data":{"current_fen":current_fen[:80],"saved_fen":saved_fen[:80]},"timestamp":int(time.time()*1000)})+'\n')
-                except: pass
-                # #endregion
                 # Board was reset, restore it from the copy
                 # Use _restore_chess_stack to properly restore move_stack and _stack
                 from MCTS.mcts_algorithm import _restore_chess_stack
@@ -189,29 +158,19 @@ class BaseChessBoard(chess.Board):
                 # Always restore stacks if they were present, even if FEN didn't change
                 # This is necessary because super().outcome() may clear stacks without changing FEN
                 # and we need stacks preserved for subsequent calls (e.g., is_fivefold_repetition())
-                # #region agent log
-                try:
-                    with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_custom.py:188","message":"restoring stacks only (FEN unchanged, but stacks were present)","data":{"current_move_stack_len":current_move_stack_len,"saved_move_stack_len":saved_move_stack_len},"timestamp":int(time.time()*1000)})+'\n')
-                except: pass
-                # #endregion
                 from MCTS.mcts_algorithm import _restore_chess_stack
                 _restore_chess_stack(self, board_copy)
             
-            # #region agent log
-            try:
-                fen_after_restore = self.fen()
-                move_stack_len_after_restore = len(self.move_stack) if hasattr(self, 'move_stack') else 0
-                stack_len_after_restore = len(self._stack) if hasattr(self, '_stack') else 0
-                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F,G","location":"chess_custom.py:194","message":"after restore from copy","data":{"fen":fen_after_restore[:80],"move_stack_len":move_stack_len_after_restore,"stack_len":stack_len_after_restore,"restored_correctly":fen_after_restore == saved_fen and move_stack_len_after_restore == saved_move_stack_len},"timestamp":int(time.time()*1000)})+'\n')
-            except: pass
-            # #endregion
             return outcome_result
         except AttributeError as e:
             # If _stack has None values causing AttributeError, try to handle it without clearing _stack
             # Clearing _stack causes python-chess to reset the board
             if "'NoneType'" in str(e) or "from_square" in str(e):
+                # Save state from board_copy for restoration
+                saved_fen = board_copy.fen()
+                saved_move_stack = list(board_copy.move_stack) if hasattr(board_copy, 'move_stack') else []
+                saved_stack = list(board_copy._stack) if hasattr(board_copy, '_stack') else []
+                
                 # Instead of clearing _stack, try to filter it more carefully
                 # Only clear if absolutely necessary, and restore board state after
                 if hasattr(self, '_stack') and self._stack:
@@ -274,28 +233,10 @@ class BaseChessBoard(chess.Board):
         # This is necessary because super().is_repetition() may clear move_stack and _stack
         board_copy = self.copy(stack=True)
         
-        # #region agent log
-        import json
-        import time
-        try:
-            move_stack_len = len(self.move_stack) if hasattr(self, 'move_stack') else 0
-            stack_len = len(self._stack) if hasattr(self, '_stack') else 0
-            copy_move_stack_len = len(board_copy.move_stack) if hasattr(board_copy, 'move_stack') else 0
-            copy_stack_len = len(board_copy._stack) if hasattr(board_copy, '_stack') else 0
-            with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_custom.py:270","message":"is_repetition called","data":{"count":count,"move_stack_len":move_stack_len,"stack_len":stack_len,"copy_move_stack_len":copy_move_stack_len,"copy_stack_len":copy_stack_len},"timestamp":int(time.time()*1000)})+'\n')
-        except: pass
-        # #endregion
         # Call parent method with error handling for _stack issues
         # Don't modify move_stack here as it can break synchronization with _stack
         try:
             result = super().is_repetition(count)
-            # #region agent log
-            try:
-                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_custom.py:280","message":"is_repetition result","data":{"count":count,"result":result},"timestamp":int(time.time()*1000)})+'\n')
-            except: pass
-            # #endregion
             
             # ALWAYS restore stacks after super().is_repetition() if they were present
             # This is critical because super().outcome() may call is_repetition() multiple times,
@@ -303,42 +244,16 @@ class BaseChessBoard(chess.Board):
             current_move_stack_len = len(self.move_stack) if hasattr(self, 'move_stack') else 0
             saved_move_stack_len = len(board_copy.move_stack) if hasattr(board_copy, 'move_stack') else 0
             should_restore = saved_move_stack_len > 0
-            # #region agent log
-            try:
-                with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_custom.py:300","message":"checking if restore needed after is_repetition","data":{"current_move_stack_len":current_move_stack_len,"saved_move_stack_len":saved_move_stack_len,"should_restore":should_restore},"timestamp":int(time.time()*1000)})+'\n')
-            except: pass
-            # #endregion
             # Always restore if stacks were present in the copy (regardless of current state)
             # This ensures stacks are preserved for subsequent calls from super().outcome()
             if should_restore:
-                # #region agent log
-                try:
-                    with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_custom.py:308","message":"restoring stacks after is_repetition","data":{"current_move_stack_len":current_move_stack_len,"saved_move_stack_len":saved_move_stack_len,"reason":"always_restore_when_stacks_present"},"timestamp":int(time.time()*1000)})+'\n')
-                except: pass
-                # #endregion
                 from MCTS.mcts_algorithm import _restore_chess_stack
                 _restore_chess_stack(self, board_copy)
-                # #region agent log
-                try:
-                    after_restore_move_stack_len = len(self.move_stack) if hasattr(self, 'move_stack') else 0
-                    after_restore_stack_len = len(self._stack) if hasattr(self, '_stack') else 0
-                    with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_custom.py:318","message":"after restore stacks in is_repetition","data":{"after_restore_move_stack_len":after_restore_move_stack_len,"after_restore_stack_len":after_restore_stack_len,"saved_move_stack_len":saved_move_stack_len,"restored_correctly":after_restore_move_stack_len == saved_move_stack_len},"timestamp":int(time.time()*1000)})+'\n')
-                except: pass
-                # #endregion
             
             return result
         except AttributeError as e:
             # If _stack has None values causing AttributeError, return False (no repetition detected)
             if "'NoneType'" in str(e) or "from_square" in str(e):
-                # #region agent log
-                try:
-                    with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"chess_custom.py:298","message":"is_repetition AttributeError","data":{"count":count,"error":str(e)[:100]},"timestamp":int(time.time()*1000)})+'\n')
-                except: pass
-                # #endregion
                 # Restore stacks even on error
                 current_move_stack_len = len(self.move_stack) if hasattr(self, 'move_stack') else 0
                 saved_move_stack_len = len(board_copy.move_stack) if hasattr(board_copy, 'move_stack') else 0
