@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import random
 from omegaconf import OmegaConf
+from typing import Optional
 
 
 def select_fen_from_dict(fen_dict):
@@ -32,62 +33,205 @@ def select_fen_from_dict(fen_dict):
     return selected_fen
 
 
-def compute_position_aware_draw_reward(network: nn.Module, board_state, state_obs, 
-                                       is_first_player: bool, cfg: OmegaConf, device: torch.device,
-                                       precomputed_value: float | None = None) -> float:
-    """Compute draw reward based on position quality using network's value prediction.
+class RewardComputer:
+    """Class to compute position-aware draw rewards based on position quality and termination type."""
     
-    Args:
-        network: The neural network to evaluate position
-        board_state: The board state at this position
-        state_obs: The observation vector for this position
-        is_first_player: Whether this position is from first player's perspective
-        cfg: Configuration object with position_aware_draw_reward settings
-        device: Device to run network inference on
-        precomputed_value: Optional pre-computed value from MCTS (avoids re-running network)
-    
-    Returns:
-        float: Position-aware draw reward
-    """
-    # Use precomputed value if available (from MCTS root node)
-    if precomputed_value is not None:
-        predicted_value = precomputed_value
-    elif network is not None:
-        # Get network's value prediction for this position
-        # state_obs should already be in the correct format
-        obs_tensor = torch.tensor(state_obs, dtype=torch.float32, device=device).unsqueeze(0)
+    def __init__(self, cfg: OmegaConf, network: Optional[nn.Module] = None, device: Optional[torch.device] = None):
+        """Initialize the reward computer.
         
-        with torch.no_grad():
-            network.eval()
-            _, value_pred = network(obs_tensor)
-            predicted_value = value_pred.item()  # Range: -1 to +1
-    else:
-        # Fallback to base draw reward if network not available
-        draw_reward = cfg.training.get('draw_reward', -0.1)
-        return draw_reward if draw_reward is not None else -0.1
-    
-    # Adjust predicted value to current player's perspective
-    if not is_first_player:
-        predicted_value = -predicted_value
-    
-    # Get reward dictionary from config with defaults
-    reward_dict = cfg.training.get('position_aware_draw_rewards', None)
-    if reward_dict is None:
-        # Default rewards if not specified
-        reward_dict = {
+        Args:
+            cfg: Configuration object with reward settings
+            network: Optional neural network for position evaluation
+            device: Optional device for network inference
+        """
+        self.cfg = cfg
+        self.network = network
+        self.device = device
+        self.draw_reward_table = cfg.training.get('draw_reward_table', None)
+        self.default_draw_reward = cfg.training.get('draw_reward', -0.1)
+        
+        # Default rewards if table not available
+        self.default_rewards = {
             'winning': -0.8,
             'equal': -0.1,
             'losing': 0.2
         }
     
-    # Determine reward based on predicted position quality
-    if predicted_value > 0.1:
-        # Was winning - strong penalty for throwing away advantage
-        return reward_dict.get('winning', -0.8)
-    elif predicted_value > -0.1:
-        # Equal position - base draw penalty
-        return reward_dict.get('equal', -0.1)
-    else:
-        # Was losing - reward for saving the game
-        return reward_dict.get('losing', 0.2)
+    @staticmethod
+    def is_endgame_position(fen: Optional[str]) -> bool:
+        """Detect if a FEN position represents an endgame.
+        
+        Endgame is typically defined as having fewer pieces on the board.
+        We count pieces (excluding kings) - if total < 10, it's likely an endgame.
+        
+        Args:
+            fen: FEN string to analyze, or None
+        
+        Returns:
+            bool: True if position appears to be an endgame
+        """
+        if not fen:
+            return False
+        
+        # Standard starting position - not an endgame
+        starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+        if fen.startswith(starting_fen):
+            return False
+        
+        # Count pieces in the board part of FEN (first part before space)
+        board_part = fen.split()[0] if ' ' in fen else fen
+        
+        # Count non-empty squares (pieces)
+        # FEN uses: / for rank separator, numbers for empty squares, letters for pieces
+        piece_count = 0
+        for char in board_part:
+            if char.isalpha():  # Piece (K, Q, R, B, N, P or lowercase)
+                piece_count += 1
+        
+        # Endgame typically has fewer pieces
+        # Excluding the 2 kings, if we have < 10 other pieces, it's likely an endgame
+        # This threshold can be adjusted, but 10 pieces (excluding kings) is a reasonable cutoff
+        return piece_count < 12  # 2 kings + 10 other pieces = 12 total
+    
+    def evaluate_position_quality(self, state_obs, is_first_player: bool, 
+                                  precomputed_value: Optional[float] = None) -> str:
+        """Evaluate position quality using network or precomputed value.
+        
+        Args:
+            state_obs: Observation vector for the position
+            is_first_player: Whether position is from first player's perspective
+            precomputed_value: Optional pre-computed value from MCTS
+        
+        Returns:
+            str: Position quality ('winning', 'equal', or 'losing')
+        """
+        # Use precomputed value if available
+        if precomputed_value is not None:
+            predicted_value = precomputed_value
+        elif self.network is not None:
+            # Get network's value prediction
+            if self.device is None:
+                try:
+                    device = next(self.network.parameters()).device
+                except:
+                    device = torch.device('cpu')
+            else:
+                device = self.device
+            
+            obs_tensor = torch.tensor(state_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            with torch.no_grad():
+                self.network.eval()
+                _, value_pred = self.network(obs_tensor)
+                predicted_value = value_pred.item()  # Range: -1 to +1
+        else:
+            # No network available - return 'equal' as default
+            return 'equal'
+        
+        # Adjust predicted value to current player's perspective
+        if not is_first_player:
+            predicted_value = -predicted_value
+        
+        # Determine position quality category
+        if predicted_value > 0.1:
+            return 'winning'
+        elif predicted_value > -0.1:
+            return 'equal'
+        else:
+            return 'losing'
+    
+    def compute_draw_reward(self, state_obs, is_first_player: bool,
+                           termination_type: Optional[str] = None,
+                           precomputed_value: Optional[float] = None,
+                           initial_position_quality: Optional[str] = None,
+                           is_endgame: bool = False) -> float:
+        """Compute draw reward based on position quality and termination type.
+        
+        Args:
+            state_obs: Observation vector for the position
+            is_first_player: Whether position is from first player's perspective
+            termination_type: Optional termination type (e.g., "THREEFOLD_REPETITION", "STALEMATE")
+            precomputed_value: Optional pre-computed value from MCTS
+            initial_position_quality: Optional initial position quality - used for endgames
+            is_endgame: Whether this is an endgame position
+        
+        Returns:
+            float: Position-aware draw reward
+        """
+        # For endgames: use initial position quality if provided
+        # For full games: evaluate current position
+        if is_endgame and initial_position_quality is not None:
+            position_quality = initial_position_quality
+        else:
+            position_quality = self.evaluate_position_quality(state_obs, is_first_player, precomputed_value)
+        
+        # Get reward from table if available
+        if self.draw_reward_table and termination_type:
+            termination_rewards = self.draw_reward_table.get(termination_type, None)
+            if termination_rewards:
+                reward = termination_rewards.get(position_quality, None)
+                if reward is not None:
+                    return reward
+        
+        # Fallback: use default rewards
+        return self.default_rewards.get(position_quality, self.default_draw_reward if self.default_draw_reward is not None else -0.1)
+    
+    def evaluate_initial_position(self, initial_obs, is_first_player: bool) -> Optional[str]:
+        """Evaluate initial board position and return quality.
+        
+        Args:
+            initial_obs: Initial observation vector
+            is_first_player: Whether the first player is to move
+        
+        Returns:
+            Optional[str]: Position quality ('winning', 'equal', 'losing') or None if network unavailable
+        """
+        if self.network is None:
+            return None
+        
+        # Determine device
+        device = self.device
+        if device is None:
+            try:
+                device = next(self.network.parameters()).device
+            except:
+                device = torch.device('cpu')
+        
+        # Evaluate initial position
+        obs_tensor = torch.tensor(initial_obs, dtype=torch.float32, device=device).unsqueeze(0)
+        with torch.no_grad():
+            self.network.eval()
+            _, initial_value_pred = self.network(obs_tensor)
+            initial_value = initial_value_pred.item()  # Range: -1 to +1
+        
+        # Determine initial position quality from first player's perspective
+        if not is_first_player:
+            initial_value = -initial_value
+        
+        # Categorize initial position quality
+        if initial_value > 0.1:
+            return 'winning'
+        elif initial_value > -0.1:
+            return 'equal'
+        else:
+            return 'losing'
+
+
+# Backward compatibility: keep old function names
+def is_endgame_position(fen: Optional[str]) -> bool:
+    """Detect if a FEN position represents an endgame."""
+    return RewardComputer.is_endgame_position(fen)
+
+
+def compute_position_aware_draw_reward(network: nn.Module, board_state, state_obs, 
+                                       is_first_player: bool, cfg: OmegaConf, device: torch.device,
+                                       precomputed_value: float | None = None,
+                                       termination_type: str | None = None,
+                                       initial_position_quality: str | None = None,
+                                       is_endgame: bool = False) -> float:
+    """Compute draw reward (backward compatibility wrapper)."""
+    reward_computer = RewardComputer(cfg, network, device)
+    return reward_computer.compute_draw_reward(
+        state_obs, is_first_player, termination_type,
+        precomputed_value, initial_position_quality, is_endgame
+    )
 

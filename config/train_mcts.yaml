@@ -123,8 +123,25 @@ training:
     "8/8/8/8/4p3/4K3/4P3/4k3 w - - 0 1": 0.025
   progress_bar: true
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
-  draw_reward: -0.5 # Fixed reward value for draws. Set to null to use position-aware draw rewards
-  position_aware_draw_rewards:
-    winning: -0.8 # Reward when drawing from winning position (expected value > 0.1)
-    equal: -0.1 # Reward when drawing from equal position (expected value -0.1 to 0.1)
-    losing: 0.2 # Reward when drawing from losing position (expected value < -0.1) - good save!
+  draw_reward: -0.5 # Fixed reward value for draws. Set to null to use draw_reward_table
+  draw_reward_table:
+    THREEFOLD_REPETITION:
+      winning: -0.9
+      equal: -0.3
+      losing: 0.2
+    FIVEFOLD_REPETITION:
+      winning: -0.9
+      equal: -0.3
+      losing: 0.2
+    STALEMATE:
+      winning: -0.9
+      equal: -0.25
+      losing: 0.4
+    MAX_MOVES:
+      winning: -0.4
+      equal: -0.2
+      losing: 0.3
+    INSUFFICIENT_MATERIAL:
+      winning: -0.4
+      equal: -0.05
+      losing: 0.4
