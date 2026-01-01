@@ -170,7 +170,7 @@ class RewardComputer:
             is_first_player: Whether position is from first player's perspective
             termination_type: Optional termination type (e.g., "THREEFOLD_REPETITION", "STALEMATE")
             precomputed_value: Optional pre-computed value from MCTS
-            initial_position_quality: Optional initial position quality - used for endgames
+            initial_position_quality: Optional initial position quality (from white's perspective) - used for endgames
             is_endgame: Whether this is an endgame position
         
         Returns:
@@ -179,7 +179,17 @@ class RewardComputer:
         # For endgames: use initial position quality if provided
         # For full games: evaluate current position
         if is_endgame and initial_position_quality is not None:
-            position_quality = initial_position_quality
+            # initial_position_quality is from white's perspective, so flip if current player is black
+            if is_first_player:
+                position_quality = initial_position_quality
+            else:
+                # Flip the quality: winning <-> losing, equal stays equal
+                if initial_position_quality == 'winning':
+                    position_quality = 'losing'
+                elif initial_position_quality == 'losing':
+                    position_quality = 'winning'
+                else:  # equal
+                    position_quality = 'equal'
         else:
             position_quality = self.evaluate_position_quality(state_obs, is_first_player, precomputed_value)
         
