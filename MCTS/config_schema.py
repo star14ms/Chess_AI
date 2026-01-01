@@ -64,7 +64,8 @@ class TrainingConfig:
     progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
     initial_board_fen: Optional[Dict[str, float]] = None # Dictionary mapping FEN strings to weights. If None or empty dict, uses default starting position. If string (legacy), uses that FEN directly.
     max_training_time_seconds: Optional[int] = None # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
-    draw_reward: float = -0.1 # Reward value for draws (applies to both players equally)
+    draw_reward: Optional[float] = -0.1 # Fixed reward value for draws. If None, uses position-aware draw rewards based on position quality
+    position_aware_draw_rewards: Optional[Dict[str, float]] = None # Dictionary mapping position quality to rewards: {"winning": -0.8, "equal": -0.1, "losing": 0.2}. Used when draw_reward is None
 
 @dataclass
 class Config:
