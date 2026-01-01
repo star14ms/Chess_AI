@@ -663,7 +663,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         'move_count': move_count,
         'result': final_value,
         'tree_stats': avg_tree_stats if avg_tree_stats else None,
-        'draw_reward': draw_reward  # Store draw_reward for reference in statistics
+        'draw_reward': draw_reward,  # Store draw_reward for reference in statistics
+        'initial_fen': initial_fen  # Store initial board FEN for game history
     }
 
     return (full_game_data, game_info)
@@ -1374,6 +1375,10 @@ def run_training_loop(cfg: DictConfig) -> None:
                     else:
                         result_str = "0-1"
                     f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
+                    # Write initial FEN if available
+                    initial_fen = game_info.get('initial_fen', None)
+                    if initial_fen:
+                        f.write(f"Initial FEN: {initial_fen}\n")
                     f.write(f"{game_info['moves_san']}\n\n")
 
         # --- Training Phase ---
