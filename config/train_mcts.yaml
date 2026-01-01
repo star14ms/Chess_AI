@@ -78,49 +78,91 @@ training:
   checkpoint_dir_load: null # If set, load checkpoints from here; otherwise use checkpoint_dir
   game_history_dir: ./game_history # Directory to save game history files. Set to null to disable.
   initial_board_fen:
-    # Starting position (50% weight)
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1": 0.5
+    # Starting position (50% weight, equal position)
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1":
+      weight: 0.5
+      quality: "equal"
     # Endgame positions (20 common endgames, 2.5% each)
-    # 1. King and Queen vs King (basic checkmate)
-    "8/8/8/8/8/3K4/8/2k1Q3 w - - 0 1": 0.025
-    # 2. King and Rook vs King (rook checkmate)
-    "8/8/8/8/8/3K4/8/2k1R3 w - - 0 1": 0.025
-    # 3. King and two Bishops vs King
-    "8/8/8/8/8/3K4/8/2k1BB2 w - - 0 1": 0.025
-    # 4. King, Bishop and Knight vs King (difficult checkmate)
-    "8/8/8/8/8/3K4/8/2k1BN2 w - - 0 1": 0.025
-    # 5. King and Pawn vs King (passed pawn, white to move)
-    "8/8/8/8/8/4P3/4K3/4k3 w - - 0 1": 0.025
-    # 6. Rook and Pawn vs Rook (Lucena position)
-    "8/8/8/8/8/4P3/4K1R1/4k1r1 w - - 0 1": 0.025
-    # 7. Queen vs Rook (queen advantage)
-    "8/8/8/8/8/3K4/8/2k1Q1r1 w - - 0 1": 0.025
-    # 8. King and Pawn endgame (opposition, white to move)
-    "8/8/8/8/4P3/4K3/8/4k3 w - - 0 1": 0.025
-    # 9. King and two Pawns vs King (connected pawns)
-    "8/8/8/8/8/4PP2/4K3/4k3 w - - 0 1": 0.025
-    # 10. King and Pawn vs King (opposition, black to move)
-    "8/8/8/8/4P3/4K3/8/4k3 b - - 0 1": 0.025
-    # 11. King and Rook vs King and Pawn
-    "8/8/8/8/4p3/4k3/4K3/4R3 w - - 0 1": 0.025
-    # 12. Queen and Pawn vs Queen
-    "8/8/8/8/4P3/4K3/8/2k1Q1q1 w - - 0 1": 0.025
-    # 13. King and two Rooks vs King
-    "8/8/8/8/8/3K4/8/2k1RR2 w - - 0 1": 0.025
-    # 14. King and Pawn vs King (rook pawn, difficult)
-    "8/8/8/8/8/4K3/4P3/4k3 w - - 0 1": 0.025
-    # 15. King and Knight vs King (stalemate risk)
-    "8/8/8/8/8/3K4/8/2k1N3 w - - 0 1": 0.025
-    # 16. King and Bishop vs King (stalemate)
-    "8/8/8/8/8/3K4/8/2k1B3 w - - 0 1": 0.025
-    # 17. King and three Pawns vs King
-    "8/8/8/8/8/4PPP1/4K3/4k3 w - - 0 1": 0.025
-    # 18. Rook vs Bishop (material imbalance)
-    "8/8/8/8/8/3K4/8/2k1R1b1 w - - 0 1": 0.025
-    # 19. Rook vs Knight (material imbalance)
-    "8/8/8/8/8/3K4/8/2k1R1n1 w - - 0 1": 0.025
-    # 20. King and Pawn vs King and Pawn (opposition)
-    "8/8/8/8/4p3/4K3/4P3/4k3 w - - 0 1": 0.025
+    # 1. King and Queen vs King (basic checkmate) - winning for white
+    "8/8/8/8/8/3K4/8/2k1Q3 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 2. King and Rook vs King (rook checkmate) - winning for white
+    "8/8/8/8/8/3K4/8/2k1R3 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 3. King and two Bishops vs King - winning for white
+    "8/8/8/8/8/3K4/8/2k1BB2 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 4. King, Bishop and Knight vs King (difficult checkmate) - winning for white
+    "8/8/8/8/8/3K4/8/2k1BN2 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 5. King and Pawn vs King (passed pawn, white to move) - winning for white
+    "8/8/8/8/8/4P3/4K3/4k3 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 6. Rook and Pawn vs Rook (Lucena position) - winning for white
+    "8/8/8/8/8/4P3/4K1R1/4k1r1 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 7. Queen vs Rook (queen advantage) - winning for white
+    "8/8/8/8/8/3K4/8/2k1Q1r1 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 8. King and Pawn endgame (opposition, white to move) - winning for white
+    "8/8/8/8/4P3/4K3/8/4k3 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 9. King and two Pawns vs King (connected pawns) - winning for white
+    "8/8/8/8/8/4PP2/4K3/4k3 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 10. King and Pawn vs King (opposition, black to move) - losing for white
+    "8/8/8/8/4P3/4K3/8/4k3 b - - 0 1":
+      weight: 0.025
+      quality: "losing"
+    # 11. King and Rook vs King and Pawn - winning for white
+    "8/8/8/8/4p3/4k3/4K3/4R3 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 12. Queen and Pawn vs Queen - winning for white
+    "8/8/8/8/4P3/4K3/8/2k1Q1q1 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 13. King and two Rooks vs King - winning for white
+    "8/8/8/8/8/3K4/8/2k1RR2 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 14. King and Pawn vs King (rook pawn, difficult) - winning for white
+    "8/8/8/8/8/4K3/4P3/4k3 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 15. King and Knight vs King (stalemate risk) - equal (insufficient material)
+    "8/8/8/8/8/3K4/8/2k1N3 w - - 0 1":
+      weight: 0.025
+      quality: "equal"
+    # 16. King and Bishop vs King (stalemate) - equal (insufficient material)
+    "8/8/8/8/8/3K4/8/2k1B3 w - - 0 1":
+      weight: 0.025
+      quality: "equal"
+    # 17. King and three Pawns vs King - winning for white
+    "8/8/8/8/8/4PPP1/4K3/4k3 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 18. Rook vs Bishop (material imbalance) - winning for white
+    "8/8/8/8/8/3K4/8/2k1R1b1 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 19. Rook vs Knight (material imbalance) - winning for white
+    "8/8/8/8/8/3K4/8/2k1R1n1 w - - 0 1":
+      weight: 0.025
+      quality: "winning"
+    # 20. King and Pawn vs King and Pawn (opposition) - equal
+    "8/8/8/8/4p3/4K3/4P3/4k3 w - - 0 1":
+      weight: 0.025
+      quality: "equal"
   progress_bar: true
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
   draw_reward: -0.5 # Fixed reward value for draws. Set to null to use draw_reward_table

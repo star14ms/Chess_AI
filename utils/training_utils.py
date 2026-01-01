@@ -9,28 +9,47 @@ from typing import Optional
 def select_fen_from_dict(fen_dict):
     """Select a FEN string from a dictionary based on weights.
     
+    Supports two formats:
+    1. Legacy: {"fen": weight} - returns (fen, None)
+    2. New: {"fen": {"weight": w, "quality": q}} - returns (fen, quality)
+    
     Args:
-        fen_dict: Dictionary mapping FEN strings to weights (floats)
+        fen_dict: Dictionary mapping FEN strings to weights (floats) or dicts with weight/quality
     
     Returns:
-        Selected FEN string, or None if dictionary is empty/invalid
+        Tuple of (selected FEN string, position quality) or (None, None) if dictionary is empty/invalid
     """
     if not fen_dict or not isinstance(fen_dict, dict):
-        return None
+        return None, None
     
-    fens = list(fen_dict.keys())
-    weights = list(fen_dict.values())
+    fens = []
+    weights = []
+    qualities = []
+    
+    for fen, value in fen_dict.items():
+        fens.append(fen)
+        # Handle both legacy format (float) and new format (dict with weight/quality)
+        if isinstance(value, dict):
+            weights.append(value.get('weight', 0.0))
+            qualities.append(value.get('quality', None))
+        else:
+            # Legacy format: just a float weight
+            weights.append(float(value))
+            qualities.append(None)
     
     # Normalize weights to ensure they sum to 1
     total_weight = sum(weights)
     if total_weight == 0:
-        return None
+        return None, None
     
     normalized_weights = [w / total_weight for w in weights]
     
     # Use random.choices to select based on weights
-    selected_fen = random.choices(fens, weights=normalized_weights, k=1)[0]
-    return selected_fen
+    selected_idx = random.choices(range(len(fens)), weights=normalized_weights, k=1)[0]
+    selected_fen = fens[selected_idx]
+    selected_quality = qualities[selected_idx]
+    
+    return selected_fen, selected_quality
 
 
 class RewardComputer:

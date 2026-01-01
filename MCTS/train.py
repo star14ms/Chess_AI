@@ -319,9 +319,10 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     
     # Handle initial_board_fen: can be dict (weighted selection), string (legacy), or None
     initial_fen = None
+    initial_position_quality = None
     if cfg.training.initial_board_fen:
         if isinstance(cfg.training.initial_board_fen, dict):
-            initial_fen = select_fen_from_dict(cfg.training.initial_board_fen)
+            initial_fen, initial_position_quality = select_fen_from_dict(cfg.training.initial_board_fen)
         elif isinstance(cfg.training.initial_board_fen, str):
             initial_fen = cfg.training.initial_board_fen
     
@@ -335,10 +336,11 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # Initialize reward computer
     reward_computer = RewardComputer(cfg, network, device)
     
-    # Check if this is an endgame position and evaluate initial position if so
+    # Check if this is an endgame position
     is_endgame = reward_computer.is_endgame_position(initial_fen if initial_fen else env.board.fen())
-    initial_position_quality = None
-    if is_endgame and network is not None:
+    
+    # If we don't have a hardcoded quality from config and this is an endgame, evaluate with network
+    if is_endgame and initial_position_quality is None and network is not None:
         # Evaluate initial board position for endgame positions
         is_initial_first_player = is_first_player_turn(env.board)
         initial_position_quality = reward_computer.evaluate_initial_position(obs, is_initial_first_player)
