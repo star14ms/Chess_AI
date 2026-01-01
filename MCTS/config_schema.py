@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 # Note: These defaults should ideally match the YAML defaults
 
@@ -54,7 +54,7 @@ class TrainingConfig:
     batch_size: int = 128
     use_multiprocessing: bool = True # Flag to enable/disable multiprocessing for self-play
     self_play_workers: int = 0 # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
-    self_play_games_per_epoch: int = 50
+    self_play_steps_per_epoch: int = 1024 # Number of steps to collect before moving to training phase
     continual_training: bool = True # If True, continue training from the last checkpoint
     continual_queue_maxsize: int = 64 # Maximum size of the queue for continual training
     max_game_moves: int = 200
@@ -62,7 +62,7 @@ class TrainingConfig:
     checkpoint_dir_load: Optional[str] = None # Optional separate directory to load checkpoints from (defaults to checkpoint_dir if None or empty)
     game_history_dir: Optional[str] = "./output/" # Directory to save game history files (moves in SAN notation). Set to None to disable.
     progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
-    initial_board_fen: str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" #except pawns
+    initial_board_fen: Optional[Dict[str, float]] = None # Dictionary mapping FEN strings to weights. If None or empty dict, uses default starting position. If string (legacy), uses that FEN directly.
     max_training_time_seconds: Optional[int] = None # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
     draw_reward: float = -0.1 # Reward value for draws (applies to both players equally)
 
