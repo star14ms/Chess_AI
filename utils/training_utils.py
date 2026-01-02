@@ -161,8 +161,7 @@ class RewardComputer:
     def compute_draw_reward(self, state_obs, is_first_player: bool,
                            termination_type: Optional[str] = None,
                            precomputed_value: Optional[float] = None,
-                           initial_position_quality: Optional[str] = None,
-                           is_endgame: bool = False) -> float:
+                           initial_position_quality: Optional[str] = None) -> float:
         """Compute draw reward based on position quality and termination type.
         
         Args:
@@ -171,40 +170,20 @@ class RewardComputer:
             termination_type: Optional termination type (e.g., "THREEFOLD_REPETITION", "STALEMATE")
             precomputed_value: Optional pre-computed value from MCTS
             initial_position_quality: Optional initial position quality (from white's perspective) - used for endgames
-            is_endgame: Whether this is an endgame position
         
         Returns:
             float: Position-aware draw reward
         """
-        # Use initial position quality if provided (for both endgames and full games with known quality)
-        # This ensures consistent rewards based on the starting position quality from config
-        if initial_position_quality is not None:
-            # initial_position_quality is from white's perspective, so flip if current player is black
-            if is_first_player:
-                position_quality = initial_position_quality
-            else:
-                # Flip the quality: winning <-> losing, equal stays equal
-                if initial_position_quality == 'winning':
-                    position_quality = 'losing'
-                elif initial_position_quality == 'losing':
-                    position_quality = 'winning'
-                else:  # equal
-                    position_quality = 'equal'
-        else:
-            # No initial quality provided, evaluate current position
-            # This should only happen if initial_position_quality was not set from config
-            position_quality = self.evaluate_position_quality(state_obs, is_first_player, precomputed_value)
-        
         # Get reward from table if available
         if self.draw_reward_table and termination_type:
             termination_rewards = self.draw_reward_table.get(termination_type, None)
             if termination_rewards:
-                reward = termination_rewards.get(position_quality, None)
+                reward = termination_rewards.get(initial_position_quality, None)
                 if reward is not None:
                     return reward
         
         # Fallback: use default rewards
-        return self.default_rewards.get(position_quality, self.default_draw_reward if self.default_draw_reward is not None else -0.1)
+        return self.default_rewards.get(initial_position_quality, self.default_draw_reward if self.default_draw_reward is not None else -0.1)
     
     def evaluate_initial_position(self, initial_obs, is_first_player: bool) -> Optional[str]:
         """Evaluate initial board position and return quality.
@@ -257,12 +236,11 @@ def compute_position_aware_draw_reward(network: nn.Module, board_state, state_ob
                                        is_first_player: bool, cfg: OmegaConf, device: torch.device,
                                        precomputed_value: float | None = None,
                                        termination_type: str | None = None,
-                                       initial_position_quality: str | None = None,
-                                       is_endgame: bool = False) -> float:
+                                       initial_position_quality: str | None = None) -> float:
     """Compute draw reward (backward compatibility wrapper)."""
     reward_computer = RewardComputer(cfg, network, device)
     return reward_computer.compute_draw_reward(
         state_obs, is_first_player, termination_type,
-        precomputed_value, initial_position_quality, is_endgame
+        precomputed_value, initial_position_quality
     )
 

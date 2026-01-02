@@ -348,18 +348,13 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     obs, _ = env.reset(options=options)
     if network is not None:
         network.eval()
-    
+
     # Initialize reward computer
     reward_computer = RewardComputer(cfg, network, device)
-    
-    # Check if this is an endgame position
-    is_endgame = reward_computer.is_endgame_position(initial_fen if initial_fen else env.board.fen())
-    
+
     # If we don't have a hardcoded quality from config and this is an endgame, evaluate with network
-    if is_endgame and initial_position_quality is None and network is not None:
-        # Evaluate initial board position for endgame positions
-        is_initial_first_player = is_first_player_turn(env.board)
-        initial_position_quality = reward_computer.evaluate_initial_position(obs, is_initial_first_player)
+    if initial_position_quality is None:
+        initial_position_quality = 'equal'
 
     game_history = []
     move_list_san = []  # Track moves in SAN notation
@@ -668,7 +663,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             # This ensures consistent rewards based on the starting position quality from config
             value_target = reward_computer.compute_draw_reward(
                 state_obs, is_first_player, termination_reason,
-                precomputed_value, initial_position_quality, is_endgame
+                precomputed_value, initial_position_quality
             )
         else:
             # Use standard reward assignment (wins/losses or uniform draw reward)
@@ -709,8 +704,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                     is_first_player_first_state,
                     termination_reason,
                     None,  # precomputed_value
-                    initial_position_quality,
-                    is_endgame
+                    initial_position_quality
                 )
         if actual_reward_for_logging is None:
             # Fallback to value_target from first state
