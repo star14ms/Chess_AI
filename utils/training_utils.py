@@ -176,9 +176,9 @@ class RewardComputer:
         Returns:
             float: Position-aware draw reward
         """
-        # For endgames: use initial position quality if provided
-        # For full games: evaluate current position
-        if is_endgame and initial_position_quality is not None:
+        # Use initial position quality if provided (for both endgames and full games with known quality)
+        # This ensures consistent rewards based on the starting position quality from config
+        if initial_position_quality is not None:
             # initial_position_quality is from white's perspective, so flip if current player is black
             if is_first_player:
                 position_quality = initial_position_quality
@@ -191,6 +191,8 @@ class RewardComputer:
                 else:  # equal
                     position_quality = 'equal'
         else:
+            # No initial quality provided, evaluate current position
+            # This should only happen if initial_position_quality was not set from config
             position_quality = self.evaluate_position_quality(state_obs, is_first_player, precomputed_value)
         
         # Get reward from table if available

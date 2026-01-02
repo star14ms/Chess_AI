@@ -58,6 +58,9 @@ def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
 # Helper function for parallel execution (module scope for pickling)
 def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: str):
     """Worker function to run a single self-play game."""
+    # Convert plain dict back to OmegaConf if needed (for compatibility)
+    if isinstance(cfg, dict) and not OmegaConf.is_config(cfg):
+        cfg = OmegaConf.create(cfg)
     # Ensure factories are initialized inside spawned workers
     initialize_factories_from_cfg(cfg)
     # Determine device for this worker
@@ -320,11 +323,24 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # Handle initial_board_fen: can be dict (weighted selection), string (legacy), or None
     initial_fen = None
     initial_position_quality = None
-    if cfg.training.initial_board_fen:
-        if isinstance(cfg.training.initial_board_fen, dict):
-            initial_fen, initial_position_quality = select_fen_from_dict(cfg.training.initial_board_fen)
-        elif isinstance(cfg.training.initial_board_fen, str):
-            initial_fen = cfg.training.initial_board_fen
+    initial_board_fen_cfg = cfg.training.get('initial_board_fen', None)
+    
+    # Convert OmegaConf DictConfig to plain dict if needed (for pickling/multiprocessing)
+    if initial_board_fen_cfg is not None:
+        try:
+            # Convert OmegaConf to plain dict for compatibility with multiprocessing
+            from omegaconf import OmegaConf
+            if OmegaConf.is_config(initial_board_fen_cfg):
+                initial_board_fen_cfg = OmegaConf.to_container(initial_board_fen_cfg, resolve=True)
+        except Exception:
+            # If conversion fails, try to use as-is (might already be a plain dict)
+            pass
+        
+        # Now check if it's a dict (plain dict or OmegaConf DictConfig which is a dict subclass)
+        if isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
+            initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
+        elif isinstance(initial_board_fen_cfg, str):
+            initial_fen = initial_board_fen_cfg
     
     options = {
         'fen': initial_fen
@@ -555,18 +571,20 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # Use a default value for calculate_chess_reward (it needs a numeric value)
     draw_reward_for_calc = draw_reward if draw_reward is not None else -0.1
     
-    # Get final game result from white's perspective (for logging/statistics and training)
-    # calculate_chess_reward returns from previous player's perspective, so we need to convert
+    # Get final game result from the perspective of the player whose turn it is at the final state
+    # calculate_chess_reward returns from previous player's perspective (who just moved)
+    # Since the move was applied, board.turn changed, so we flip to get current player's perspective
     from MCTS.training_modules.chess import calculate_chess_reward
     final_value_from_prev = calculate_chess_reward(env.board, claim_draw=True, draw_reward=draw_reward_for_calc)
-    # Convert to white's perspective: if env.board.turn is BLACK, previous was WHITE, so value is already from white
-    # If env.board.turn is WHITE, previous was BLACK, so we need to flip (except for draws which stay draw_reward)
     # For draws, we use a sentinel value to detect them
     draw_sentinel = draw_reward_for_calc
     if abs(final_value_from_prev - draw_sentinel) < 0.01:
         final_value = draw_sentinel  # Draws are detected by matching this sentinel value
     else:
-        final_value = final_value_from_prev if env.board.turn == chess.BLACK else -final_value_from_prev
+        # Convert from previous player's perspective to current player's perspective (flip)
+        final_value = -final_value_from_prev
+    # Store the turn at the final state for later comparison
+    final_state_turn = env.board.turn
     
     # Get game outcome/termination reason
     # Check if we terminated due to manual repetition detection
@@ -646,15 +664,17 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             # Reward computer computes reward from the current player's perspective
             # Pass precomputed_value if available to avoid re-running network
             # Pass termination_reason to apply termination-specific penalties
-            # For endgames, pass initial_position_quality to use initial evaluation
+            # Pass initial_position_quality to use config-based quality (for both endgames and full games)
+            # This ensures consistent rewards based on the starting position quality from config
             value_target = reward_computer.compute_draw_reward(
                 state_obs, is_first_player, termination_reason,
                 precomputed_value, initial_position_quality, is_endgame
             )
         else:
             # Use standard reward assignment (wins/losses or uniform draw reward)
-            # Flip final_value if this state is from black's perspective
-            value_target = final_value if is_first_player else -final_value
+            # final_value is from the perspective of the player whose turn it is at the final state
+            # Flip if this state's turn differs from the final state's turn
+            value_target = final_value if board_at_state.turn == final_state_turn else -final_value
         
         full_game_data.append((state_obs, policy_target, board_at_state, value_target))
     
@@ -672,15 +692,41 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             'avg_branching': sum(s['avg_branching'] for s in tree_stats_list) / len(tree_stats_list)
         }
     
+    # Store the actual computed reward for the first state (for logging/debugging)
+    # This is the position-aware reward if enabled, otherwise the sentinel value
+    # For draws with position-aware rewards, compute the reward directly to ensure consistency
+    actual_reward_for_logging = None
+    if full_game_data:
+        if is_draw and use_position_aware and initial_position_quality is not None:
+            # Recompute reward using initial_position_quality to ensure consistency
+            # Get the first state's perspective
+            first_state_board = full_game_data[0][2] if len(full_game_data[0]) > 2 else None
+            if first_state_board is not None:
+                is_first_player_first_state = is_first_player_turn(first_state_board)
+                # Compute reward directly using initial_position_quality
+                actual_reward_for_logging = reward_computer.compute_draw_reward(
+                    full_game_data[0][0] if len(full_game_data[0]) > 0 else None,
+                    is_first_player_first_state,
+                    termination_reason,
+                    None,  # precomputed_value
+                    initial_position_quality,
+                    is_endgame
+                )
+        if actual_reward_for_logging is None:
+            # Fallback to value_target from first state
+            actual_reward_for_logging = full_game_data[0][3] if len(full_game_data[0]) > 3 else final_value
+    
     # Return game data, move list in SAN, and termination reason
     game_info = {
         'moves_san': ' '.join(move_list_san),
         'termination': termination_reason,
         'move_count': move_count,
-        'result': final_value,
+        'result': final_value,  # Sentinel value for draw detection
+        'actual_reward': actual_reward_for_logging if actual_reward_for_logging is not None else final_value,  # Actual computed reward
         'tree_stats': avg_tree_stats if avg_tree_stats else None,
         'draw_reward': draw_reward,  # Store draw_reward for reference in statistics
-        'initial_fen': initial_fen  # Store initial board FEN for game history
+        'initial_fen': initial_fen,  # Store initial board FEN for game history
+        'initial_position_quality': initial_position_quality  # Store initial position quality
     }
 
     return (full_game_data, game_info)
@@ -1204,12 +1250,17 @@ def run_training_loop(cfg: DictConfig) -> None:
             min_steps = cfg.training.self_play_steps_per_epoch
             worker_args_packed = []
             game_num = 0
+            
+            # Convert OmegaConf config to plain dict for multiprocessing (ensures proper serialization)
+            # This is important for nested structures like initial_board_fen
+            cfg_for_workers = OmegaConf.to_container(cfg, resolve=True) if OmegaConf.is_config(cfg) else cfg
+            
             # Submit initial batch of games
             # Estimate: assume average ~30-40 moves per game, add buffer for short games
             estimated_games_needed = max(1, (min_steps * 2) // 30)  # Estimate ~30 moves per game, double for safety
             for _ in range(estimated_games_needed):
                 device_str = device_pool[game_num % len(device_pool)]
-                worker_args_packed.append((game_num, network_state_dict, cfg, device_str))
+                worker_args_packed.append((game_num, network_state_dict, cfg_for_workers, device_str))
                 game_num += 1
 
             pool = None # Initialize pool to None
@@ -1391,13 +1442,22 @@ def run_training_loop(cfg: DictConfig) -> None:
                     else:
                         result_str = "0-1"
                     f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
-                    # Write initial FEN if available
+                    # Write initial FEN and quality if available
                     initial_fen = game_info.get('initial_fen', None)
-                    if initial_fen:
-                        f.write(f"Initial FEN: {initial_fen}\n")
-                    # Write reward value
+                    initial_quality = game_info.get('initial_position_quality', None)
+                    if initial_fen or initial_quality:
+                        parts = []
+                        if initial_fen:
+                            parts.append(f"Initial FEN: {initial_fen}")
+                        if initial_quality:
+                            parts.append(f"White's perspective: {initial_quality}")
+                        f.write(" | ".join(parts) + "\n")
+                    # Write reward value (use actual_reward if available, otherwise result)
+                    actual_reward = game_info.get('actual_reward', None)
                     result_value = game_info.get('result', None)
-                    if result_value is not None:
+                    if actual_reward is not None:
+                        f.write(f"Reward: {actual_reward:.4f}\n")
+                    elif result_value is not None:
                         f.write(f"Reward: {result_value:.4f}\n")
                     f.write(f"{game_info['moves_san']}\n\n")
 
@@ -1427,7 +1487,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                     finished_device_str = game_info['device']
                     if finished_device_str.startswith('cuda:') or finished_device_str == 'mps':
                         training_device = torch.device(finished_device_str)
-                        progress.print(f"Assigned training to {training_device} (accelerator that finished first)")
                         # Put the game back in queue since we just wanted to know which accelerator finished
                         sp_queue.put((game_data, game_info))
                     else:
@@ -1435,7 +1494,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                         available_accelerators = [dev for p, dev in actor_device_map.items() if (dev.startswith('cuda:') or dev == 'mps') and p.is_alive()]
                         if available_accelerators:
                             training_device = torch.device(available_accelerators[0])
-                            progress.print(f"Assigned training to {training_device} (CPU finished, using first available accelerator)")
                         sp_queue.put((game_data, game_info))
                 else:
                     # Old format without device info, use first available accelerator
@@ -1448,7 +1506,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                 available_accelerators = [dev for p, dev in actor_device_map.items() if (dev.startswith('cuda:') or dev == 'mps') and p.is_alive()]
                 if available_accelerators:
                     training_device = torch.device(available_accelerators[0])
-                    progress.print(f"Assigned training to {training_device} (no game finished yet, using first available accelerator)")
         
         training_columns = (
             TextColumn("[progress.description]{task.description}"), BarColumn(),
