@@ -23,12 +23,12 @@ network:
   input_channels: 119  # 8-step AlphaZero history (112) + 7 meta planes for Legacy board
   dim_piece_type: 16
   board_size: 8
-  num_residual_layers: 32
-  initial_conv_block_out_channels: [64]
-  residual_blocks_out_channels: [[64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64], [64]]
+  num_residual_layers: 16
+  initial_conv_block_out_channels: [128]
+  residual_blocks_out_channels: [[128], [128], [128], [128], [128], [128], [128], [128], [128], [128], [128], [128], [128], [128], [128], [128]]
   action_space_size: 4672
   num_pieces: 32
-  value_head_hidden_size: 256
+  value_head_hidden_size: 512
   # Policy head structure
   policy_linear_out_features: [4672] # e.g., [1024, 512, 4672]; last must equal action_space_size
   conv_bias: false # Whether to use bias in convolutional layers
@@ -44,8 +44,8 @@ env:
 
 mcts:
   _target_: MCTS.config_schema.MCTSConfig
-  iterations: 50
   c_puct: 1.41
+  iterations: 100
   temperature_start: 1.0
   temperature_end: 0.1
   temperature_decay_moves: 30
