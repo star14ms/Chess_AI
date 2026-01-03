@@ -95,9 +95,13 @@ class MCTSNode:
         node_count = self.count_nodes()
         max_depth = self.get_max_depth()
         # Calculate average branching factor (children per node)
-        total_children = sum(len(node.children) for node in self._all_nodes())
+        # Only count expanded nodes (nodes that have children) to get meaningful branching factor
+        all_nodes_list = list(self._all_nodes())
+        expanded_nodes = [node for node in all_nodes_list if len(node.children) > 0]
+        total_children = sum(len(node.children) for node in all_nodes_list)
         total_nodes = node_count
-        avg_branching = total_children / total_nodes if total_nodes > 0 else 0.0
+        # Average branching factor: only count nodes that have been expanded
+        avg_branching = total_children / len(expanded_nodes) if len(expanded_nodes) > 0 else 0.0
         return {
             'node_count': node_count,
             'max_depth': max_depth,

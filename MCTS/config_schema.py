@@ -25,6 +25,7 @@ class MCTSConfig:
     temperature_start: float = 1.0
     temperature_end: float = 0.1
     temperature_decay_moves: int = 30
+    temperature_custom_start: float = 0.1  # Temperature to use when game starts from non-standard position (endgames, custom positions, etc.)
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
     batch_size: int = 1  # Number of leaves to evaluate in one batched network call

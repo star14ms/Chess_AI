@@ -49,6 +49,7 @@ mcts:
   temperature_start: 1.0
   temperature_end: 0.1
   temperature_decay_moves: 30
+  temperature_custom_start: 0.3  # Temperature to use when game starts from non-standard position (endgames, custom positions, etc.)
   dirichlet_alpha: 0.3
   dirichlet_epsilon: 0.25
   batch_size: 32  # Maximum batch size for MCTS (dynamic batching will optimize based on GPU memory)

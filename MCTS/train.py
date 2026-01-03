@@ -367,10 +367,17 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     temp_start = cfg.mcts.temperature_start
     temp_end = cfg.mcts.temperature_end
     temp_decay_moves = cfg.mcts.temperature_decay_moves
+    temp_custom_start = cfg.mcts.get('temperature_custom_start', 0.1)
     dirichlet_alpha = cfg.mcts.dirichlet_alpha
     dirichlet_epsilon = cfg.mcts.dirichlet_epsilon
     action_space_size = cfg.network.action_space_size
     max_moves = cfg.training.max_game_moves
+    
+    # Check if we started from a non-standard position
+    # Standard starting position board part: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+    initial_board_fen = env.board.fen()
+    standard_starting_position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+    is_custom_start = not initial_board_fen.startswith(standard_starting_position)
 
     # Track MCTS tree statistics
     tree_stats_list = []  # Store stats for each move
@@ -388,7 +395,12 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         progress.start_task(task_id_game)
 
     while not terminated and not truncated and move_count < max_moves:
-        temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
+        # Use custom temperature for non-standard starting positions (endgames, custom positions, etc.)
+        if is_custom_start:
+            temperature = temp_custom_start
+        else:
+            # Normal temperature decay for standard starting positions
+            temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
         fen = env.board.fen()
         
         # Backup position tracking before MCTS (in case board gets modified during exploration)
