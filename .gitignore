@@ -175,7 +175,6 @@ outputs/
 *.pth
 *.ckpt
 *.pkl
-*.json
 output/task_visualization/*
 
 # For MAC

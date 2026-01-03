@@ -635,6 +635,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # Get game outcome/termination reason
     # Check if we terminated due to manual repetition detection
     manual_repetition = False
+    winner = None  # Track actual winner: chess.WHITE, chess.BLACK, or None for draw
     if position_counts:
         max_repetition = max(position_counts.values()) if position_counts.values() else 0
         if max_repetition >= 5:
@@ -642,11 +643,13 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             manual_repetition = True
             # Force draw result for fivefold repetition (use sentinel value)
             final_value = draw_sentinel
+            winner = None  # Draw
         elif max_repetition >= 3:
             termination_reason = "THREEFOLD_REPETITION"
             manual_repetition = True
             # Force draw result for threefold repetition (use sentinel value)
             final_value = draw_sentinel
+            winner = None  # Draw
     
     # If we didn't detect manual repetition, check board's outcome
     # (Note: board's detection may have failed if move_stack was corrupted)
@@ -654,6 +657,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         outcome = env.board.outcome(claim_draw=True)
         if outcome:
             termination_reason = outcome.termination.name
+            winner = outcome.winner  # Store actual winner (chess.WHITE, chess.BLACK, or None)
             # If board detected a draw (threefold/fivefold repetition, stalemate, etc.), ensure result is draw
             if outcome.winner is None:  # Draw
                 final_value = draw_sentinel
@@ -661,8 +665,10 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             termination_reason = "MAX_MOVES"
             # Max moves is typically a draw (use sentinel value)
             final_value = draw_sentinel
+            winner = None  # Draw
         else:
             termination_reason = "UNKNOWN"
+            winner = None
     
     # Log position tracking statistics for debugging (if there were errors)
     if position_tracking_errors > 0:
@@ -768,6 +774,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         'move_count': move_count,
         'result': final_value,  # Sentinel value for draw detection
         'actual_reward': actual_reward_for_logging if actual_reward_for_logging is not None else final_value,  # Actual computed reward
+        'winner': winner,  # Store actual winner: chess.WHITE, chess.BLACK, or None for draw
         'tree_stats': avg_tree_stats if avg_tree_stats else None,
         'draw_reward': draw_reward,  # Store draw_reward for reference in statistics
         'initial_fen': initial_fen,  # Store initial board FEN for game history
@@ -1145,17 +1152,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
                             if len(games_data_collected) >= max_experiences:
                                 break
-                        # Update game outcome counters (final result)
+                        # Update game outcome counters (use actual winner, not result_value perspective)
                         try:
-                            result_value = game_info.get('result', None)
-                            game_draw_reward = game_info.get('draw_reward', draw_sentinel)
-                            # Draws use sentinel value for comparison, wins are +1.0, losses are -1.0
-                            if result_value is None or abs(result_value - draw_sentinel) < 0.01:
+                            import chess
+                            winner = game_info.get('winner', None)
+                            if winner is None:
+                                # Draw
                                 num_draws += 1
                                 draw_reasons[game_info['termination']] += 1
-                            elif result_value > 0:
+                            elif winner == chess.WHITE:
+                                # White won
                                 num_wins += 1
-                            elif result_value < 0:
+                            elif winner == chess.BLACK:
+                                # Black won
                                 num_losses += 1
                         except Exception:
                             pass
@@ -1189,16 +1198,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
                                 if len(games_data_collected) >= max_experiences:
                                     break
-                            # Update game outcome counters (final result)
+                            # Update game outcome counters (use actual winner, not result_value perspective)
                             try:
-                                result_value = game_info.get('result', None)
-                                # Draws use sentinel value for comparison, wins are +1.0, losses are -1.0
-                                if result_value is None or abs(result_value - draw_sentinel) < 0.01:
+                                import chess
+                                winner = game_info.get('winner', None)
+                                if winner is None:
+                                    # Draw
                                     num_draws += 1
                                     draw_reasons[game_info['termination']] += 1
-                                elif result_value > 0:
+                                elif winner == chess.WHITE:
+                                    # White won
                                     num_wins += 1
-                                elif result_value < 0:
+                                elif winner == chess.BLACK:
+                                    # Black won
                                     num_losses += 1
                             except Exception:
                                 pass
@@ -1231,16 +1243,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 if task_id_selfplay is not None:
                                     progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
                                 break
-                            # Update game outcome counters
+                            # Update game outcome counters (use actual winner, not result_value perspective)
                             try:
-                                result_value = game_info.get('result', None)
-                                # Draws use sentinel value for comparison, wins are +1.0, losses are -1.0
-                                if result_value is None or abs(result_value - draw_sentinel) < 0.01:
+                                import chess
+                                winner = game_info.get('winner', None)
+                                if winner is None:
+                                    # Draw
                                     num_draws += 1
                                     draw_reasons[game_info['termination']] += 1
-                                elif result_value > 0:
+                                elif winner == chess.WHITE:
+                                    # White won
                                     num_wins += 1
-                                elif result_value < 0:
+                                elif winner == chess.BLACK:
+                                    # Black won
                                     num_losses += 1
                             except Exception:
                                 pass
@@ -1326,17 +1341,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                         games_data_collected.extend(game_data)
                         games_completed_this_iter += 1
                         game_moves_list.append(game_info)
-                        # Infer final game result from the first tuple's value target (first player's perspective)
+                        # Update game outcome counters (use actual winner, not result_value perspective)
                         try:
-                            result_value = game_data[0][3]
-                            game_draw_reward = game_info.get('draw_reward', draw_sentinel)
-                            # Draws use sentinel value for comparison, wins are +1.0, losses are -1.0
-                            if result_value is None or abs(result_value - draw_sentinel) < 0.01:
+                            import chess
+                            winner = game_info.get('winner', None)
+                            if winner is None:
+                                # Draw
                                 num_draws += 1
                                 draw_reasons[game_info['termination']] += 1
-                            elif result_value > 0:
+                            elif winner == chess.WHITE:
+                                # White won
                                 num_wins += 1
-                            elif result_value < 0:
+                            elif winner == chess.BLACK:
+                                # Black won
                                 num_losses += 1
                         except Exception:
                             # If unexpected structure, skip counting for this game
@@ -1398,17 +1415,20 @@ def run_training_loop(cfg: DictConfig) -> None:
                 game_moves_list.append(game_info)
                 # Track device contribution (sequential mode uses training device)
                 device_contributions[str(device)] += 1
-                # Count outcomes from the final game result (chess: +1 white, -1 black, draw_reward for draw)
+                # Count outcomes from the actual winner (not result_value perspective)
                 if game_data:
                     try:
-                        result_value = game_info.get('result', None)
-                        # Draws use sentinel value for comparison, wins are +1.0, losses are -1.0
-                        if result_value is None or abs(result_value - draw_sentinel) < 0.01:
+                        import chess
+                        winner = game_info.get('winner', None)
+                        if winner is None:
+                            # Draw
                             num_draws += 1
                             draw_reasons[game_info['termination']] += 1
-                        elif result_value > 0:
+                        elif winner == chess.WHITE:
+                            # White won
                             num_wins += 1
-                        elif result_value < 0:
+                        elif winner == chess.BLACK:
+                            # Black won
                             num_losses += 1
                     except Exception:
                         pass
@@ -1478,14 +1498,15 @@ def run_training_loop(cfg: DictConfig) -> None:
             games_file = os.path.join(game_history_dir, f"games_iter_{iteration+1}.txt")
             with open(games_file, 'w') as f:
                 for i, game_info in enumerate(game_moves_list):
-                    # Draws use sentinel value for comparison, wins are +1.0, losses are -1.0
-                    result_value = game_info.get('result', None)
-                    if result_value is None or abs(result_value - draw_sentinel) < 0.01:
-                        result_str = "1/2-1/2"
-                    elif result_value > 0:
-                        result_str = "1-0"
+                    # Use actual winner to determine result string
+                    import chess
+                    winner = game_info.get('winner', None)
+                    if winner is None:
+                        result_str = "1/2-1/2"  # Draw
+                    elif winner == chess.WHITE:
+                        result_str = "1-0"  # White won
                     else:
-                        result_str = "0-1"
+                        result_str = "0-1"  # Black won
                     f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
                     # Write initial FEN and quality if available
                     initial_fen = game_info.get('initial_fen', None)
