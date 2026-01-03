@@ -1,0 +1,87 @@
+{
+  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1": {
+    "weight": 0.5,
+    "quality": "equal"
+  },
+  "8/8/8/4k3/8/3K4/Q7/8 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/3k4/8/3K4/R7/8 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/3k4/8/3K4/1BB5/8 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/4k3/8/3K4/8/2B1N3 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/4k3/8/4P3/4K3/8 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "equal"
+  },
+  "8/8/8/8/8/4P3/4K3/6kr w - - 0 1": {
+    "weight": 0.025,
+    "quality": "losing"
+  },
+  "8/8/8/4k3/8/3K4/Q7/7r w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "r1bqkb1r/pppp1ppp/2n2n2/4p1N1/2B1P3/8/PPPP1PPP/RNBQK2R b KQkq - 5 4": {
+    "weight": 0.025,
+    "quality": "equal"
+  },
+  "r1b1kbnr/pppp1Npp/8/8/2BnP3/8/PPPP1PqP/RNBQK2R w KQkq - 0 6": {
+    "weight": 0.025,
+    "quality": "losing"
+  },
+  "r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3": {
+    "weight": 0.025,
+    "quality": "equal"
+  },
+  "r1bBk2r/ppp2ppp/2p5/2b5/4n3/3P4/PPP2PPP/RN1QKB1R b KQkq - 0 7": {
+    "weight": 0.025,
+    "quality": "losing"
+  },
+  "r1bqkbnr/pppp2p1/2n4p/8/2BpP3/8/PPP2PPP/RNBQK2R w KQ - 2 7": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/3k4/8/3K4/6RR/8 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "r3k2r/ppp2ppp/8/8/8/8/PPP2PPP/R3K2R w KQkq - 0 1": {
+    "weight": 0.025,
+    "quality": "equal"
+  },
+  "8/8/8/4k3/8/3KP3/4N3/7q w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/3k4/8/3K4/NN6/8 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "4q3/8/8/4k3/8/3K4/8/1R6 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/4k3/8/3K4/R7/4b3 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/4k3/8/3K4/R7/5n2 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "winning"
+  },
+  "8/8/8/8/4p3/6K1/4P3/6k1 w - - 0 1": {
+    "weight": 0.025,
+    "quality": "equal"
+  }
+}
+

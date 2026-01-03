@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from torch import nn
 import pickle
 import gzip
+import json
 import chess
 import random
 
@@ -320,7 +321,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     if env is None:
         env = create_environment(cfg, render=device.type == 'cpu' and not cfg.training.get('use_multiprocessing', False))
     
-    # Handle initial_board_fen: can be dict (weighted selection), string (legacy), or None
+    # Handle initial_board_fen: can be dict (weighted selection), string (legacy FEN or JSON file path), or None
     initial_fen = None
     initial_position_quality = None
     initial_board_fen_cfg = cfg.training.get('initial_board_fen', None)
@@ -336,10 +337,48 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             # If conversion fails, try to use as-is (might already be a plain dict)
             pass
         
+        # Check if it's a string that looks like a file path (ends with .json)
+        if isinstance(initial_board_fen_cfg, str) and initial_board_fen_cfg.endswith('.json'):
+            # Load from JSON file
+            # Handle both relative and absolute paths
+            json_path = initial_board_fen_cfg
+            if not os.path.isabs(json_path):
+                # If relative, try to resolve relative to config directory or project root
+                # Get the directory where this train.py file is located
+                train_file_dir = os.path.dirname(os.path.abspath(__file__))
+                # Project root is one level up from MCTS directory
+                project_root = os.path.abspath(os.path.join(train_file_dir, '..'))
+                # Try multiple potential paths
+                potential_paths = [
+                    json_path,  # Try as-is (might be relative to current working directory)
+                    os.path.join(project_root, json_path),  # Relative to project root
+                    os.path.join(project_root, 'config', os.path.basename(json_path)),  # In config/ directory
+                    os.path.join(train_file_dir, json_path),  # Relative to MCTS directory
+                ]
+                # If path contains 'config/', try that too
+                if 'config/' in json_path:
+                    potential_paths.insert(0, os.path.join(project_root, json_path))
+                
+                for path in potential_paths:
+                    if os.path.exists(path):
+                        json_path = os.path.abspath(path)
+                        break
+                else:
+                    # If none found, use the original path and let it fail with a clear error
+                    json_path = os.path.join(project_root, json_path)
+            try:
+                with open(json_path, 'r') as f:
+                    initial_board_fen_cfg = json.load(f)
+                if isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
+                    initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
+            except Exception as e:
+                print(f"Warning: Failed to load initial_board_fen from JSON file {json_path}: {e}")
+                initial_board_fen_cfg = None
         # Now check if it's a dict (plain dict or OmegaConf DictConfig which is a dict subclass)
-        if isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
+        elif isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
             initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
         elif isinstance(initial_board_fen_cfg, str):
+            # Legacy: single FEN string
             initial_fen = initial_board_fen_cfg
     
     options = {
