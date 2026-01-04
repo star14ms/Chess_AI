@@ -186,3 +186,4 @@ torchview_custom/
 model_viz/
 videos/
 game_history/
+.cursor/
