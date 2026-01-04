@@ -6,6 +6,7 @@ from collections import deque
 import os
 import gc
 import time
+import logging
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -541,11 +542,44 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                         break
         
         if action_to_take in env.board.legal_actions:
-            move = env.action_space._action_to_move(action_to_take)
-            san_move = env.board.san(move)
+            # Use board.action_id_to_move() to get the actual legal move that matches the action ID
+            # This ensures we get the exact move the board considers legal for this action ID
+            move = env.board.action_id_to_move(action_to_take)
+            if move is not None:
+                try:
+                    san_move = env.board.san(move)
+                except Exception as e:
+                    # board.san() can fail even for legal moves in some edge cases (python-chess limitation)
+                    # Fallback to UCI notation if SAN generation fails
+                    san_move = move.uci()
+                    # Log model output when SAN generation fails
+                    policy_value = mcts_policy[action_to_take - 1] if mcts_policy is not None and action_to_take - 1 < len(mcts_policy) else None
+                    logging.warning(
+                        f"SAN generation failed for action {action_to_take}: "
+                        f"move={move.uci()}, policy_value={policy_value}, "
+                        f"root_value={root_value}, FEN={env.board.fen()}, error={e}"
+                    )
+            else:
+                # Should not happen if action is in legal_actions, but handle gracefully
+                san_move = "ILLEGAL"
+                move = None
+                # Log model output when move is None despite being in legal_actions
+                policy_value = mcts_policy[action_to_take - 1] if mcts_policy is not None and action_to_take - 1 < len(mcts_policy) else None
+                logging.warning(
+                    f"action_id_to_move returned None for action {action_to_take}: "
+                    f"policy_value={policy_value}, root_value={root_value}, "
+                    f"FEN={env.board.fen()}, legal_actions_count={len(env.board.legal_actions)}"
+                )
         else:
             san_move = "ILLEGAL"
             move = None
+            # Log model output when action is not in legal_actions
+            policy_value = mcts_policy[action_to_take - 1] if mcts_policy is not None and action_to_take - 1 < len(mcts_policy) else None
+            logging.warning(
+                f"Action {action_to_take} not in legal_actions: "
+                f"policy_value={policy_value}, root_value={root_value}, "
+                f"FEN={env.board.fen()}, legal_actions_count={len(env.board.legal_actions)}"
+            )
         move_list_san.append(san_move)
         
         obs, _, terminated, truncated, info = env.step(action_to_take)
@@ -1700,7 +1734,6 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%}")
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
-        progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)})")
         
         # Record metrics for learning curve visualization
         history['policy_loss'].append(avg_policy_loss)
@@ -1720,7 +1753,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
         
         checkpoint_size_mb = os.path.getsize(os.path.join(checkpoint_dir, "model.pth")) / (1024 * 1024)
-        progress.print(f"Checkpoint saved at iteration {iteration + 1} with {len(replay_buffer)} experiences in replay buffer ({checkpoint_size_mb:.1f} MB)")
+        progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)}) | Checkpoint saved with {len(replay_buffer)} experiences in replay buffer ({checkpoint_size_mb:.1f} MB)")
         
         # Check if training would exceed maximum time after next iteration
         # Do this AFTER saving checkpoint so current iteration's work is preserved

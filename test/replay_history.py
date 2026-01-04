@@ -170,8 +170,21 @@ def _boards_from_san(moves_san: List[str], start_fen: Optional[str] = None) -> T
             boards.append(board.copy(stack=False))
             sans.append(san)
         except Exception as e:
-            print(f"Warning: Could not parse move '{san}': {e}")
-            break
+            # Try alternative parsing: remove check/mate symbols and try again
+            # Sometimes python-chess's parse_san() is strict about check symbols
+            san_clean = san.rstrip('+#')
+            if san_clean != san:
+                try:
+                    move = board.parse_san(san_clean)
+                    board.push(move)
+                    boards.append(board.copy(stack=False))
+                    sans.append(san)  # Keep original notation for display
+                except Exception as e2:
+                    print(f"Warning: Could not parse move '{san}': {e} (also failed with cleaned version '{san_clean}': {e2})")
+                    break
+            else:
+                print(f"Warning: Could not parse move '{san}': {e}")
+                break
 
     return boards, sans
 
@@ -316,8 +329,6 @@ def replay_game_pygame(
                 cached_idx = None  # Force cache invalidation
             
             draw(boards[idx], sans[idx], idx)
-            
-            print(boards[idx].turn)
 
     except KeyboardInterrupt:
         # Handle cell interruption in Jupyter
@@ -336,5 +347,5 @@ def replay_game_pygame(
 
 
 # Example usage:
-games = parse_game_file("./game_history/games_iter_43.txt")
-replay_game_pygame(games[10])
+games = parse_game_file("./game_history/games_iter_27.txt")
+replay_game_pygame(games[0])
