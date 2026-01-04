@@ -174,16 +174,36 @@ class RewardComputer:
         Returns:
             float: Position-aware draw reward
         """
+        # Adjust quality for current player's perspective
+        # initial_position_quality is from White's perspective, so we need to flip it for Black
+        if initial_position_quality is not None:
+            if is_first_player:
+                # White's turn: use quality as-is (already from White's perspective)
+                quality = initial_position_quality
+            else:
+                # Black's turn: flip quality from White's perspective to Black's perspective
+                if initial_position_quality == "winning":
+                    quality = "losing"
+                elif initial_position_quality == "losing":
+                    quality = "winning"
+                else:  # "equal"
+                    quality = "equal"
+        else:
+            quality = None
+        
         # Get reward from table if available
-        if self.draw_reward_table and termination_type:
+        if self.draw_reward_table and termination_type and quality:
             termination_rewards = self.draw_reward_table.get(termination_type, None)
             if termination_rewards:
-                reward = termination_rewards.get(initial_position_quality, None)
+                reward = termination_rewards.get(quality, None)
                 if reward is not None:
                     return reward
         
         # Fallback: use default rewards
-        return self.default_rewards.get(initial_position_quality, self.default_draw_reward if self.default_draw_reward is not None else -0.1)
+        if quality:
+            return self.default_rewards.get(quality, self.default_draw_reward if self.default_draw_reward is not None else -0.1)
+        else:
+            return self.default_draw_reward if self.default_draw_reward is not None else -0.1
     
     def evaluate_initial_position(self, initial_obs, is_first_player: bool) -> Optional[str]:
         """Evaluate initial board position and return quality.
