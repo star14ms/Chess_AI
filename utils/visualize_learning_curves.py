@@ -35,6 +35,14 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     history = checkpoint['history']
     iteration = checkpoint.get('iteration', len(history['policy_loss']))
     
+    # Handle backward compatibility: initialize draw statistics if missing
+    if 'non_draw_count' not in history:
+        history['non_draw_count'] = [0] * len(history['policy_loss'])
+    if 'repetition_draw_count' not in history:
+        history['repetition_draw_count'] = [0] * len(history['policy_loss'])
+    if 'other_draw_count' not in history:
+        history['other_draw_count'] = [0] * len(history['policy_loss'])
+    
     print(f"Loaded training history with {iteration} iterations")
     print(f"Total games simulated: {checkpoint.get('total_games_simulated', 'N/A')}")
     
@@ -42,7 +50,7 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     iterations = list(range(1, len(history['policy_loss']) + 1))
     
     # Create figure with subplots
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle(f'Training Learning Curves (Iteration {iteration})', fontsize=16)
     
     # Plot 1: Policy Loss
@@ -61,21 +69,32 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     ax.set_title('Value Loss Over Time')
     ax.grid(True, alpha=0.3)
     
-    # Plot 3: Illegal Move Ratio
+    # Plot 3: Combined Illegal Move Metrics
     ax = axes[1, 0]
-    ax.plot(iterations, [r * 100 for r in history['illegal_move_ratio']], 'orange', linewidth=2)
+    ax.plot(iterations, [r * 100 for r in history['illegal_move_ratio']], 'orange', linewidth=2, label='Illegal Move Ratio (%)', marker='o', markersize=3)
+    ax.plot(iterations, [p * 100 for p in history['illegal_move_prob']], 'purple', linewidth=2, label='Illegal Move Probability (%)', marker='s', markersize=3)
     ax.set_xlabel('Iteration')
-    ax.set_ylabel('Illegal Move Ratio (%)')
-    ax.set_title('Illegal Move Ratio (Argmax) Over Time')
+    ax.set_ylabel('Percentage (%)')
+    ax.set_title('Illegal Move Metrics Over Time')
     ax.grid(True, alpha=0.3)
+    ax.legend(loc='best')
     
-    # Plot 4: Illegal Move Probability Mass
+    # Plot 4: Draw Statistics
     ax = axes[1, 1]
-    ax.plot(iterations, [p * 100 for p in history['illegal_move_prob']], 'purple', linewidth=2)
+    # Handle backward compatibility: if draw stats don't exist, use zeros
+    non_draw = history.get('non_draw_count', [0] * len(iterations))
+    repetition_draw = history.get('repetition_draw_count', [0] * len(iterations))
+    other_draw = history.get('other_draw_count', [0] * len(iterations))
+    
+    # Stacked area chart or grouped bar chart - using line plot for clarity
+    ax.plot(iterations, non_draw, 'g-', linewidth=2, label='Non-Draw Games', marker='o', markersize=3)
+    ax.plot(iterations, repetition_draw, 'orange', linewidth=2, label='Repetition Draws', marker='s', markersize=3)
+    ax.plot(iterations, other_draw, 'red', linewidth=2, label='Other Draws', marker='^', markersize=3)
     ax.set_xlabel('Iteration')
-    ax.set_ylabel('Illegal Move Probability (%)')
-    ax.set_title('Illegal Move Probability Mass Over Time')
+    ax.set_ylabel('Game Count')
+    ax.set_title('Game Outcomes Over Time')
     ax.grid(True, alpha=0.3)
+    ax.legend(loc='best')
     
     plt.tight_layout()
     
@@ -94,6 +113,15 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     print(f"Final Value Loss: {history['value_loss'][-1]:.4f}")
     print(f"Final Illegal Move Ratio: {history['illegal_move_ratio'][-1]:.2%}")
     print(f"Final Illegal Move Prob: {history['illegal_move_prob'][-1]:.2%}")
+    
+    # Print draw statistics if available
+    if 'non_draw_count' in history and len(history['non_draw_count']) > 0:
+        total_games = history['non_draw_count'][-1] + history.get('repetition_draw_count', [0])[-1] + history.get('other_draw_count', [0])[-1]
+        if total_games > 0:
+            print(f"\n=== Game Outcomes (Last Iteration) ===")
+            print(f"Non-Draw Games: {history['non_draw_count'][-1]} ({history['non_draw_count'][-1]/total_games:.1%})")
+            print(f"Repetition Draws: {history.get('repetition_draw_count', [0])[-1]} ({history.get('repetition_draw_count', [0])[-1]/total_games:.1%})")
+            print(f"Other Draws: {history.get('other_draw_count', [0])[-1]} ({history.get('other_draw_count', [0])[-1]/total_games:.1%})")
 
 
 def main():

@@ -978,6 +978,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         'value_loss': [],
         'illegal_move_ratio': [],
         'illegal_move_prob': [],
+        'non_draw_count': [],
+        'repetition_draw_count': [],
+        'other_draw_count': [],
     }
 
     # Check for existing checkpoint
@@ -1041,6 +1044,13 @@ def run_training_loop(cfg: DictConfig) -> None:
             # Load training history if available
             if 'history' in checkpoint:
                 history = checkpoint['history']
+                # Initialize new draw statistics fields if they don't exist (for backward compatibility)
+                if 'non_draw_count' not in history:
+                    history['non_draw_count'] = [0] * len(history['policy_loss'])
+                if 'repetition_draw_count' not in history:
+                    history['repetition_draw_count'] = [0] * len(history['policy_loss'])
+                if 'other_draw_count' not in history:
+                    history['other_draw_count'] = [0] * len(history['policy_loss'])
                 progress.print(f"Loaded training history with {len(history['policy_loss'])} recorded iterations")
             
             # Try to load replay buffer from checkpoint
@@ -1735,11 +1745,20 @@ def run_training_loop(cfg: DictConfig) -> None:
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
         
+        # Calculate draw statistics for this iteration
+        repetition_draw_types = {'THREEFOLD_REPETITION', 'FIVEFOLD_REPETITION'}
+        repetition_draw_count = sum(draw_reasons.get(dt, 0) for dt in repetition_draw_types)
+        other_draw_count = num_draws - repetition_draw_count
+        non_draw_count = games_completed_this_iter - num_draws
+        
         # Record metrics for learning curve visualization
         history['policy_loss'].append(avg_policy_loss)
         history['value_loss'].append(avg_value_loss)
         history['illegal_move_ratio'].append(avg_illegal_ratio)
         history['illegal_move_prob'].append(avg_illegal_prob_mass)
+        history['non_draw_count'].append(non_draw_count)
+        history['repetition_draw_count'].append(repetition_draw_count)
+        history['other_draw_count'].append(other_draw_count)
 
         # Save checkpoint after each iteration
         checkpoint = {
