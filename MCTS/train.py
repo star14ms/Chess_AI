@@ -428,6 +428,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # the board state is reset or copied during MCTS exploration or rendering
     position_counts = {}  # Track position occurrences for repetition detection
     position_tracking_errors = 0  # Track errors in position tracking for debugging
+    
+    # Track previous turn to detect same-color double moves
+    previous_turn = None  # Will be set after first move
 
     task_id_game = None
     if progress is not None:
@@ -455,6 +458,14 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         except Exception as e:
             position_tracking_errors += 1
             # Log but continue - this is just a backup, main tracking happens after env.step()
+        
+        # Save board state before MCTS to restore it afterwards
+        # This ensures board state is correct even if MCTS exploration modifies it
+        # Save both the board copy AND the FEN string to ensure correct restoration
+        # The FEN string is immutable and won't be affected by any board modifications
+        board_state_before_mcts = env.board.copy(stack=True)
+        fen_string_before_mcts = env.board.fen()  # Save FEN as immutable string
+        foul_before_mcts = getattr(env.board, 'foul', False)  # Save foul flag
         
         if cfg.mcts.iterations > 0:
             # Use stack=False for MCTS nodes - they only need current position (FEN) for exploration.
@@ -523,66 +534,142 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         # Clear mcts_policy after appending to help GC
         mcts_policy = None
         
-        # Convert action to move and get SAN notation before making the move
-        # Skip set_fen() - the board is already in the correct state
-        # MCTS doesn't modify the board when mcts_env is None (normal training mode)
-        # Only restore stacks if MCTS might have modified the board (when rendering)
-        if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False):
-            # MCTS might have modified the board, so restore from snapshot
-            board_stack_snapshot = env.board.copy(stack=True)
-            env.board.set_fen(fen)
-            env.board.foul = False
-            # Rebuild _stack by replaying moves from move_stack
-            if hasattr(env.board, "move_stack") and hasattr(board_stack_snapshot, "move_stack"):
-                valid_moves = [move for move in board_stack_snapshot.move_stack if move is not None]
-                for move in valid_moves:
-                    try:
-                        env.board.push(move)
-                    except Exception:
-                        break
+        # Restore board state after MCTS to ensure it's in the correct state
+        # MCTS might have modified the board during exploration, so we restore from the saved state
+        # This is critical to ensure action_id_to_move() returns legal moves
+        try:
+            # Restore board from the FEN string saved before MCTS (more reliable than board copy)
+            # This ensures we restore to the exact state we saved, even if the board copy was modified
+            env.board.set_fen(fen_string_before_mcts)
+            env.board.foul = foul_before_mcts
+            
+            # Note: We don't restore move_stack because set_fen() already restores the board state correctly
+            # The FEN contains all necessary information (position, turn, castling rights, en passant)
+            # Repetition detection uses FEN-based position tracking, not move_stack
+        except Exception as e:
+            # If restoration fails, log warning but continue
+            # The board might still be in a usable state
+            logging.warning(
+                f"Failed to restore board state after MCTS: {e}. "
+                f"Current FEN: {env.board.fen()}, Expected FEN: {board_state_before_mcts.fen()}"
+            )
         
-        if action_to_take in env.board.legal_actions:
-            # Use board.action_id_to_move() to get the actual legal move that matches the action ID
-            # This ensures we get the exact move the board considers legal for this action ID
-            move = env.board.action_id_to_move(action_to_take)
-            if move is not None:
-                try:
-                    san_move = env.board.san(move)
-                except Exception as e:
-                    # board.san() can fail even for legal moves in some edge cases (python-chess limitation)
-                    # Fallback to UCI notation if SAN generation fails
-                    san_move = move.uci()
-                    # Log model output when SAN generation fails
-                    policy_value = mcts_policy[action_to_take - 1] if mcts_policy is not None and action_to_take - 1 < len(mcts_policy) else None
-                    logging.warning(
-                        f"SAN generation failed for action {action_to_take}: "
-                        f"move={move.uci()}, policy_value={policy_value}, "
-                        f"root_value={root_value}, FEN={env.board.fen()}, error={e}"
-                    )
-            else:
-                # Should not happen if action is in legal_actions, but handle gracefully
-                san_move = "ILLEGAL"
-                move = None
-                # Log model output when move is None despite being in legal_actions
-                policy_value = mcts_policy[action_to_take - 1] if mcts_policy is not None and action_to_take - 1 < len(mcts_policy) else None
-                logging.warning(
-                    f"action_id_to_move returned None for action {action_to_take}: "
-                    f"policy_value={policy_value}, root_value={root_value}, "
-                    f"FEN={env.board.fen()}, legal_actions_count={len(env.board.legal_actions)}"
-                )
-        else:
-            san_move = "ILLEGAL"
-            move = None
-            # Log model output when action is not in legal_actions
+        # Log only if board restoration failed (position differs, not just move counter) or action is no longer legal
+        # Compare only the position part of FEN (first 4 parts), not move counters
+        fen_after_parts = env.board.fen().split()
+        fen_before_parts = board_state_before_mcts.fen().split()
+        position_matches = (len(fen_after_parts) >= 4 and len(fen_before_parts) >= 4 and 
+                           fen_after_parts[:4] == fen_before_parts[:4])
+        
+        if not position_matches or action_to_take not in env.board.legal_actions:
+            pass  # Logging handled below if action is not legal
+        
+        # Record SAN notation BEFORE playing the move, but ensure board is in correct state
+        # This prevents issues with pop/push affecting turn alternation
+        if action_to_take not in env.board.legal_actions:
+            # Log illegal action attempt
             policy_value = mcts_policy[action_to_take - 1] if mcts_policy is not None and action_to_take - 1 < len(mcts_policy) else None
             logging.warning(
                 f"Action {action_to_take} not in legal_actions: "
                 f"policy_value={policy_value}, root_value={root_value}, "
                 f"FEN={env.board.fen()}, legal_actions_count={len(env.board.legal_actions)}"
             )
+            san_move = "ILLEGAL"
+        else:
+            # Get the move and record SAN BEFORE playing it
+            # This ensures we record from the correct board state without affecting turn alternation
+            move = env.board.action_id_to_move(action_to_take)
+            
+            if move is not None:
+                # Verify the move is actually legal before trying to get SAN
+                # This prevents errors if board state changed or action_id_to_move returned wrong move
+                legal_moves_list = list(env.board.legal_moves)
+                move_in_legal = move in legal_moves_list
+                
+                # Log only if move is not in legal_moves
+                if not move_in_legal:
+                    pass  # Move will be handled as illegal below
+                
+                if move_in_legal:
+                    # Get SAN notation for the move
+                    # Note: legal_moves override ensures moves that don't escape check are filtered out
+                    try:
+                        san_move = env.board.san(move)
+                    except Exception as e:
+                        # board.san() can fail even for legal moves in some edge cases (python-chess limitation)
+                        # Fallback to UCI notation if SAN generation fails
+                        san_move = move.uci()
+                        logging.warning(
+                            f"SAN generation failed for action {action_to_take}: "
+                            f"move={move.uci()}, root_value={root_value}, "
+                            f"FEN={env.board.fen()}, error={e}"
+                        )
+                else:
+                    # Move is not legal - this shouldn't happen but handle gracefully
+                    # Use UCI notation as fallback
+                    san_move = move.uci()
+                    logging.warning(
+                        f"action_id_to_move returned non-legal move for action {action_to_take}: "
+                        f"move={move.uci()}, FEN={env.board.fen()}, "
+                        f"legal_actions_count={len(env.board.legal_actions)}, "
+                        f"move_in_legal_moves={move in env.board.legal_moves}"
+                    )
+                    # Logging already done above in the "if not move_in_legal" block
+            else:
+                # Should not happen if action is in legal_actions, but handle gracefully
+                san_move = "ILLEGAL"
+                logging.warning(
+                    f"action_id_to_move returned None for action {action_to_take}: "
+                    f"root_value={root_value}, "
+                    f"FEN={env.board.fen()}, legal_actions_count={len(env.board.legal_actions)}"
+                )
+        
         move_list_san.append(san_move)
         
+        # Check for same-color double moves before applying the move
+        current_turn_before_move = env.board.turn
+        current_color_before = 'White' if current_turn_before_move == chess.WHITE else 'Black'
+        
+        # Also check if the move being attempted matches the current turn
+        # This catches cases where a move for the wrong color is being attempted
+        move_color_mismatch = False
+        if san_move != "ILLEGAL" and action_to_take in env.board.legal_actions:
+            try:
+                move = env.board.action_id_to_move(action_to_take)
+                if move is not None:
+                    # Check if the move's from_square has a piece of the correct color
+                    piece = env.board.piece_at(move.from_square)
+                    if piece is not None:
+                        piece_color = 'White' if piece.color == chess.WHITE else 'Black'
+                        if piece_color != current_color_before:
+                            move_color_mismatch = True
+            except Exception:
+                pass  # If we can't check, continue
+        
+        if previous_turn is not None and current_turn_before_move == previous_turn:
+            # Same color is trying to move twice in a row!
+            logging.error(
+                f"CRITICAL BUG: Same color double move detected at move {move_count + 1}! "
+                f"Previous turn: {'White' if previous_turn == chess.WHITE else 'Black'}, "
+                f"Current turn: {current_color_before}, "
+                f"Move: {san_move}, Action: {action_to_take}, "
+                f"FEN: {env.board.fen()}"
+            )
+        
+        if move_color_mismatch:
+            # Move is for the wrong color
+            logging.error(
+                f"CRITICAL BUG: Move color mismatch at move {move_count + 1}! "
+                f"Current turn: {current_color_before}, "
+                f"Move: {san_move}, Action: {action_to_take}, "
+                f"FEN: {env.board.fen()}"
+            )
+        
+        # Now play the move - this will switch turns correctly
         obs, _, terminated, truncated, info = env.step(action_to_take)
+        
+        # Update previous_turn for next iteration (after move, turn has changed)
+        previous_turn = current_turn_before_move  # Store the turn BEFORE the move (who just moved)
         
         # Manual repetition detection (fallback if board's move_stack is corrupted)
         # Track position using FEN without move counters (first 4 parts: board, active color, castling, en passant)

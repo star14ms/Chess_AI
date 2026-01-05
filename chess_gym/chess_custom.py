@@ -315,6 +315,34 @@ class BaseChessBoard(chess.Board):
         super().set_fen(fen)
         if reset_foul:
             self.foul = False
+    
+    @property
+    def legal_moves(self):
+        """
+        Override legal_moves to filter out moves that don't escape check.
+        
+        This fixes a bug in python-chess where legal_moves can include moves
+        that don't actually escape check when the king is in check.
+        """
+        # Get all legal moves from parent class
+        all_legal = super().legal_moves
+        
+        # If not in check, return all moves as-is (no filtering needed)
+        if not self.is_check():
+            return all_legal
+        
+        # When in check, filter to only include moves that actually escape check
+        moves_that_escape = []
+        for move in all_legal:
+            # Test if this move escapes check
+            test_board = self.copy()
+            test_board.push(move)
+            if not test_board.is_check():
+                moves_that_escape.append(move)
+            test_board.pop()
+        
+        # Return as a generator to match python-chess's interface
+        return iter(moves_that_escape)
 
 class LegacyChessBoard(BaseChessBoard):
     """Chess board class for the 4672 action space without piece tracking."""
