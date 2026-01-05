@@ -52,7 +52,7 @@ mcts:
   temperature_custom_start: 1.0
   dirichlet_alpha: 0.3
   dirichlet_epsilon: 0.25
-  batch_size: 32  # Maximum batch size for MCTS (dynamic batching will optimize based on GPU memory)
+  batch_size: 64  # Maximum batch size for MCTS (dynamic batching will optimize based on GPU memory)
   
 
 optimizer:

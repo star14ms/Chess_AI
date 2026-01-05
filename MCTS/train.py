@@ -173,6 +173,8 @@ class ReplayBuffer:
         batch_indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         batch = [self.buffer[i] for i in batch_indices]
 
+        # Pre-allocate states array for better performance
+        first_state = batch[0][0]
         states = np.array([exp[0] for exp in batch], dtype=np.float32)
         
         # Normalize policy targets to expected action space size
@@ -185,28 +187,27 @@ class ReplayBuffer:
             else:
                 action_space_size = 4672  # Default fallback
         
-        normalized_policies = []
-        for exp in batch:
+        # Pre-allocate policy array and use vectorized operations where possible
+        normalized_policies = np.zeros((batch_size, action_space_size), dtype=np.float32)
+        for i, exp in enumerate(batch):
             policy = exp[1]
             if isinstance(policy, np.ndarray):
-                if len(policy) == action_space_size:
-                    normalized_policies.append(policy)
-                elif len(policy) < action_space_size:
+                policy_len = len(policy)
+                if policy_len == action_space_size:
+                    normalized_policies[i] = policy
+                elif policy_len < action_space_size:
                     # Pad with zeros if smaller
-                    padded = np.zeros(action_space_size, dtype=np.float32)
-                    padded[:len(policy)] = policy
-                    normalized_policies.append(padded)
+                    normalized_policies[i, :policy_len] = policy
                 else:
                     # Truncate if larger
-                    normalized_policies.append(policy[:action_space_size])
-            else:
-                # Create zero array if not an array (shouldn't happen, but defensive)
-                normalized_policies.append(np.zeros(action_space_size, dtype=np.float32))
+                    normalized_policies[i] = policy[:action_space_size]
+            # else: already zeros from pre-allocation
         
-        policy_targets = np.array(normalized_policies, dtype=np.float32)
+        policy_targets = normalized_policies
         # Ensure FENs are handled as a list of strings, not converted to numpy array directly if they vary in length etc.
         # fens = [exp[2] for exp in batch] 
         boards = [exp[2] for exp in batch] # Now these are board objects
+        # Pre-allocate value targets array
         value_targets = np.array([exp[3] for exp in batch], dtype=np.float32).reshape(-1, 1)
 
         return states, policy_targets, boards, value_targets # Return boards
@@ -421,7 +422,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 
     # Track MCTS tree statistics
     tree_stats_list = []  # Store stats for each move
-    gpu_cleanup_interval = 5  # Clean GPU memory every N moves
+    gpu_cleanup_interval = 15  # Clean GPU memory every N moves (increased from 5 to reduce overhead)
 
     # Manual position tracking for repetition detection (fallback if board's move_stack is corrupted)
     # This tracks positions independently of the board's move_stack, making it robust even when
@@ -437,6 +438,10 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
         progress.start_task(task_id_game)
 
+    # Cache FEN string to avoid repeated calls to env.board.fen()
+    # FEN is only recomputed after board changes (after env.step())
+    cached_fen = env.board.fen()
+
     while not terminated and not truncated and move_count < max_moves:
         # Use custom temperature for non-standard starting positions (endgames, custom positions, etc.)
         if is_custom_start:
@@ -444,7 +449,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         else:
             # Normal temperature decay for standard starting positions
             temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
-        fen = env.board.fen()
+        fen = cached_fen  # Use cached FEN instead of calling env.board.fen()
         
         # Backup position tracking before MCTS (in case board gets modified during exploration)
         # This ensures we have a position snapshot even if the board state changes
@@ -461,10 +466,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         
         # Save board state before MCTS to restore it afterwards
         # This ensures board state is correct even if MCTS exploration modifies it
-        # Save both the board copy AND the FEN string to ensure correct restoration
+        # Use FEN string for restoration (more efficient than full board copy)
         # The FEN string is immutable and won't be affected by any board modifications
-        board_state_before_mcts = env.board.copy(stack=True)
-        fen_string_before_mcts = env.board.fen()  # Save FEN as immutable string
+        fen_string_before_mcts = cached_fen  # Use cached FEN instead of calling env.board.fen()
         foul_before_mcts = getattr(env.board, 'foul', False)  # Save foul flag
         
         if cfg.mcts.iterations > 0:
@@ -528,7 +532,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             root_value = None  # No MCTS, so no value available
 
         current_obs = obs
-        board_copy_at_state = env.board.copy(stack=True)
+        # Use stack=False to avoid copying expensive move history stack
+        # Board object is still needed for legal_actions generation during training
+        board_copy_at_state = env.board.copy(stack=False)
         # Store value prediction if available (from MCTS root node)
         game_history.append((current_obs, mcts_policy, board_copy_at_state, root_value))
         # Clear mcts_policy after appending to help GC
@@ -551,13 +557,15 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             # The board might still be in a usable state
             logging.warning(
                 f"Failed to restore board state after MCTS: {e}. "
-                f"Current FEN: {env.board.fen()}, Expected FEN: {board_state_before_mcts.fen()}"
+                f"Current FEN: {env.board.fen()}, Expected FEN: {fen_string_before_mcts}"
             )
         
         # Log only if board restoration failed (position differs, not just move counter) or action is no longer legal
         # Compare only the position part of FEN (first 4 parts), not move counters
-        fen_after_parts = env.board.fen().split()
-        fen_before_parts = board_state_before_mcts.fen().split()
+        # Recompute FEN after restoration to check if it matches
+        fen_after_restore = env.board.fen()
+        fen_after_parts = fen_after_restore.split()
+        fen_before_parts = fen_string_before_mcts.split()
         position_matches = (len(fen_after_parts) >= 4 and len(fen_before_parts) >= 4 and 
                            fen_after_parts[:4] == fen_before_parts[:4])
         
@@ -668,6 +676,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         # Now play the move - this will switch turns correctly
         obs, _, terminated, truncated, info = env.step(action_to_take)
         
+        # Update cached FEN after board change (env.step() modifies the board)
+        cached_fen = env.board.fen()
+        
         # Update previous_turn for next iteration (after move, turn has changed)
         previous_turn = current_turn_before_move  # Store the turn BEFORE the move (who just moved)
         
@@ -676,7 +687,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         # This works independently of the board's move_stack, so it's reliable even when
         # the board state is reset or copied during MCTS exploration or rendering
         try:
-            current_fen = env.board.fen()
+            current_fen = cached_fen  # Use cached FEN instead of calling env.board.fen()
             fen_parts = current_fen.split()
             
             # Validate FEN format (python-chess FEN should have at least 4 parts)
