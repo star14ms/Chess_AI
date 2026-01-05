@@ -27,7 +27,9 @@ class MCTSNode:
         self.N = 0  # Visit count
         self.W = 0.0  # Total action value
         self.prior_p = prior_p
-        self.board = board.copy()
+        # Use stack=False to avoid copying expensive move history (Phase 3 optimization)
+        # MCTS nodes only need current position, not move history
+        self.board = board.copy(stack=False) if hasattr(board, 'copy') else board.copy()
 
         # Lazy evaluation for terminal state if needed (calculated on demand)
         self._is_terminal = None 

@@ -68,6 +68,10 @@ class MCTS:
         self.history_steps = max(1, int(history_steps))
         self.draw_reward = draw_reward
         self.network.eval()
+        
+        # Reusable tensor buffer for observation preparation (Phase 3 optimization)
+        self._obs_buffer = None
+        self._obs_buffer_shape = None
 
     # --- Virtual Loss Helpers ---
 
@@ -271,8 +275,16 @@ class MCTS:
         if steps is None:
             steps = self.history_steps
         obs_vector = leaf_board.get_board_vector(history_steps=steps)
-        obs_tensor = torch.tensor(obs_vector, dtype=torch.float32, device=self.device)
-        return obs_tensor
+        
+        # Reuse buffer if shape matches, otherwise create new one (Phase 3 optimization)
+        obs_shape = obs_vector.shape
+        if self._obs_buffer is None or self._obs_buffer_shape != obs_shape:
+            self._obs_buffer = torch.empty(obs_shape, dtype=torch.float32, device=self.device)
+            self._obs_buffer_shape = obs_shape
+        
+        # Copy data into buffer (more efficient than creating new tensor)
+        self._obs_buffer.copy_(torch.from_numpy(obs_vector))
+        return self._obs_buffer
 
     def _expand_node_with_policy(self, leaf_node: MCTSNode, policy_logits: torch.Tensor):
         """Expands a node using policy logits (handles Dirichlet noise)."""

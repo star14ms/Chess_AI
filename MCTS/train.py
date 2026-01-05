@@ -1274,49 +1274,67 @@ def run_training_loop(cfg: DictConfig) -> None:
             queue_drain_start = time.time()
             task_id_selfplay = progress.add_task("Self-Play", total=min_steps) if show_progress else None
             
-            # Phase 1: Drain all immediately available games from queue (non-blocking)
+            # Phase 1: Drain all immediately available games from queue (non-blocking, batched)
+            # Phase 3 optimization: Batch queue operations for better performance
+            batch_collect_size = min(8, sp_queue.maxsize if hasattr(sp_queue, 'maxsize') else 8)
             while True:
+                batch_collected = 0
                 try:
-                    game_result = sp_queue.get_nowait()
-                    game_data, game_info = game_result
-                    games_from_queue += 1
-                    if game_data:
-                        games_data_collected.extend(game_data)
-                        collected_games += 1
-                        game_moves_list.append(game_info)
-                        # Track device contribution
-                        if 'device' in game_info:
-                            device_contributions[game_info['device']] += 1
-                        # Check if we've collected enough steps or hit buffer limit
-                        if len(games_data_collected) >= min_steps or len(games_data_collected) >= max_experiences:
-                            # Stop collecting - reached threshold or would replace entire buffer
-                            if task_id_selfplay is not None:
-                                progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
-                            if len(games_data_collected) >= max_experiences:
-                                break
-                        # Update game outcome counters (use actual winner, not result_value perspective)
+                    # Try to collect a batch of games
+                    for _ in range(batch_collect_size):
                         try:
-                            import chess
-                            winner = game_info.get('winner', None)
-                            if winner is None:
-                                # Draw
-                                num_draws += 1
-                                draw_reasons[game_info['termination']] += 1
-                            elif winner == chess.WHITE:
-                                # White won
-                                num_wins += 1
-                            elif winner == chess.BLACK:
-                                # Black won
-                                num_losses += 1
-                        except Exception:
-                            pass
-                        if task_id_selfplay is not None:
-                            progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
+                            game_result = sp_queue.get_nowait()
+                            game_data, game_info = game_result
+                            games_from_queue += 1
+                            if game_data:
+                                games_data_collected.extend(game_data)
+                                collected_games += 1
+                                game_moves_list.append(game_info)
+                                # Track device contribution
+                                if 'device' in game_info:
+                                    device_contributions[game_info['device']] += 1
+                                batch_collected += 1
+                                
+                                # Update game outcome counters (use actual winner, not result_value perspective)
+                                try:
+                                    import chess
+                                    winner = game_info.get('winner', None)
+                                    if winner is None:
+                                        # Draw
+                                        num_draws += 1
+                                        draw_reasons[game_info['termination']] += 1
+                                    elif winner == chess.WHITE:
+                                        # White won
+                                        num_wins += 1
+                                    elif winner == chess.BLACK:
+                                        # Black won
+                                        num_losses += 1
+                                except Exception:
+                                    pass
+                                
+                                if task_id_selfplay is not None:
+                                    progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
+                                
+                                # Check if we've collected enough steps or hit buffer limit
+                                if len(games_data_collected) >= min_steps or len(games_data_collected) >= max_experiences:
+                                    if len(games_data_collected) >= max_experiences:
+                                        break
+                        except queue.Empty:
+                            break
+                    
+                    # If no games collected in this batch, break
+                    if batch_collected == 0:
+                        break
+                    # Check thresholds after batch
+                    if len(games_data_collected) >= min_steps or len(games_data_collected) >= max_experiences:
+                        break
                 except queue.Empty:
                     # No more immediately available games
                     break
             
             # Phase 2: If we haven't reached minimum steps, wait for more games
+            # Phase 3 optimization: Reduced timeout for faster response
+            timeout_interval = 0.5  # Reduced from 1.0 for faster response
             if len(games_data_collected) < min_steps and len(games_data_collected) < max_experiences:
                 if collected_games == 0:
                     # First wait, record when actual waiting started
@@ -1324,7 +1342,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 
                 while len(games_data_collected) < min_steps and len(games_data_collected) < max_experiences:
                     try:
-                        game_result = sp_queue.get(timeout=1.0)
+                        game_result = sp_queue.get(timeout=timeout_interval)
                         game_data, game_info = game_result
                         games_waited_for += 1
                         if game_data:
@@ -1359,51 +1377,67 @@ def run_training_loop(cfg: DictConfig) -> None:
                             if task_id_selfplay is not None:
                                 progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
                     except queue.Empty:
-                        # Keep waiting for actors to generate more
+                        # Keep waiting for actors to generate more (with reduced timeout)
                         pass
             
-            # Phase 3: After reaching minimum, drain any additional available games
+            # Phase 3: After reaching minimum, drain any additional available games (batched)
+            # Phase 3 optimization: Batch queue operations for better performance
             # This keeps the queue from growing too large and uses fresh games
             # But stop if we'd replace the entire buffer
             if len(games_data_collected) < max_experiences:
                 extra_drain_attempts = 0
-                max_extra_drain = sp_queue.maxsize if hasattr(sp_queue, 'maxsize') else 32
+                max_extra_drain = min(batch_collect_size * 4, sp_queue.maxsize if hasattr(sp_queue, 'maxsize') else 32)
                 while extra_drain_attempts < max_extra_drain and len(games_data_collected) < max_experiences:
+                    batch_collected = 0
                     try:
-                        game_result = sp_queue.get_nowait()
-                        game_data, game_info = game_result
-                        games_from_queue += 1
-                        if game_data:
-                            games_data_collected.extend(game_data)
-                            collected_games += 1
-                            game_moves_list.append(game_info)
-                            # Track device contribution
-                            if 'device' in game_info:
-                                device_contributions[game_info['device']] += 1
-                            # Check if we've hit the buffer limit
-                            if len(games_data_collected) >= max_experiences:
-                                if task_id_selfplay is not None:
-                                    progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
-                                break
-                            # Update game outcome counters (use actual winner, not result_value perspective)
+                        # Try to collect a batch of games
+                        for _ in range(batch_collect_size):
                             try:
-                                import chess
-                                winner = game_info.get('winner', None)
-                                if winner is None:
-                                    # Draw
-                                    num_draws += 1
-                                    draw_reasons[game_info['termination']] += 1
-                                elif winner == chess.WHITE:
-                                    # White won
-                                    num_wins += 1
-                                elif winner == chess.BLACK:
-                                    # Black won
-                                    num_losses += 1
-                            except Exception:
-                                pass
-                            if task_id_selfplay is not None:
-                                progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
-                        extra_drain_attempts += 1
+                                game_result = sp_queue.get_nowait()
+                                game_data, game_info = game_result
+                                games_from_queue += 1
+                                if game_data:
+                                    games_data_collected.extend(game_data)
+                                    collected_games += 1
+                                    game_moves_list.append(game_info)
+                                    # Track device contribution
+                                    if 'device' in game_info:
+                                        device_contributions[game_info['device']] += 1
+                                    batch_collected += 1
+                                    
+                                    # Update game outcome counters (use actual winner, not result_value perspective)
+                                    try:
+                                        import chess
+                                        winner = game_info.get('winner', None)
+                                        if winner is None:
+                                            # Draw
+                                            num_draws += 1
+                                            draw_reasons[game_info['termination']] += 1
+                                        elif winner == chess.WHITE:
+                                            # White won
+                                            num_wins += 1
+                                        elif winner == chess.BLACK:
+                                            # Black won
+                                            num_losses += 1
+                                    except Exception:
+                                        pass
+                                    
+                                    if task_id_selfplay is not None:
+                                        progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
+                                    
+                                    # Check if we've hit the buffer limit
+                                    if len(games_data_collected) >= max_experiences:
+                                        break
+                                extra_drain_attempts += 1
+                            except queue.Empty:
+                                break
+                        
+                        # If no games collected in this batch, break
+                        if batch_collected == 0:
+                            break
+                        # Check threshold after batch
+                        if len(games_data_collected) >= max_experiences:
+                            break
                     except queue.Empty:
                         # No more games available
                         break
