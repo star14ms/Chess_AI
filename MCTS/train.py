@@ -1844,7 +1844,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     
                     # Calculate illegal probability mass
                     legal_moves = set(get_legal_actions(current_board))
-                    legal_indices = torch.tensor([move_id - 1 for move_id in legal_moves], device=device)
+                    legal_indices = torch.tensor([move_id - 1 for move_id in legal_moves], device=device, dtype=torch.long)
                     illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
                     batch_illegal_prob_mass += illegal_prob
                     
