@@ -979,7 +979,16 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # Initialize real progress renderer only if showing progress
     if show_progress:
-        progress = Progress(transient=False)
+        # Set default columns to include description for all progress bars
+        default_columns = (
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+            TextColumn("[{task.fields[details]}]"),  # Additional details at the end
+        )
+        progress = Progress(*default_columns, transient=False)
         progress.start()
 
     # Mode selection will occur after defining checkpoint and queue
@@ -1313,7 +1322,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     pass
                                 
                                 if task_id_selfplay is not None:
-                                    progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
+                                    progress.update(
+                                        task_id_selfplay, 
+                                        advance=len(game_data), 
+                                        total=min_steps,
+                                        description="Self-Play",
+                                        details=f"{collected_games} games, {len(games_data_collected)} steps"
+                                    )
                                 
                                 # Check if we've collected enough steps or hit buffer limit
                                 if len(games_data_collected) >= min_steps or len(games_data_collected) >= max_experiences:
@@ -1355,7 +1370,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                             # Check if we've reached step threshold or hit buffer limit
                             if len(games_data_collected) >= min_steps or len(games_data_collected) >= max_experiences:
                                 if task_id_selfplay is not None:
-                                    progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
+                                    progress.update(
+                                        task_id_selfplay, 
+                                        advance=len(game_data), 
+                                        total=min_steps,
+                                        description="Self-Play",
+                                        details=f"{collected_games} games, {len(games_data_collected)} steps"
+                                    )
                                 if len(games_data_collected) >= max_experiences:
                                     break
                             # Update game outcome counters (use actual winner, not result_value perspective)
@@ -1375,7 +1396,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                             except Exception:
                                 pass
                             if task_id_selfplay is not None:
-                                progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
+                                progress.update(
+                                    task_id_selfplay, 
+                                    advance=len(game_data), 
+                                    total=min_steps,
+                                    description="Self-Play",
+                                    details=f"{collected_games} games, {len(games_data_collected)} steps"
+                                )
                     except queue.Empty:
                         # Keep waiting for actors to generate more (with reduced timeout)
                         pass
@@ -1423,7 +1450,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                                         pass
                                     
                                     if task_id_selfplay is not None:
-                                        progress.update(task_id_selfplay, advance=len(game_data), total=min_steps)
+                                        progress.update(
+                                            task_id_selfplay, 
+                                            advance=len(game_data), 
+                                            total=min_steps,
+                                            description="Self-Play",
+                                            details=f"{collected_games} games, {len(games_data_collected)} steps"
+                                        )
                                     
                                     # Check if we've hit the buffer limit
                                     if len(games_data_collected) >= max_experiences:
@@ -1536,7 +1569,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                             pass
                     # Update progress with steps collected
                     steps_in_game = len(game_data) if game_result and game_result[0] else 0
-                    progress.update(task_id_selfplay, advance=steps_in_game)
+                    progress.update(
+                        task_id_selfplay, 
+                        advance=steps_in_game,
+                        description="Self-Play",
+                        details=f"{games_completed_this_iter} games, {len(games_data_collected)} steps"
+                    )
                     
                     # Check if we've collected enough steps
                     # Note: We continue processing remaining results in the pool, but we've reached our threshold
@@ -1577,7 +1615,6 @@ def run_training_loop(cfg: DictConfig) -> None:
             # Collect games until we have enough steps
             while len(games_data_collected) < min_steps:
                 game_num += 1
-                progress.update(task_id_selfplay, description=f"Self-Play Steps ({len(games_data_collected)}/{min_steps})")
                 # Run game in the main process using the main env instance
                 game_data, game_info = run_self_play_game(
                     cfg,
@@ -1589,6 +1626,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                 games_data_collected.extend(game_data)
                 games_completed_this_iter += 1
                 game_moves_list.append(game_info)
+                # Update progress bar with current games and steps
+                progress.update(
+                    task_id_selfplay, 
+                    advance=len(game_data),
+                    description="Self-Play",
+                    details=f"{games_completed_this_iter} games, {len(games_data_collected)} steps"
+                )
                 # Track device contribution (sequential mode uses training device)
                 device_contributions[str(device)] += 1
                 # Count outcomes from the actual winner (not result_value perspective)
@@ -1608,7 +1652,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                             num_losses += 1
                     except Exception:
                         pass
-                progress.update(task_id_selfplay, advance=len(game_data))
+                # Note: progress already updated above with description and details
             progress.update(task_id_selfplay, visible=False)
 
             # Cleanup GPU caches after sequential self-play
@@ -1626,22 +1670,6 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         self_play_duration = int(time.time() - iteration_start_time_selfplay)
         total_games_simulated += games_completed_this_iter
-        
-        # Build self-play message with mode-specific details
-        if continual_enabled and games_from_queue > 0:
-            min_steps = cfg.training.self_play_steps_per_epoch
-            buffer_limit_hit = len(games_data_collected) >= cfg.training.replay_buffer_size
-            
-            steps_collected = len(games_data_collected)
-            if buffer_limit_hit:
-                mode_info = f" (min={min_steps} steps [BUFFER LIMIT], {steps_collected} collected, {games_from_queue} pre-gen / {games_waited_for} waited)"
-            elif steps_collected > min_steps:
-                extra_steps = steps_collected - min_steps
-                mode_info = f" (min={min_steps} + {extra_steps} extra steps, {games_from_queue} pre-gen / {games_waited_for} waited)"
-            else:
-                mode_info = f" ({steps_collected}/{min_steps} steps, {games_from_queue} pre-generated, {games_waited_for} waited)"
-        else:
-            mode_info = ""
         
         # Build draw reasons string
         draw_info = ""
@@ -1667,7 +1695,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 avg_branching = sum(s['avg_branching'] for s in tree_stats_all) / len(tree_stats_all)
                 tree_stats_info = f" | MCTS: nodes={avg_nodes:.0f}/{max_nodes:.0f}, depth={avg_depth:.1f}/{max_depth:.0f}, branch={avg_branching:.2f}"
         
-        progress.print(f"Self-play: {games_completed_this_iter} games{mode_info}, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}")
+        progress.print(f"Self-play: {games_completed_this_iter} games, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}")
         
         # Save game moves to file
         if game_moves_list and game_history_dir:
