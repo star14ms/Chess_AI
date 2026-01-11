@@ -316,6 +316,271 @@ class ReplayBuffer:
             # Legacy uncompressed format
             self.buffer = deque(state['buffer'], maxlen=state['maxlen'])
 
+
+# --- Prioritized Replay Buffer (Checkmate positions never evicted) ---
+class PrioritizedReplayBuffer:
+    """
+    Replay buffer that prioritizes checkmate positions.
+    Checkmate positions are stored separately and never evicted (or evicted last).
+    This ensures the model always sees checkmate examples during training.
+    """
+    def __init__(self, max_size=8192, checkmate_reserve=1000, checkmate_sample_ratio=0.2):
+        """
+        Args:
+            max_size: Total maximum size of the buffer
+            checkmate_reserve: Number of positions reserved for checkmate (never evicted)
+            checkmate_sample_ratio: Fraction of batch that should be checkmate positions (0.0-1.0)
+        """
+        from collections import deque
+        self.regular_buffer = deque(maxlen=max_size - checkmate_reserve)
+        self.checkmate_buffer = []  # List, not deque - we control eviction manually
+        self.max_regular = max_size - checkmate_reserve
+        self.max_checkmate = checkmate_reserve
+        self.checkmate_sample_ratio = checkmate_sample_ratio
+        self.total_max_size = max_size
+
+    def _is_checkmate_position(self, experience):
+        """Check if an experience represents a checkmate position."""
+        if len(experience) < 4:
+            return False
+        
+        state, policy, board, value = experience
+        
+        # Method 1: Check if value is ±1.0 (checkmate reward)
+        if abs(abs(value) - 1.0) < 0.01:
+            return True
+        
+        # Method 2: Check if board is actually in checkmate (more reliable)
+        try:
+            if hasattr(board, 'is_checkmate'):
+                if board.is_checkmate():
+                    return True
+        except Exception:
+            pass
+        
+        return False
+
+    def add(self, experience):
+        """Add an experience to the appropriate buffer."""
+        if self._is_checkmate_position(experience):
+            # Add to checkmate buffer
+            self.checkmate_buffer.append(experience)
+            # Only evict if buffer is full (FIFO)
+            if len(self.checkmate_buffer) > self.max_checkmate:
+                self.checkmate_buffer.pop(0)  # Remove oldest
+        else:
+            # Add to regular buffer (auto-evicts when full)
+            self.regular_buffer.append(experience)
+
+    def add_game(self, game_data):
+        """Add all experiences from a game."""
+        for experience in game_data:
+            self.add(experience)
+
+    def sample(self, batch_size, action_space_size=None):
+        """Sample a batch with proportional checkmate/regular ratio."""
+        total_available = len(self.regular_buffer) + len(self.checkmate_buffer)
+        if total_available < batch_size:
+            return None
+        
+        # Calculate how many checkmate vs regular samples
+        n_checkmate = min(
+            int(batch_size * self.checkmate_sample_ratio),
+            len(self.checkmate_buffer),
+            batch_size
+        )
+        n_regular = batch_size - n_checkmate
+        
+        # Ensure we have enough regular samples
+        if n_regular > len(self.regular_buffer):
+            n_regular = len(self.regular_buffer)
+            n_checkmate = min(batch_size - n_regular, len(self.checkmate_buffer))
+        
+        # Sample from each buffer
+        import random
+        if n_checkmate > 0:
+            checkmate_samples = random.sample(self.checkmate_buffer, n_checkmate)
+        else:
+            checkmate_samples = []
+        
+        if n_regular > 0:
+            regular_indices = np.random.choice(len(self.regular_buffer), n_regular, replace=False)
+            regular_samples = [self.regular_buffer[i] for i in regular_indices]
+        else:
+            regular_samples = []
+        
+        # Combine samples
+        batch = checkmate_samples + regular_samples
+        
+        # Shuffle to mix checkmate and regular
+        random.shuffle(batch)
+        
+        # Process batch (same as ReplayBuffer.sample)
+        first_state = batch[0][0]
+        states = np.array([exp[0] for exp in batch], dtype=np.float32)
+        
+        # Normalize policy targets
+        if action_space_size is None:
+            first_policy = batch[0][1]
+            if isinstance(first_policy, np.ndarray):
+                action_space_size = len(first_policy)
+            else:
+                action_space_size = 4672
+        
+        normalized_policies = np.zeros((batch_size, action_space_size), dtype=np.float32)
+        for i, exp in enumerate(batch):
+            policy = exp[1]
+            if isinstance(policy, np.ndarray):
+                policy_len = len(policy)
+                if policy_len == action_space_size:
+                    normalized_policies[i] = policy
+                elif policy_len < action_space_size:
+                    normalized_policies[i, :policy_len] = policy
+                else:
+                    normalized_policies[i] = policy[:action_space_size]
+        
+        policy_targets = normalized_policies
+        boards = [exp[2] for exp in batch]
+        value_targets = np.array([exp[3] for exp in batch], dtype=np.float32).reshape(-1, 1)
+        
+        return states, policy_targets, boards, value_targets
+
+    def __len__(self):
+        """Total number of experiences in both buffers."""
+        return len(self.regular_buffer) + len(self.checkmate_buffer)
+    
+    def get_stats(self):
+        """Get statistics about the buffer."""
+        return {
+            'total': len(self),
+            'regular': len(self.regular_buffer),
+            'checkmate': len(self.checkmate_buffer),
+            'checkmate_ratio': len(self.checkmate_buffer) / len(self) if len(self) > 0 else 0.0
+        }
+
+    def get_state(self, env_type='chess'):
+        """Returns the replay buffer state for checkpointing."""
+        import pickle
+        import gzip
+        
+        if len(self) == 0:
+            return {
+                'buffer': [],
+                'maxlen': self.total_max_size,
+                'compressed': False,
+                'prioritized': True,
+                'checkmate_reserve': self.max_checkmate,
+                'checkmate_sample_ratio': self.checkmate_sample_ratio
+            }
+        
+        # Convert experiences to compact format
+        compact_buffer = []
+        for exp in list(self.regular_buffer) + self.checkmate_buffer:
+            state, policy, board, value = exp
+            
+            # Handle None policy
+            if policy is None:
+                default_action_space = 4672
+                policy = np.zeros(default_action_space, dtype=np.float32)
+            elif not isinstance(policy, np.ndarray):
+                default_action_space = 4672
+                policy = np.zeros(default_action_space, dtype=np.float32)
+            
+            # Serialize board
+            if env_type == 'chess':
+                board_str = board.fen()
+            elif env_type == 'gomoku':
+                size = board.size
+                move_count = board.move
+                rows = [','.join(str(board.board_state[i][j]) for j in range(size)) for i in range(size)]
+                board_str = f"{size},{move_count};{';'.join(rows)}"
+            else:
+                board_str = board.fen() if hasattr(board, 'fen') else str(board)
+            
+            # Mark if this is a checkmate position
+            is_checkmate = self._is_checkmate_position(exp)
+            
+            compact_exp = (
+                state.astype(np.float16),
+                policy.astype(np.float16),
+                board_str,
+                float(value),
+                is_checkmate  # Store flag to restore buffer structure
+            )
+            compact_buffer.append(compact_exp)
+        
+        # Compress
+        buffer_bytes = pickle.dumps(compact_buffer, protocol=pickle.HIGHEST_PROTOCOL)
+        compressed_bytes = gzip.compress(buffer_bytes, compresslevel=6)
+        
+        return {
+            'buffer_compressed': compressed_bytes,
+            'maxlen': self.total_max_size,
+            'env_type': env_type,
+            'compressed': True,
+            'prioritized': True,
+            'checkmate_reserve': self.max_checkmate,
+            'checkmate_sample_ratio': self.checkmate_sample_ratio
+        }
+    
+    def load_state(self, state, board_factory_fn=None):
+        """Loads the replay buffer state from a checkpoint."""
+        import pickle
+        import gzip
+        from collections import deque
+        
+        if state is None:
+            return
+        
+        # Check if this is compressed format
+        if state.get('compressed', False):
+            compressed_bytes = state['buffer_compressed']
+            buffer_bytes = gzip.decompress(compressed_bytes)
+            compact_buffer = pickle.loads(buffer_bytes)
+            
+            if board_factory_fn is None:
+                raise ValueError("board_factory_fn is required for loading compressed replay buffer")
+            
+            # Restore buffer structure
+            regular_exps = []
+            checkmate_exps = []
+            
+            for compact_exp in compact_buffer:
+                if len(compact_exp) == 5:
+                    state_data, policy, board_str, value, is_checkmate = compact_exp
+                else:
+                    # Legacy format - check if checkmate by value
+                    state_data, policy, board_str, value = compact_exp
+                    is_checkmate = abs(abs(value) - 1.0) < 0.01
+                
+                board = board_factory_fn(board_str)
+                exp = (
+                    state_data.astype(np.float32),
+                    policy.astype(np.float32),
+                    board,
+                    value
+                )
+                
+                if is_checkmate:
+                    checkmate_exps.append(exp)
+                else:
+                    regular_exps.append(exp)
+            
+            # Restore buffers
+            max_regular = state.get('maxlen', self.total_max_size) - state.get('checkmate_reserve', self.max_checkmate)
+            self.regular_buffer = deque(regular_exps, maxlen=max_regular)
+            self.checkmate_buffer = checkmate_exps[:state.get('checkmate_reserve', self.max_checkmate)]
+            
+            # Restore config
+            if 'checkmate_reserve' in state:
+                self.max_checkmate = state['checkmate_reserve']
+            if 'checkmate_sample_ratio' in state:
+                self.checkmate_sample_ratio = state['checkmate_sample_ratio']
+        else:
+            # Legacy uncompressed format - treat all as regular
+            self.regular_buffer = deque(state['buffer'], maxlen=state['maxlen'])
+            self.checkmate_buffer = []
+
 # --- Self-Play Function (Update args to use config subsections) ---
 def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                        progress: Progress | None = None, device: torch.device | None = None):
@@ -594,8 +859,30 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 legal_moves_list = list(env.board.legal_moves)
                 move_in_legal = move in legal_moves_list
                 
-                # Log only if move is not in legal_moves
+                # Log only if move is not in legal_moves (the bug we're tracking)
                 if not move_in_legal:
+                    # #region agent log
+                    try:
+                        with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
+                            legal_moves_sample = [env.board.san(m) for m in legal_moves_list[:10]]
+                            f.write(json.dumps({
+                                'sessionId': 'debug-session',
+                                'runId': 'run1',
+                                'hypothesisId': 'C',
+                                'location': 'train.py:598',
+                                'message': 'ILLEGAL MOVE DETECTED',
+                                'data': {
+                                    'action_id': action_to_take,
+                                    'move_uci': move.uci(),
+                                    'move_count': move_count,
+                                    'fen': env.board.fen(),
+                                    'legal_moves_sample': legal_moves_sample,
+                                    'turn': 'White' if env.board.turn == chess.WHITE else 'Black'
+                                },
+                                'timestamp': int(time.time() * 1000)
+                            }) + '\n')
+                    except: pass
+                    # #endregion
                     pass  # Move will be handled as illegal below
                 
                 if move_in_legal:
@@ -1021,7 +1308,19 @@ def run_training_loop(cfg: DictConfig) -> None:
     progress.print(f"Optimizer initialized: {opt_cfg.type}")
 
     # Initialize Replay Buffer
-    replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
+    # Use PrioritizedReplayBuffer if enabled, otherwise use regular ReplayBuffer
+    use_prioritized_buffer = cfg.training.get('use_prioritized_buffer', False)
+    if use_prioritized_buffer:
+        checkmate_reserve = cfg.training.get('checkmate_reserve', 1000)
+        checkmate_sample_ratio = cfg.training.get('checkmate_sample_ratio', 0.2)
+        replay_buffer = PrioritizedReplayBuffer(
+            max_size=cfg.training.replay_buffer_size,
+            checkmate_reserve=checkmate_reserve,
+            checkmate_sample_ratio=checkmate_sample_ratio
+        )
+        progress.print(f"Using PrioritizedReplayBuffer (checkmate_reserve={checkmate_reserve}, sample_ratio={checkmate_sample_ratio})")
+    else:
+        replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
 
     # Loss Functions
     policy_loss_fn = nn.CrossEntropyLoss()
@@ -1164,8 +1463,22 @@ def run_training_loop(cfg: DictConfig) -> None:
             buffer_loaded = False
             if 'replay_buffer_state' in checkpoint:
                 try:
-                    replay_buffer.load_state(checkpoint['replay_buffer_state'], create_board_from_serialized)
-                    progress.print(f"Loaded replay buffer from checkpoint: {len(replay_buffer)} experiences")
+                    replay_buffer_state = checkpoint['replay_buffer_state']
+                    # Check if checkpoint was saved with PrioritizedReplayBuffer
+                    is_prioritized = replay_buffer_state.get('prioritized', False)
+                    if is_prioritized and not use_prioritized_buffer:
+                        progress.print("Warning: Checkpoint has PrioritizedReplayBuffer but config uses regular buffer. Converting...")
+                        # Could convert here if needed, but for now just load as regular
+                    elif not is_prioritized and use_prioritized_buffer:
+                        progress.print("Warning: Checkpoint has regular buffer but config uses PrioritizedReplayBuffer. Converting...")
+                        # Convert regular buffer to prioritized (checkmate positions will be detected on add)
+                    
+                    replay_buffer.load_state(replay_buffer_state, create_board_from_serialized)
+                    if use_prioritized_buffer and hasattr(replay_buffer, 'get_stats'):
+                        stats = replay_buffer.get_stats()
+                        progress.print(f"Loaded replay buffer from checkpoint: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)")
+                    else:
+                        progress.print(f"Loaded replay buffer from checkpoint: {len(replay_buffer)} experiences")
                     buffer_loaded = True
                 except Exception as e:
                     progress.print(f"Warning: Failed to load replay buffer from checkpoint: {e}")
