@@ -1281,7 +1281,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             max_experiences = cfg.training.replay_buffer_size  # Maximum experiences to collect
             collected_games = 0
             queue_drain_start = time.time()
-            task_id_selfplay = progress.add_task("Self-Play", total=min_steps) if show_progress else None
+            task_id_selfplay = progress.add_task("Self-Play", total=min_steps, details="") if show_progress else None
             
             # Phase 1: Drain all immediately available games from queue (non-blocking, batched)
             # Phase 3 optimization: Batch queue operations for better performance
@@ -1542,7 +1542,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 results_iterator = pool.imap_unordered(worker_wrapper, worker_args_packed)
 
                 # Process results with a progress bar
-                task_id_selfplay = progress.add_task("Self-Play", total=min_steps)
+                task_id_selfplay = progress.add_task("Self-Play", total=min_steps, details="")
                 # Iterate over results as they become available
                 for game_result in results_iterator:
                     if game_result: # Check if worker returned valid data
@@ -1610,7 +1610,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         else: # Sequential Execution
             min_steps = cfg.training.self_play_steps_per_epoch
-            task_id_selfplay = progress.add_task("Self-Play", total=min_steps)
+            task_id_selfplay = progress.add_task("Self-Play", total=min_steps, details="")
             game_num = 0
             # Collect games until we have enough steps
             while len(games_data_collected) < min_steps:
@@ -1695,7 +1695,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                 avg_branching = sum(s['avg_branching'] for s in tree_stats_all) / len(tree_stats_all)
                 tree_stats_info = f" | MCTS: nodes={avg_nodes:.0f}/{max_nodes:.0f}, depth={avg_depth:.1f}/{max_depth:.0f}, branch={avg_branching:.2f}"
         
-        progress.print(f"Self-play: {games_completed_this_iter} games, total={total_games_simulated}, steps={len(games_data_collected)}, buffer={len(replay_buffer)} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}")
+        # Get buffer stats if using prioritized buffer
+        buffer_info = f", buffer={len(replay_buffer)}"
+        if use_prioritized_buffer and hasattr(replay_buffer, 'get_stats'):
+            stats = replay_buffer.get_stats()
+            buffer_info = f", buffer={stats['total']} (checkmate={stats['checkmate']}, regular={stats['regular']})"
+        
+        progress.print(f"Self-play: {games_completed_this_iter} games, total={total_games_simulated}, steps={len(games_data_collected)}{buffer_info} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}")
         
         # Save game moves to file
         if game_moves_list and game_history_dir:
@@ -1932,7 +1938,13 @@ def run_training_loop(cfg: DictConfig) -> None:
         torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
         
         checkpoint_size_mb = os.path.getsize(os.path.join(checkpoint_dir, "model.pth")) / (1024 * 1024)
-        progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)}) | Checkpoint saved with {len(replay_buffer)} experiences in replay buffer ({checkpoint_size_mb:.1f} MB)")
+        # Get buffer stats for logging
+        buffer_size_str = str(len(replay_buffer))
+        if use_prioritized_buffer and hasattr(replay_buffer, 'get_stats'):
+            stats = replay_buffer.get_stats()
+            buffer_size_str = f"{stats['total']} (checkmate={stats['checkmate']}, regular={stats['regular']})"
+        
+        progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)}) | Checkpoint saved with {buffer_size_str} experiences in replay buffer ({checkpoint_size_mb:.1f} MB)")
         
         # Check if training would exceed maximum time after next iteration
         # Do this AFTER saving checkpoint so current iteration's work is preserved
