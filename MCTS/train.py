@@ -524,7 +524,12 @@ class PrioritizedReplayBuffer:
         }
     
     def load_state(self, state, board_factory_fn=None):
-        """Loads the replay buffer state from a checkpoint."""
+        """Loads the replay buffer state from a checkpoint.
+        
+        Args:
+            state: Checkpoint state dictionary
+            board_factory_fn: Function to recreate board objects from serialized strings
+        """
         import pickle
         import gzip
         from collections import deque
@@ -566,14 +571,27 @@ class PrioritizedReplayBuffer:
                 else:
                     regular_exps.append(exp)
             
-            # Restore buffers
-            max_regular = state.get('maxlen', self.total_max_size) - state.get('checkmate_reserve', self.max_checkmate)
-            self.regular_buffer = deque(regular_exps, maxlen=max_regular)
-            self.checkmate_buffer = checkmate_exps[:state.get('checkmate_reserve', self.max_checkmate)]
+            # Get old checkmate_reserve from checkpoint
+            old_checkmate_reserve = state.get('checkmate_reserve', self.max_checkmate)
+            new_checkmate_reserve = self.max_checkmate  # Current config value
+            
+            # If checkmate_reserve decreased, move excess checkmate positions to regular buffer
+            if new_checkmate_reserve < old_checkmate_reserve and len(checkmate_exps) > new_checkmate_reserve:
+                # Keep most recent checkmate positions
+                excess_checkmate = checkmate_exps[:-new_checkmate_reserve] if len(checkmate_exps) > new_checkmate_reserve else []
+                checkmate_exps = checkmate_exps[-new_checkmate_reserve:]
+                # Move excess to regular buffer (will auto-evict if regular buffer is full)
+                regular_exps.extend(excess_checkmate)
+            
+            # Update max_checkmate to new value
+            self.max_checkmate = new_checkmate_reserve
+            self.max_regular = self.total_max_size - self.max_checkmate
+            
+            # Restore buffers with updated sizes
+            self.regular_buffer = deque(regular_exps, maxlen=self.max_regular)
+            self.checkmate_buffer = checkmate_exps
             
             # Restore config
-            if 'checkmate_reserve' in state:
-                self.max_checkmate = state['checkmate_reserve']
             if 'checkmate_sample_ratio' in state:
                 self.checkmate_sample_ratio = state['checkmate_sample_ratio']
         else:
@@ -1473,10 +1491,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                         progress.print("Warning: Checkpoint has regular buffer but config uses PrioritizedReplayBuffer. Converting...")
                         # Convert regular buffer to prioritized (checkmate positions will be detected on add)
                     
+                    # Check if checkmate_reserve changed
+                    old_reserve = replay_buffer_state.get('checkmate_reserve', None)
+                    new_reserve = cfg.training.get('checkmate_reserve', 1000) if use_prioritized_buffer else None
+                    
                     replay_buffer.load_state(replay_buffer_state, create_board_from_serialized)
+                    
                     if use_prioritized_buffer and hasattr(replay_buffer, 'get_stats'):
                         stats = replay_buffer.get_stats()
-                        progress.print(f"Loaded replay buffer from checkpoint: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)")
+                        if old_reserve is not None and new_reserve is not None and old_reserve != new_reserve:
+                            progress.print(f"Loaded replay buffer: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)")
+                            progress.print(f"Changed checkmate_reserve from {old_reserve} to {new_reserve} - moved excess checkmate positions to regular buffer")
+                        else:
+                            progress.print(f"Loaded replay buffer from checkpoint: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)")
                     else:
                         progress.print(f"Loaded replay buffer from checkpoint: {len(replay_buffer)} experiences")
                     buffer_loaded = True
