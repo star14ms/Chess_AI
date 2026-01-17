@@ -1,11 +1,16 @@
+"""Augment mate-in datasets by flipping board and colors."""
+
 import argparse
+import concurrent.futures
 import json
+import os
 from pathlib import Path
+from typing import Callable
 
 import chess
 
 
-def iter_json_array(path: Path):
+def iter_json_array(path: Path, progress_cb: Callable[[int], None] | None = None):
     decoder = json.JSONDecoder()
     buffer = ""
     in_array = False
@@ -15,6 +20,8 @@ def iter_json_array(path: Path):
             chunk = handle.read(65536)
             if not chunk:
                 break
+            if progress_cb is not None:
+                progress_cb(len(chunk))
             buffer += chunk
             while True:
                 buffer = buffer.lstrip()
@@ -100,7 +107,12 @@ def normalize_fen_for_dup(fen: str) -> str:
     return " ".join(parts[:4])
 
 
-def augment_file(path: Path, suffix: str, puzzle_id_suffix: str) -> dict:
+def augment_file(
+    path: Path,
+    suffix: str,
+    puzzle_id_suffix: str,
+    progress_cb: Callable[[int], None] | None = None,
+) -> dict:
     output_path = path.with_name(f"{path.stem}{suffix}.json")
 
     seen_fens: set[str] = set()
@@ -119,7 +131,7 @@ def augment_file(path: Path, suffix: str, puzzle_id_suffix: str) -> dict:
     with output_path.open("w", encoding="utf-8") as out:
         out.write("[\n")
         first = True
-        for entry in iter_json_array(path):
+        for entry in iter_json_array(path, progress_cb=progress_cb):
             stats["input_rows"] += 1
             if not isinstance(entry, dict):
                 continue
@@ -190,6 +202,18 @@ def augment_file(path: Path, suffix: str, puzzle_id_suffix: str) -> dict:
     return stats
 
 
+def augment_file_worker(path_str: str, suffix: str, puzzle_id_suffix: str, progress_map) -> dict:
+    path = Path(path_str)
+    bytes_acc = 0
+
+    def on_progress(byte_count: int) -> None:
+        nonlocal bytes_acc
+        bytes_acc += byte_count
+        progress_map[path_str] = bytes_acc
+
+    return augment_file(path, suffix, puzzle_id_suffix, progress_cb=on_progress)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Augment mate_in_#.json files by flipping board and color."
@@ -219,24 +243,73 @@ def main() -> None:
     if not json_files:
         raise SystemExit(f"No mate_in_*.json files found in {input_dir}")
 
-    for path in json_files:
-        stats = augment_file(path, args.suffix, args.puzzle_id_suffix)
-        print(f"{path.name} -> {stats['output_path']}")
-        print(
-            "rows: "
-            f"in={stats['input_rows']} out={stats['written_rows']} "
-            f"dup_src={stats['duplicate_source']} dup_flip={stats['duplicate_flipped']} "
-            f"missing_fen={stats['missing_fen']} missing_moves={stats['missing_moves']} "
-            f"invalid_moves={stats['invalid_moves']}"
+    try:
+        from rich.progress import (
+            BarColumn,
+            MofNCompleteColumn,
+            Progress,
+            TaskProgressColumn,
+            TimeElapsedColumn,
         )
-        # if stats["duplicate_source_fens"]:
-        #     print("duplicate_source_fens:")
-        #     for fen in stats["duplicate_source_fens"]:
-        #         print(f"  {fen}")
-        # if stats["duplicate_flipped_fens"]:
-        #     print("duplicate_flipped_fens:")
-        #     for fen in stats["duplicate_flipped_fens"]:
-        #         print(f"  {fen}")
+    except ImportError as exc:
+        raise SystemExit(
+            "Missing dependency: rich. Install with: python -m pip install rich"
+        ) from exc
+
+    with Progress(
+        "[progress.description]{task.description}",
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        transient=True,
+    ) as progress:
+        manager = concurrent.futures.process.multiprocessing.Manager()
+        progress_map = manager.dict()
+        tasks: dict[str, int] = {}
+        totals: dict[str, int] = {}
+        for path in json_files:
+            key = str(path)
+            total_bytes = os.path.getsize(path)
+            totals[key] = total_bytes
+            progress_map[key] = 0
+            tasks[key] = progress.add_task(f"Processing {path.name}", total=total_bytes)
+
+        max_workers = min(len(json_files), os.cpu_count() or 1)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(
+                    augment_file_worker, str(path), args.suffix, args.puzzle_id_suffix, progress_map
+                ): str(path)
+                for path in json_files
+            }
+            pending = set(future_map.keys())
+            while pending:
+                done, pending = concurrent.futures.wait(
+                    pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for key, task_id in tasks.items():
+                    progress.update(task_id, completed=progress_map.get(key, 0))
+                for future in done:
+                    stats = future.result()
+                    key = future_map[future]
+                    progress.update(tasks[key], completed=totals[key])
+                    print(f"{Path(stats['output_path']).name} -> {stats['output_path']}")
+                    print(
+                        "rows: "
+                        f"in={stats['input_rows']} out={stats['written_rows']} "
+                        f"dup_src={stats['duplicate_source']} dup_flip={stats['duplicate_flipped']} "
+                        f"missing_fen={stats['missing_fen']} missing_moves={stats['missing_moves']} "
+                        f"invalid_moves={stats['invalid_moves']}"
+                    )
+                    # if stats["duplicate_source_fens"]:
+                    #     print("duplicate_source_fens:")
+                    #     for fen in stats["duplicate_source_fens"]:
+                    #         print(f"  {fen}")
+                    # if stats["duplicate_flipped_fens"]:
+                    #     print("duplicate_flipped_fens:")
+                    #     for fen in stats["duplicate_flipped_fens"]:
+                    #         print(f"  {fen}")
 
 
 if __name__ == "__main__":

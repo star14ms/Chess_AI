@@ -1,3 +1,5 @@
+"""Export Lichess mate-in puzzles into mate_in_#.json files."""
+
 import argparse
 import json
 from pathlib import Path
