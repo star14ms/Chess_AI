@@ -415,7 +415,7 @@ def main():
                 obs = obs.to(device)
                 target = target.to(device)
                 optimizer.zero_grad()
-                logits, _ = model(obs)
+                logits, _ = model(obs, policy_only=True)
                 loss = criterion(logits, target)
                 loss.backward()
                 optimizer.step()
@@ -441,7 +441,7 @@ def main():
                 for obs, target in val_loader:
                     obs = obs.to(device)
                     target = target.to(device)
-                    logits, _ = model(obs)
+                    logits, _ = model(obs, policy_only=True)
                     loss = criterion(logits, target)
                     val_loss += loss.item() * obs.size(0)
                     preds = torch.argmax(logits, dim=1)

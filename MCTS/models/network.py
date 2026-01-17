@@ -27,7 +27,7 @@ class ConvBlock(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=True)
         self.bn = nn.BatchNorm2d(out_channels)
 
-    def forward(self, x):
+    def forward(self, x, policy_only: bool = False):
         return F.relu(self.bn(self.conv(x)))
 
 class ConvBlockInitial(nn.Module):
@@ -199,8 +199,8 @@ class ChessNetwork(nn.Module):
                             Last 16 channels are piece type information
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: policy_logits (N, action_space_size), 
-                                              value (N, 1)
+            Tuple[torch.Tensor, torch.Tensor | None]: policy_logits (N, action_space_size),
+                                                     value (N, 1) or None if policy_only
         """
         N = x.shape[0]
         if x.shape[1] != self.input_channels:
@@ -219,6 +219,8 @@ class ChessNetwork(nn.Module):
             conv_features = residual_block(conv_features)
 
         policy_logits = self.policy_head(conv_features, piece_type)
+        if policy_only:
+            return policy_logits, None
         value = self.value_head(conv_features)
 
         return policy_logits, value
