@@ -225,100 +225,28 @@ def iter_csv_rows(path: str):
             yield row
 
 
-def load_mate_in_one_rows(cfg, data_path: str, max_rows: int | None = None):
-    if data_path.lower().endswith(".json"):
-        return load_mate_in_one_rows_json(cfg, data_path, max_rows=max_rows)
-    return load_mate_in_one_rows_csv(cfg, data_path, max_rows=max_rows)
-
-
-def load_mate_in_one_rows_csv(cfg, csv_path: str, max_rows: int | None = None):
-    rows = []
-    skipped = 0
-    action_space_size = cfg.network.action_space_size
-    input_channels = cfg.network.input_channels
-    history_steps = cfg.env.history_steps
-
-    with open(csv_path, newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            if max_rows is not None and len(rows) >= max_rows:
-                break
-            fen = row.get("fen")
-            best_uci = row.get("best")
-            if not fen or not best_uci:
-                skipped += 1
+def validate_json_lines(path: str) -> int:
+    invalid_lines = 0
+    total_lines = 0
+    data_lines = 0
+    with open(path, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            total_lines += 1
+            stripped = line.strip()
+            if not stripped or stripped == "[" or stripped == "]":
                 continue
-            board = create_board_from_fen(fen, action_space_size)
+            data_lines += 1
+            if stripped.endswith(","):
+                stripped = stripped[:-1].rstrip()
             try:
-                move = chess.Move.from_uci(best_uci)
-            except ValueError:
-                skipped += 1
-                continue
-            if not board.is_legal(move):
-                skipped += 1
-                continue
-            action_id = board.move_to_action_id(move)
-            if action_id is None or action_id < 1 or action_id > action_space_size:
-                skipped += 1
-                continue
-            obs = board.get_board_vector(history_steps=history_steps)
-            if obs.shape[0] != input_channels:
-                raise ValueError(
-                    f"Observation channels {obs.shape[0]} != expected {input_channels}. "
-                    "Check action_space_size vs input_channels and board type."
-                )
-            action_index = action_id - 1
-            rows.append((obs.astype(np.float32, copy=False), action_index))
-
-    return rows, skipped
-
-
-def load_mate_in_one_rows_json(cfg, json_path: str, max_rows: int | None = None):
-    rows = []
-    skipped = 0
-    action_space_size = cfg.network.action_space_size
-    input_channels = cfg.network.input_channels
-    history_steps = cfg.env.history_steps
-
-    with open(json_path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-        if not isinstance(payload, list):
-            raise ValueError("JSON data must be a list of puzzle rows.")
-        for entry in payload:
-            if max_rows is not None and len(rows) >= max_rows:
-                break
-            if not isinstance(entry, dict):
-                skipped += 1
-                continue
-            fen = entry.get("FEN") or entry.get("fen")
-            moves_field = entry.get("Moves") or entry.get("moves")
-            best_uci = _extract_best_move(moves_field)
-            if not fen or not best_uci:
-                skipped += 1
-                continue
-            board = create_board_from_fen(fen, action_space_size)
-            try:
-                move = chess.Move.from_uci(best_uci)
-            except ValueError:
-                skipped += 1
-                continue
-            if not board.is_legal(move):
-                skipped += 1
-                continue
-            action_id = board.move_to_action_id(move)
-            if action_id is None or action_id < 1 or action_id > action_space_size:
-                skipped += 1
-                continue
-            obs = board.get_board_vector(history_steps=history_steps)
-            if obs.shape[0] != input_channels:
-                raise ValueError(
-                    f"Observation channels {obs.shape[0]} != expected {input_channels}. "
-                    "Check action_space_size vs input_channels and board type."
-                )
-            action_index = action_id - 1
-            rows.append((obs.astype(np.float32, copy=False), action_index))
-
-    return rows, skipped
+                json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                invalid_lines += 1
+                print(f"Invalid JSON line {line_number}: {exc}")
+                print(f"Invalid line content (head): {stripped[:240]}")
+                raise SystemExit("Invalid JSON line detected.")
+    print(f"Total lines: {total_lines} | Data lines: {data_lines} | Invalid: {invalid_lines}")
+    return data_lines
 
 
 def freeze_value_head(model: torch.nn.Module) -> None:
@@ -367,17 +295,16 @@ def main():
     parser.add_argument("--early-stop-patience", type=int, default=10)
     parser.add_argument("--lr-patience", type=int, default=5)
     parser.add_argument("--lr-factor", type=float, default=0.5)
-    parser.add_argument(
-        "--count-total",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Pre-scan data to show total batches in progress bars.",
-    )
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
     cfg.network.policy_dropout = args.policy_dropout
     device = select_device(args.device or cfg.training.get("device", "auto"))
+
+    if args.data_path.lower().endswith(".json"):
+        total_rows = validate_json_lines(args.data_path)
+    else:
+        total_rows = None
 
     batch_size = args.batch_size or cfg.training.batch_size
     learning_rate = args.learning_rate or cfg.optimizer.learning_rate
@@ -422,15 +349,18 @@ def main():
 
     train_total = None
     val_total = None
-    if args.count_total:
-        print("Counting dataset for progress totals (one pass)...")
+    print("Counting dataset for progress totals...")
+    if total_rows is not None:
+        val_count = int(total_rows * args.val_split)
+        train_count = max(total_rows - val_count, 0)
+    else:
         train_count = count_dataset_entries(train_dataset)
         val_count = count_dataset_entries(val_dataset)
-        train_total = math.ceil(train_count / batch_size) if train_count else 0
-        val_total = math.ceil(val_count / batch_size) if val_count else 0
-        print(f"Total batches | train={train_total} | val={val_total}")
-        if args.num_workers > 0:
-            print("Note: totals are computed without worker partitioning.")
+    train_total = math.ceil(train_count / batch_size) if train_count else 0
+    val_total = math.ceil(val_count / batch_size) if val_count else 0
+    print(f"Total batches | train={train_total} | val={val_total}")
+    if args.num_workers > 0:
+        print("Note: totals are computed without worker partitioning.")
 
     progress_columns = (
         TextColumn("[progress.description]{task.description}"),
