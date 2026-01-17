@@ -255,18 +255,58 @@ def freeze_value_head(model: torch.nn.Module) -> None:
             param.requires_grad = False
 
 
-def save_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer, epoch: int, cfg):
+def save_checkpoint(
+    path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    cfg,
+    scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+    best_val_loss: float | None = None,
+    patience_counter: int | None = None,
+    train_losses: list[float] | None = None,
+    train_accs: list[float] | None = None,
+    val_losses: list[float] | None = None,
+    val_accs: list[float] | None = None,
+):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     cfg_payload = OmegaConf.to_container(cfg, resolve=False)
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "config": cfg_payload,
-        },
-        path,
-    )
+    payload = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "config": cfg_payload,
+    }
+    if scheduler is not None:
+        payload["scheduler_state_dict"] = scheduler.state_dict()
+    if best_val_loss is not None:
+        payload["best_val_loss"] = best_val_loss
+    if patience_counter is not None:
+        payload["patience_counter"] = patience_counter
+    if train_losses is not None:
+        payload["train_losses"] = train_losses
+    if train_accs is not None:
+        payload["train_accs"] = train_accs
+    if val_losses is not None:
+        payload["val_losses"] = val_losses
+    if val_accs is not None:
+        payload["val_accs"] = val_accs
+    torch.save(payload, path)
+
+
+def load_checkpoint(
+    path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler | None,
+    device: torch.device,
+) -> dict:
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    return checkpoint
 
 
 def main():
@@ -295,6 +335,7 @@ def main():
     parser.add_argument("--early-stop-patience", type=int, default=10)
     parser.add_argument("--lr-patience", type=int, default=5)
     parser.add_argument("--lr-factor", type=float, default=0.5)
+    parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from.")
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
@@ -342,6 +383,30 @@ def main():
     run_id = time.strftime("%Y-%m-%d/%H-%M-%S")
     checkpoint_dir = os.path.join(args.checkpoint_dir, run_id)
 
+    start_epoch = 1
+    best_val_loss = float("inf")
+    patience_counter = 0
+    train_losses: list[float] = []
+    train_accs: list[float] = []
+    val_losses: list[float] = []
+    val_accs: list[float] = []
+    if args.resume:
+        resume_data = load_checkpoint(args.resume, model, optimizer, scheduler, device)
+        start_epoch = resume_data.get("epoch", 0) + 1
+        best_val_loss = resume_data.get("best_val_loss", best_val_loss)
+        patience_counter = resume_data.get("patience_counter", patience_counter)
+        train_losses = list(resume_data.get("train_losses", train_losses))
+        train_accs = list(resume_data.get("train_accs", train_accs))
+        val_losses = list(resume_data.get("val_losses", val_losses))
+        val_accs = list(resume_data.get("val_accs", val_accs))
+        print(f"Resumed from {args.resume} (next epoch={start_epoch}).")
+        if start_epoch > args.epochs:
+            print(
+                f"Checkpoint epoch={start_epoch - 1} exceeds requested epochs={args.epochs}. "
+                "Nothing to train."
+            )
+            return
+
     max_rows_label = args.max_rows if args.max_rows is not None else "all"
     print(f"Streaming data from {args.data_path} (max_rows={max_rows_label}).")
     print(f"Split: val={args.val_split:.2f} | seed={args.seed}")
@@ -350,12 +415,8 @@ def main():
     train_total = None
     val_total = None
     print("Counting dataset for progress totals...")
-    if total_rows is not None:
-        val_count = int(total_rows * args.val_split)
-        train_count = max(total_rows - val_count, 0)
-    else:
-        train_count = count_dataset_entries(train_dataset)
-        val_count = count_dataset_entries(val_dataset)
+    train_count = count_dataset_entries(train_dataset)
+    val_count = count_dataset_entries(val_dataset)
     train_total = math.ceil(train_count / batch_size) if train_count else 0
     val_total = math.ceil(val_count / batch_size) if val_count else 0
     print(f"Total batches | train={train_total} | val={val_total}")
@@ -373,7 +434,11 @@ def main():
 
     with Progress(*progress_columns, transient=False) as progress:
         epoch_task = progress.add_task(
-            "Epochs", total=args.epochs, loss=float("nan"), acc=float("nan")
+            "Epochs",
+            total=args.epochs,
+            completed=start_epoch - 1,
+            loss=float("nan"),
+            acc=float("nan"),
         )
         train_task = progress.add_task(
             "Train", total=train_total, loss=float("nan"), acc=float("nan")
@@ -382,15 +447,7 @@ def main():
             "Val", total=val_total, loss=float("nan"), acc=float("nan")
         )
 
-        train_losses = []
-        train_accs = []
-        val_losses = []
-        val_accs = []
-
-        best_val_loss = float("inf")
-        patience_counter = 0
-
-        for epoch in range(1, args.epochs + 1):
+        for epoch in range(start_epoch, args.epochs + 1):
             total_loss = 0.0
             correct = 0
             total = 0
@@ -472,7 +529,20 @@ def main():
                     best_val_loss = val_avg_loss
                     patience_counter = 0
                     best_path = os.path.join(checkpoint_dir, "model_best.pth")
-                    save_checkpoint(best_path, model, optimizer, epoch, cfg)
+                    save_checkpoint(
+                        best_path,
+                        model,
+                        optimizer,
+                        epoch,
+                        cfg,
+                        scheduler=scheduler,
+                        best_val_loss=best_val_loss,
+                        patience_counter=patience_counter,
+                        train_losses=train_losses,
+                        train_accs=train_accs,
+                        val_losses=val_losses,
+                        val_accs=val_accs,
+                    )
                 else:
                     patience_counter += 1
                     if patience_counter >= args.early_stop_patience:
@@ -487,10 +557,36 @@ def main():
 
             if args.save_every > 0 and epoch % args.save_every == 0:
                 ckpt_path = os.path.join(checkpoint_dir, "model.pth")
-                save_checkpoint(ckpt_path, model, optimizer, epoch, cfg)
+                save_checkpoint(
+                    ckpt_path,
+                    model,
+                    optimizer,
+                    epoch,
+                    cfg,
+                    scheduler=scheduler,
+                    best_val_loss=best_val_loss,
+                    patience_counter=patience_counter,
+                    train_losses=train_losses,
+                    train_accs=train_accs,
+                    val_losses=val_losses,
+                    val_accs=val_accs,
+                )
 
     final_path = os.path.join(checkpoint_dir, "model.pth")
-    save_checkpoint(final_path, model, optimizer, args.epochs, cfg)
+    save_checkpoint(
+        final_path,
+        model,
+        optimizer,
+        args.epochs,
+        cfg,
+        scheduler=scheduler,
+        best_val_loss=best_val_loss,
+        patience_counter=patience_counter,
+        train_losses=train_losses,
+        train_accs=train_accs,
+        val_losses=val_losses,
+        val_accs=val_accs,
+    )
     print(f"Saved final checkpoint to {final_path}")
 
     if train_losses and val_losses:
