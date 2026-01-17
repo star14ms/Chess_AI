@@ -190,6 +190,9 @@ def iter_json_array(path: str):
                         buffer = buffer[idx + 1 :]
                         in_array = True
                 buffer = buffer.lstrip()
+                if buffer.startswith(","):
+                    buffer = buffer[1:]
+                    buffer = buffer.lstrip()
                 if buffer.startswith("]"):
                     return
                 try:
@@ -204,6 +207,8 @@ def iter_json_array(path: str):
 
         buffer = buffer.strip()
         if in_array and buffer:
+            if buffer.startswith(","):
+                buffer = buffer[1:].lstrip()
             if buffer.startswith("]"):
                 return
             try:
@@ -342,7 +347,7 @@ def main():
         "--data",
         "--csv",
         dest="data_path",
-        default="data/mate_in_1.json",
+        default="data/mate_in_1_flipped.json",
         help="Path to mate-in-one data (CSV or JSON).",
     )
     parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
