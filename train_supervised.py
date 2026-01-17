@@ -113,10 +113,10 @@ def main():
     parser = argparse.ArgumentParser(description="Supervised training on mate-in-one positions.")
     parser.add_argument("--csv", default="data/mate_in_one.csv", help="Path to mate-in-one CSV file.")
     parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--learning-rate", type=float, default=None)
-    parser.add_argument("--weight-decay", type=float, default=None)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.05)
     parser.add_argument("--checkpoint-dir", default="outputs/supervised_train")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -124,9 +124,14 @@ def main():
     parser.add_argument("--device", default=None, help="auto, cuda, mps, or cpu")
     parser.add_argument("--val-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--policy-dropout", type=float, default=0.3)
+    parser.add_argument("--early-stop-patience", type=int, default=10)
+    parser.add_argument("--lr-patience", type=int, default=5)
+    parser.add_argument("--lr-factor", type=float, default=0.5)
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
+    cfg.network.policy_dropout = args.policy_dropout
     device = select_device(args.device or cfg.training.get("device", "auto"))
 
     rows, skipped = load_mate_in_one_rows(cfg, args.csv, max_rows=args.max_rows)
@@ -156,6 +161,9 @@ def main():
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", patience=args.lr_patience, factor=args.lr_factor
+    )
     criterion = nn.CrossEntropyLoss()
 
     run_id = time.strftime("%Y-%m-%d/%H-%M-%S")
@@ -183,6 +191,9 @@ def main():
         train_accs = []
         val_losses = []
         val_accs = []
+
+        best_val_loss = float("inf")
+        patience_counter = 0
 
         for epoch in range(1, args.epochs + 1):
             total_loss = 0.0
@@ -244,9 +255,22 @@ def main():
                 f"val loss={val_avg_loss:.4f} acc={val_acc*100:.2f}%"
             )
 
+            scheduler.step(val_avg_loss)
+
             if args.save_every > 0 and epoch % args.save_every == 0:
                 ckpt_path = os.path.join(checkpoint_dir, f"model.pth")
                 save_checkpoint(ckpt_path, model, optimizer, epoch, cfg)
+
+            if val_avg_loss < best_val_loss:
+                best_val_loss = val_avg_loss
+                patience_counter = 0
+                best_path = os.path.join(checkpoint_dir, "model_best.pth")
+                save_checkpoint(best_path, model, optimizer, epoch, cfg)
+            else:
+                patience_counter += 1
+                if patience_counter >= args.early_stop_patience:
+                    print(f"Early stopping at epoch {epoch}.")
+                    break
 
     final_path = os.path.join(checkpoint_dir, "model.pth")
     save_checkpoint(final_path, model, optimizer, args.epochs, cfg)

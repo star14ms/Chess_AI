@@ -108,7 +108,8 @@ class PolicyHead(nn.Module):
                  vec_height: int,
                  vec_width: int,
                  linear_out_features: list = DEFAULT_POLICY_LINEAR_OUT_FEATURES,
-                 conv_bias: bool = False):
+                 conv_bias: bool = False,
+                 dropout: float = 0.0):
         super().__init__()
         # Default to [64] if not provided or empty
         self.use_residual_stack = True
@@ -134,6 +135,8 @@ class PolicyHead(nn.Module):
             # Add ReLU between layers, but not after the final output to action space
             if idx < len(linear_out_features) - 1:
                 layers.append(nn.ReLU(inplace=True))
+                if dropout > 0.0:
+                    layers.append(nn.Dropout(p=dropout))
             prev_features = out_features
         self.fc = nn.Sequential(*layers)
 
@@ -186,6 +189,7 @@ class ChessNetwork4672(nn.Module):
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
                  policy_linear_out_features: list | None = DEFAULT_POLICY_LINEAR_OUT_FEATURES,
                  conv_bias: bool = False,
+                 policy_dropout: float = 0.0,
                 ):
         super().__init__()
         self.board_height = board_size
@@ -206,6 +210,7 @@ class ChessNetwork4672(nn.Module):
             self.board_width,
             linear_out_features=policy_linear_out_features,
             conv_bias=conv_bias,
+            dropout=policy_dropout,
         )
         self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size, conv_bias=conv_bias)
 

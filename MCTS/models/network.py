@@ -65,12 +65,21 @@ class ResidualConvBlock(nn.Module):
 # --- Policy Head Module ---
 class PolicyHead(nn.Module):
     """Calculates policy logits from the final piece vector."""
-    def __init__(self, num_channels: int, dim_piece_type: int, action_space_size: int, board_height: int, board_width: int):
+    def __init__(
+        self,
+        num_channels: int,
+        dim_piece_type: int,
+        action_space_size: int,
+        board_height: int,
+        board_width: int,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.conv = ConvBlock(num_channels+dim_piece_type+1, 128)  # Directly reduce channels including piece type
         self.fc = nn.Sequential(
             nn.Linear(128*board_height*board_width, 128),
             nn.ReLU(),
+            nn.Dropout(p=dropout) if dropout > 0.0 else nn.Identity(),
             nn.Linear(128, action_space_size)
         )
 
@@ -136,6 +145,7 @@ class ChessNetwork(nn.Module):
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
+                 policy_dropout: float = 0.0,
                 ):
         super().__init__()
         self.board_height = board_size
@@ -171,7 +181,14 @@ class ChessNetwork(nn.Module):
             self.final_conv_channels = self.initial_conv_block_out_channels_last_stage
 
         # --- Instantiate Head Modules (using C_final) --- 
-        self.policy_head = PolicyHead(self.final_conv_channels, dim_piece_type, self.action_space_size, self.board_height, self.board_width)
+        self.policy_head = PolicyHead(
+            self.final_conv_channels,
+            dim_piece_type,
+            self.action_space_size,
+            self.board_height,
+            self.board_width,
+            dropout=policy_dropout,
+        )
         self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size)
 
     def forward(self, x):
