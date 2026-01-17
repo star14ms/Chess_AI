@@ -332,10 +332,13 @@ class PrioritizedReplayBuffer:
             checkmate_sample_ratio: Fraction of batch that should be checkmate positions (0.0-1.0)
         """
         from collections import deque
-        self.regular_buffer = deque(maxlen=max_size - checkmate_reserve)
-        self.checkmate_buffer = []  # List, not deque - we control eviction manually
-        self.max_regular = max_size - checkmate_reserve
+        # Regular buffer holds only non-checkmate experiences (FIFO)
+        self.regular_buffer = deque()
+        # Checkmate buffer holds only checkmate experiences (FIFO)
+        self.checkmate_buffer = deque()
         self.max_checkmate = checkmate_reserve
+        # Regular buffer capacity is independent from checkmate buffer capacity
+        self.max_regular = max_size
         self.checkmate_sample_ratio = checkmate_sample_ratio
         self.total_max_size = max_size
 
@@ -361,16 +364,18 @@ class PrioritizedReplayBuffer:
         return False
 
     def add(self, experience):
-        """Add an experience to the appropriate buffer."""
+        """Add an experience to the appropriate buffer (regular/checkmate)."""
         if self._is_checkmate_position(experience):
-            # Add to checkmate buffer
             self.checkmate_buffer.append(experience)
-            # Only evict if buffer is full (FIFO)
+            # Evict oldest checkmate if buffer is full (FIFO)
             if len(self.checkmate_buffer) > self.max_checkmate:
-                self.checkmate_buffer.pop(0)  # Remove oldest
-        else:
-            # Add to regular buffer (auto-evicts when full)
-            self.regular_buffer.append(experience)
+                self.checkmate_buffer.popleft()
+            return
+
+        self.regular_buffer.append(experience)
+        # Evict oldest regular if buffer is full (FIFO)
+        if len(self.regular_buffer) > self.max_regular:
+            self.regular_buffer.popleft()
 
     def add_game(self, game_data):
         """Add all experiences from a game."""
@@ -475,7 +480,8 @@ class PrioritizedReplayBuffer:
         
         # Convert experiences to compact format
         compact_buffer = []
-        for exp in list(self.regular_buffer) + self.checkmate_buffer:
+        # Regular buffer experiences (not in checkmate buffer)
+        for exp in list(self.regular_buffer):
             state, policy, board, value = exp
             
             # Handle None policy
@@ -497,15 +503,46 @@ class PrioritizedReplayBuffer:
             else:
                 board_str = board.fen() if hasattr(board, 'fen') else str(board)
             
-            # Mark if this is a checkmate position
-            is_checkmate = self._is_checkmate_position(exp)
-            
             compact_exp = (
                 state.astype(np.float16),
                 policy.astype(np.float16),
                 board_str,
                 float(value),
-                is_checkmate  # Store flag to restore buffer structure
+                False,  # Checkmate flag (legacy/diagnostic)
+                False  # in_checkmate_buffer
+            )
+            compact_buffer.append(compact_exp)
+
+        # Checkmate buffer experiences (saved from evicted regular buffer)
+        for exp in self.checkmate_buffer:
+            state, policy, board, value = exp
+
+            # Handle None policy
+            if policy is None:
+                default_action_space = 4672
+                policy = np.zeros(default_action_space, dtype=np.float32)
+            elif not isinstance(policy, np.ndarray):
+                default_action_space = 4672
+                policy = np.zeros(default_action_space, dtype=np.float32)
+
+            # Serialize board
+            if env_type == 'chess':
+                board_str = board.fen()
+            elif env_type == 'gomoku':
+                size = board.size
+                move_count = board.move
+                rows = [','.join(str(board.board_state[i][j]) for j in range(size)) for i in range(size)]
+                board_str = f"{size},{move_count};{';'.join(rows)}"
+            else:
+                board_str = board.fen() if hasattr(board, 'fen') else str(board)
+
+            compact_exp = (
+                state.astype(np.float16),
+                policy.astype(np.float16),
+                board_str,
+                float(value),
+                True,  # Checkmate flag (legacy/diagnostic)
+                True  # in_checkmate_buffer
             )
             compact_buffer.append(compact_exp)
         
@@ -551,12 +588,18 @@ class PrioritizedReplayBuffer:
             checkmate_exps = []
             
             for compact_exp in compact_buffer:
-                if len(compact_exp) == 5:
+                if len(compact_exp) >= 6:
+                    state_data, policy, board_str, value, is_checkmate, in_checkmate_buffer = compact_exp
+                    # Enforce rule: checkmate positions belong in checkmate buffer
+                    in_checkmate_buffer = in_checkmate_buffer or is_checkmate
+                elif len(compact_exp) == 5:
                     state_data, policy, board_str, value, is_checkmate = compact_exp
+                    in_checkmate_buffer = is_checkmate
                 else:
                     # Legacy format - check if checkmate by value
                     state_data, policy, board_str, value = compact_exp
                     is_checkmate = abs(abs(value) - 1.0) < 0.01
+                    in_checkmate_buffer = is_checkmate
                 
                 board = board_factory_fn(board_str)
                 exp = (
@@ -566,7 +609,7 @@ class PrioritizedReplayBuffer:
                     value
                 )
                 
-                if is_checkmate:
+                if in_checkmate_buffer:
                     checkmate_exps.append(exp)
                 else:
                     regular_exps.append(exp)
@@ -575,28 +618,28 @@ class PrioritizedReplayBuffer:
             old_checkmate_reserve = state.get('checkmate_reserve', self.max_checkmate)
             new_checkmate_reserve = self.max_checkmate  # Current config value
             
-            # If checkmate_reserve decreased, move excess checkmate positions to regular buffer
+            # If checkmate_reserve decreased, drop oldest checkmate positions (FIFO)
             if new_checkmate_reserve < old_checkmate_reserve and len(checkmate_exps) > new_checkmate_reserve:
-                # Keep most recent checkmate positions
-                excess_checkmate = checkmate_exps[:-new_checkmate_reserve] if len(checkmate_exps) > new_checkmate_reserve else []
                 checkmate_exps = checkmate_exps[-new_checkmate_reserve:]
-                # Move excess to regular buffer (will auto-evict if regular buffer is full)
-                regular_exps.extend(excess_checkmate)
             
             # Update max_checkmate to new value
             self.max_checkmate = new_checkmate_reserve
-            self.max_regular = self.total_max_size - self.max_checkmate
             
             # Restore buffers with updated sizes
-            self.regular_buffer = deque(regular_exps, maxlen=self.max_regular)
-            self.checkmate_buffer = checkmate_exps
+            if len(regular_exps) > self.max_regular:
+                regular_exps = regular_exps[-self.max_regular:]
+            self.regular_buffer = deque(regular_exps)
+            self.checkmate_buffer = checkmate_exps[:self.max_checkmate]
             
             # Restore config
             if 'checkmate_sample_ratio' in state:
                 self.checkmate_sample_ratio = state['checkmate_sample_ratio']
         else:
             # Legacy uncompressed format - treat all as regular
-            self.regular_buffer = deque(state['buffer'], maxlen=state['maxlen'])
+            buffer_list = list(state['buffer'])
+            if len(buffer_list) > self.max_regular:
+                buffer_list = buffer_list[-self.max_regular:]
+            self.regular_buffer = deque(buffer_list)
             self.checkmate_buffer = []
 
 # --- Self-Play Function (Update args to use config subsections) ---
@@ -1328,6 +1371,8 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Initialize Replay Buffer
     # Use PrioritizedReplayBuffer if enabled, otherwise use regular ReplayBuffer
     use_prioritized_buffer = cfg.training.get('use_prioritized_buffer', False)
+    last_max_regular = None
+    last_max_checkmate = None
     if use_prioritized_buffer:
         checkmate_reserve = cfg.training.get('checkmate_reserve', 1000)
         checkmate_sample_ratio = cfg.training.get('checkmate_sample_ratio', 0.2)
@@ -1336,7 +1381,14 @@ def run_training_loop(cfg: DictConfig) -> None:
             checkmate_reserve=checkmate_reserve,
             checkmate_sample_ratio=checkmate_sample_ratio
         )
-        progress.print(f"Using PrioritizedReplayBuffer (checkmate_reserve={checkmate_reserve}, sample_ratio={checkmate_sample_ratio})")
+        last_max_regular = replay_buffer.max_regular
+        last_max_checkmate = replay_buffer.max_checkmate
+        total_capacity = last_max_regular + last_max_checkmate
+        progress.print(
+            "Using PrioritizedReplayBuffer "
+            f"(regular={last_max_regular}, checkmate={last_max_checkmate}, total={total_capacity}, "
+            f"sample_ratio={checkmate_sample_ratio})"
+        )
     else:
         replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
 
@@ -1501,11 +1553,23 @@ def run_training_loop(cfg: DictConfig) -> None:
                         stats = replay_buffer.get_stats()
                         if old_reserve is not None and new_reserve is not None and old_reserve != new_reserve:
                             progress.print(f"Loaded replay buffer: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)")
-                            progress.print(f"Changed checkmate_reserve from {old_reserve} to {new_reserve} - moved excess checkmate positions to regular buffer")
+                            progress.print(f"Changed checkmate_reserve from {old_reserve} to {new_reserve} - dropped oldest checkmate positions if over cap")
                         else:
                             progress.print(f"Loaded replay buffer from checkpoint: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)")
                     else:
                         progress.print(f"Loaded replay buffer from checkpoint: {len(replay_buffer)} experiences")
+                    if use_prioritized_buffer:
+                        if last_max_regular is None or last_max_checkmate is None:
+                            last_max_regular = replay_buffer.max_regular
+                            last_max_checkmate = replay_buffer.max_checkmate
+                        if replay_buffer.max_regular != last_max_regular or replay_buffer.max_checkmate != last_max_checkmate:
+                            progress.print(
+                                "Replay buffer caps updated: "
+                                f"regular={replay_buffer.max_regular}, checkmate={replay_buffer.max_checkmate}, total={replay_buffer.total_max_size} "
+                                f"(from regular={last_max_regular}, checkmate={last_max_checkmate})"
+                            )
+                            last_max_regular = replay_buffer.max_regular
+                            last_max_checkmate = replay_buffer.max_checkmate
                     buffer_loaded = True
                 except Exception as e:
                     progress.print(f"Warning: Failed to load replay buffer from checkpoint: {e}")
