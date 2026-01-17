@@ -29,6 +29,7 @@ def create_chess_network(cfg, device) -> nn.Module:
             policy_linear_out_features=cfg.network.policy_linear_out_features,
             conv_bias=cfg.network.conv_bias,
             policy_dropout=getattr(cfg.network, "policy_dropout", 0.0),
+            conv_dropout=getattr(cfg.network, "conv_dropout", 0.0),
         ).to(device)
     else:
         network = ChessNetwork(
@@ -42,6 +43,7 @@ def create_chess_network(cfg, device) -> nn.Module:
             num_pieces=cfg.network.num_pieces,
             value_head_hidden_size=cfg.network.value_head_hidden_size,
             policy_dropout=getattr(cfg.network, "policy_dropout", 0.0),
+            conv_dropout=getattr(cfg.network, "conv_dropout", 0.0),
         ).to(device)
     return network
 

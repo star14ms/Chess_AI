@@ -66,13 +66,22 @@ class ResidualConvBlock(nn.Module):
 # --- Convolutional Body Module ---
 class ConvBody(nn.Module):
     """Encapsulates the initial conv stack and subsequent residual stages."""
-    def __init__(self, input_channels: int, initial_conv_block_out_channels: list, residual_blocks_out_channels: list, num_residual_layers: int, conv_bias: bool = False):
+    def __init__(
+        self,
+        input_channels: int,
+        initial_conv_block_out_channels: list,
+        residual_blocks_out_channels: list,
+        num_residual_layers: int,
+        conv_bias: bool = False,
+        conv_dropout: float = 0.0,
+    ):
         super().__init__()
         if residual_blocks_out_channels is None or len(residual_blocks_out_channels) != num_residual_layers:
             raise ValueError(f"residual_blocks_out_channels must be a list of length num_residual_layers ({num_residual_layers})")
 
         self.first_conv_block = ConvBlockInitial(input_channels, initial_conv_block_out_channels=initial_conv_block_out_channels, conv_bias=conv_bias)
         self.initial_conv_block_out_channels_last_stage = initial_conv_block_out_channels[-1]
+        self.dropout = nn.Dropout2d(p=conv_dropout) if conv_dropout > 0.0 else None
 
         self.residual_blocks = nn.ModuleList()
         if residual_blocks_out_channels:
@@ -91,8 +100,12 @@ class ConvBody(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.first_conv_block(x)
-        for block in self.residual_blocks:
+        if self.dropout is not None:
+            features = self.dropout(features)
+        for idx, block in enumerate(self.residual_blocks):
             features = block(features)
+            if self.dropout is not None and idx < len(self.residual_blocks) - 1:
+                features = self.dropout(features)
         return features
 
 # --- Policy Head Module ---
@@ -190,6 +203,7 @@ class ChessNetwork4672(nn.Module):
                  policy_linear_out_features: list | None = DEFAULT_POLICY_LINEAR_OUT_FEATURES,
                  conv_bias: bool = False,
                  policy_dropout: float = 0.0,
+                 conv_dropout: float = 0.0,
                 ):
         super().__init__()
         self.board_height = board_size
@@ -199,7 +213,14 @@ class ChessNetwork4672(nn.Module):
         self.num_residual_layers = num_residual_layers
         self.num_pieces = num_pieces
         # --- Convolutional Body ---
-        self.body = ConvBody(self.input_channels, initial_conv_block_out_channels, residual_blocks_out_channels, num_residual_layers, conv_bias=conv_bias)
+        self.body = ConvBody(
+            self.input_channels,
+            initial_conv_block_out_channels,
+            residual_blocks_out_channels,
+            num_residual_layers,
+            conv_bias=conv_bias,
+            conv_dropout=conv_dropout,
+        )
         self.final_conv_channels = self.body.final_conv_channels
 
         # --- Instantiate Head Modules (using C_final) --- 
