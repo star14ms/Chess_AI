@@ -1,5 +1,8 @@
 import argparse
 import csv
+import hashlib
+import json
+import math
 import os
 import time
 
@@ -7,7 +10,7 @@ import chess
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 from omegaconf import OmegaConf
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
 import matplotlib.pyplot as plt
@@ -29,6 +32,101 @@ class MateInOneDataset(Dataset):
         return torch.from_numpy(obs).float(), torch.tensor(action_index, dtype=torch.long)
 
 
+class MateInOneIterableDataset(IterableDataset):
+    def __init__(
+        self,
+        cfg,
+        data_path: str,
+        split: str,
+        val_split: float,
+        seed: int,
+        max_rows: int | None = None,
+    ):
+        if split not in {"train", "val"}:
+            raise ValueError("split must be 'train' or 'val'.")
+        self.cfg = cfg
+        self.data_path = data_path
+        self.split = split
+        self.val_split = val_split
+        self.seed = seed
+        self.max_rows = max_rows
+
+    def __iter__(self):
+        worker_info = get_worker_info()
+        worker_id = worker_info.id if worker_info else 0
+        num_workers = worker_info.num_workers if worker_info else 1
+        max_rows = self.max_rows
+        if max_rows is not None and num_workers > 1:
+            max_rows = math.ceil(max_rows / num_workers)
+
+        if self.data_path.lower().endswith(".json"):
+            entry_iter = iter_json_array(self.data_path)
+            source_type = "json"
+        else:
+            entry_iter = iter_csv_rows(self.data_path)
+            source_type = "csv"
+
+        action_space_size = self.cfg.network.action_space_size
+        input_channels = self.cfg.network.input_channels
+        history_steps = self.cfg.env.history_steps
+
+        raw_index = 0
+        yielded = 0
+        for entry in entry_iter:
+            if raw_index % num_workers != worker_id:
+                raw_index += 1
+                continue
+            raw_index += 1
+
+            if not self._entry_matches_split(entry):
+                continue
+
+            fen, best_uci = _extract_fen_and_move(entry, source_type)
+            if not fen or not best_uci:
+                continue
+
+            board = create_board_from_fen(fen, action_space_size)
+            try:
+                move = chess.Move.from_uci(best_uci)
+            except ValueError:
+                continue
+            if not board.is_legal(move):
+                continue
+            action_id = board.move_to_action_id(move)
+            if action_id is None or action_id < 1 or action_id > action_space_size:
+                continue
+            obs = board.get_board_vector(history_steps=history_steps)
+            if obs.shape[0] != input_channels:
+                raise ValueError(
+                    f"Observation channels {obs.shape[0]} != expected {input_channels}. "
+                    "Check action_space_size vs input_channels and board type."
+                )
+            action_index = action_id - 1
+            yield torch.from_numpy(obs.astype(np.float32, copy=False)).float(), torch.tensor(
+                action_index, dtype=torch.long
+            )
+            yielded += 1
+            if max_rows is not None and yielded >= max_rows:
+                break
+
+    def _entry_matches_split(self, entry: dict) -> bool:
+        if self.val_split <= 0:
+            return self.split == "train"
+        if self.val_split >= 1:
+            return self.split == "val"
+        key = entry.get("PuzzleId") or entry.get("puzzle_id") or entry.get("FEN") or entry.get("fen")
+        if not key:
+            key = json.dumps(entry, sort_keys=True, ensure_ascii=True)
+        digest = hashlib.sha256(f"{self.seed}:{key}".encode("utf-8")).digest()
+        bucket = int.from_bytes(digest[:8], "big") / 2**64
+        is_val = bucket < self.val_split
+        return is_val if self.split == "val" else not is_val
+
+
+def count_dataset_entries(dataset: IterableDataset) -> int:
+    return sum(1 for _ in dataset)
+
+
 def select_device(device_str: str | None) -> torch.device:
     if device_str and device_str != "auto":
         return torch.device(device_str)
@@ -47,7 +145,88 @@ def create_board_from_fen(fen: str, action_space_size: int):
     return board
 
 
-def load_mate_in_one_rows(cfg, csv_path: str, max_rows: int | None = None):
+def _extract_best_move(moves_field):
+    if not moves_field:
+        return None
+    if isinstance(moves_field, str):
+        tokens = moves_field.split()
+    elif isinstance(moves_field, list):
+        tokens = [str(t).strip() for t in moves_field if str(t).strip()]
+    else:
+        return None
+    return tokens[0] if tokens else None
+
+
+def _extract_fen_and_move(entry: dict, source_type: str):
+    if source_type == "csv":
+        return entry.get("fen"), entry.get("best")
+    fen = entry.get("FEN") or entry.get("fen")
+    moves_field = entry.get("Moves") or entry.get("moves")
+    best_uci = _extract_best_move(moves_field)
+    return fen, best_uci
+
+
+def iter_json_array(path: str):
+    decoder = json.JSONDecoder()
+    with open(path, "r", encoding="utf-8") as handle:
+        buffer = ""
+        in_array = False
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            while True:
+                buffer = buffer.lstrip()
+                if not in_array:
+                    if buffer.startswith("["):
+                        buffer = buffer[1:]
+                        in_array = True
+                    else:
+                        idx = buffer.find("[")
+                        if idx == -1:
+                            buffer = ""
+                            break
+                        buffer = buffer[idx + 1 :]
+                        in_array = True
+                buffer = buffer.lstrip()
+                if buffer.startswith("]"):
+                    return
+                try:
+                    obj, idx = decoder.raw_decode(buffer)
+                except json.JSONDecodeError:
+                    break
+                yield obj
+                buffer = buffer[idx:]
+                buffer = buffer.lstrip()
+                if buffer.startswith(","):
+                    buffer = buffer[1:]
+
+        buffer = buffer.strip()
+        if in_array and buffer:
+            if buffer.startswith("]"):
+                return
+            try:
+                obj, _ = decoder.raw_decode(buffer)
+            except json.JSONDecodeError:
+                return
+            yield obj
+
+
+def iter_csv_rows(path: str):
+    with open(path, newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            yield row
+
+
+def load_mate_in_one_rows(cfg, data_path: str, max_rows: int | None = None):
+    if data_path.lower().endswith(".json"):
+        return load_mate_in_one_rows_json(cfg, data_path, max_rows=max_rows)
+    return load_mate_in_one_rows_csv(cfg, data_path, max_rows=max_rows)
+
+
+def load_mate_in_one_rows_csv(cfg, csv_path: str, max_rows: int | None = None):
     rows = []
     skipped = 0
     action_space_size = cfg.network.action_space_size
@@ -61,6 +240,54 @@ def load_mate_in_one_rows(cfg, csv_path: str, max_rows: int | None = None):
                 break
             fen = row.get("fen")
             best_uci = row.get("best")
+            if not fen or not best_uci:
+                skipped += 1
+                continue
+            board = create_board_from_fen(fen, action_space_size)
+            try:
+                move = chess.Move.from_uci(best_uci)
+            except ValueError:
+                skipped += 1
+                continue
+            if not board.is_legal(move):
+                skipped += 1
+                continue
+            action_id = board.move_to_action_id(move)
+            if action_id is None or action_id < 1 or action_id > action_space_size:
+                skipped += 1
+                continue
+            obs = board.get_board_vector(history_steps=history_steps)
+            if obs.shape[0] != input_channels:
+                raise ValueError(
+                    f"Observation channels {obs.shape[0]} != expected {input_channels}. "
+                    "Check action_space_size vs input_channels and board type."
+                )
+            action_index = action_id - 1
+            rows.append((obs.astype(np.float32, copy=False), action_index))
+
+    return rows, skipped
+
+
+def load_mate_in_one_rows_json(cfg, json_path: str, max_rows: int | None = None):
+    rows = []
+    skipped = 0
+    action_space_size = cfg.network.action_space_size
+    input_channels = cfg.network.input_channels
+    history_steps = cfg.env.history_steps
+
+    with open(json_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+        if not isinstance(payload, list):
+            raise ValueError("JSON data must be a list of puzzle rows.")
+        for entry in payload:
+            if max_rows is not None and len(rows) >= max_rows:
+                break
+            if not isinstance(entry, dict):
+                skipped += 1
+                continue
+            fen = entry.get("FEN") or entry.get("fen")
+            moves_field = entry.get("Moves") or entry.get("moves")
+            best_uci = _extract_best_move(moves_field)
             if not fen or not best_uci:
                 skipped += 1
                 continue
@@ -111,9 +338,15 @@ def save_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Op
 
 def main():
     parser = argparse.ArgumentParser(description="Supervised training on mate-in-one positions.")
-    parser.add_argument("--csv", default="data/mate_in_one.csv", help="Path to mate-in-one CSV file.")
+    parser.add_argument(
+        "--data",
+        "--csv",
+        dest="data_path",
+        default="data/mate_in_1.json",
+        help="Path to mate-in-one data (CSV or JSON).",
+    )
     parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.05)
@@ -128,31 +361,38 @@ def main():
     parser.add_argument("--early-stop-patience", type=int, default=10)
     parser.add_argument("--lr-patience", type=int, default=5)
     parser.add_argument("--lr-factor", type=float, default=0.5)
+    parser.add_argument(
+        "--count-total",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pre-scan data to show total batches in progress bars.",
+    )
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
     cfg.network.policy_dropout = args.policy_dropout
     device = select_device(args.device or cfg.training.get("device", "auto"))
 
-    rows, skipped = load_mate_in_one_rows(cfg, args.csv, max_rows=args.max_rows)
-    if not rows:
-        raise RuntimeError("No usable rows loaded from mate_in_one.csv.")
-
     batch_size = args.batch_size or cfg.training.batch_size
     learning_rate = args.learning_rate or cfg.optimizer.learning_rate
     weight_decay = args.weight_decay if args.weight_decay is not None else cfg.optimizer.weight_decay
-
-    rng = np.random.default_rng(args.seed)
-    indices = rng.permutation(len(rows))
-    val_size = int(len(rows) * args.val_split)
-    val_indices = indices[:val_size]
-    train_indices = indices[val_size:]
-    train_rows = [rows[i] for i in train_indices]
-    val_rows = [rows[i] for i in val_indices]
-
-    train_dataset = MateInOneDataset(cfg, train_rows)
-    val_dataset = MateInOneDataset(cfg, val_rows)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=args.num_workers)
+    train_dataset = MateInOneIterableDataset(
+        cfg,
+        args.data_path,
+        split="train",
+        val_split=args.val_split,
+        seed=args.seed,
+        max_rows=args.max_rows,
+    )
+    val_dataset = MateInOneIterableDataset(
+        cfg,
+        args.data_path,
+        split="val",
+        val_split=args.val_split,
+        seed=args.seed,
+        max_rows=args.max_rows,
+    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=args.num_workers)
 
     model = create_chess_network(cfg, device)
@@ -169,9 +409,22 @@ def main():
     run_id = time.strftime("%Y-%m-%d/%H-%M-%S")
     checkpoint_dir = os.path.join(args.checkpoint_dir, run_id)
 
-    print(f"Loaded {len(rows)} rows (skipped {skipped}).")
-    print(f"Train rows: {len(train_rows)} | Val rows: {len(val_rows)}")
+    max_rows_label = args.max_rows if args.max_rows is not None else "all"
+    print(f"Streaming data from {args.data_path} (max_rows={max_rows_label}).")
+    print(f"Split: val={args.val_split:.2f} | seed={args.seed}")
     print(f"Training on {device} | batch_size={batch_size} | epochs={args.epochs}")
+
+    train_total = None
+    val_total = None
+    if args.count_total:
+        print("Counting dataset for progress totals (one pass)...")
+        train_count = count_dataset_entries(train_dataset)
+        val_count = count_dataset_entries(val_dataset)
+        train_total = math.ceil(train_count / batch_size) if train_count else 0
+        val_total = math.ceil(val_count / batch_size) if val_count else 0
+        print(f"Total batches | train={train_total} | val={val_total}")
+        if args.num_workers > 0:
+            print("Note: totals are computed without worker partitioning.")
 
     progress_columns = (
         TextColumn("[progress.description]{task.description}"),
@@ -179,13 +432,19 @@ def main():
         TaskProgressColumn(),
         TimeRemainingColumn(),
         TimeElapsedColumn(),
-        TextColumn("[{task.fields[details]}]"),
+        TextColumn("loss={task.fields[loss]:.4f} acc={task.fields[acc]:.2f}%"),
     )
 
     with Progress(*progress_columns, transient=False) as progress:
-        epoch_task = progress.add_task("Epochs", total=args.epochs, details="starting")
-        train_task = progress.add_task("Train", total=len(train_loader), details="")
-        val_task = progress.add_task("Val", total=len(val_loader), details="")
+        epoch_task = progress.add_task(
+            "Epochs", total=args.epochs, loss=float("nan"), acc=float("nan")
+        )
+        train_task = progress.add_task(
+            "Train", total=train_total, loss=float("nan"), acc=float("nan")
+        )
+        val_task = progress.add_task(
+            "Val", total=val_total, loss=float("nan"), acc=float("nan")
+        )
 
         train_losses = []
         train_accs = []
@@ -199,8 +458,22 @@ def main():
             total_loss = 0.0
             correct = 0
             total = 0
-            progress.reset(train_task, total=len(train_loader), completed=0, details=f"epoch {epoch}")
-            progress.reset(val_task, total=len(val_loader), completed=0, details="")
+            progress.reset(
+                train_task,
+                total=train_total,
+                completed=0,
+                loss=float("nan"),
+                acc=float("nan"),
+            )
+            progress.update(train_task, description=f"Train (epoch {epoch})")
+            progress.reset(
+                val_task,
+                total=val_total,
+                completed=0,
+                loss=float("nan"),
+                acc=float("nan"),
+            )
+            progress.update(val_task, description="Val")
 
             for obs, target in train_loader:
                 obs = obs.to(device)
@@ -218,11 +491,11 @@ def main():
 
                 avg_loss = total_loss / max(total, 1)
                 acc = correct / max(total, 1)
-                progress.update(train_task, advance=1, details=f"loss={avg_loss:.4f} acc={acc*100:.2f}%")
+                progress.update(train_task, advance=1, loss=avg_loss, acc=acc * 100)
 
             avg_loss = total_loss / max(total, 1)
             acc = correct / max(total, 1)
-            progress.update(epoch_task, advance=1, details=f"loss={avg_loss:.4f} acc={acc*100:.2f}%")
+            progress.update(epoch_task, advance=1, loss=avg_loss, acc=acc * 100)
 
             model.eval()
             val_loss = 0.0
@@ -240,37 +513,45 @@ def main():
                     val_total += obs.size(0)
                     val_avg_loss = val_loss / max(val_total, 1)
                     val_acc = val_correct / max(val_total, 1)
-                    progress.update(val_task, advance=1, details=f"loss={val_avg_loss:.4f} acc={val_acc*100:.2f}%")
+                    progress.update(val_task, advance=1, loss=val_avg_loss, acc=val_acc * 100)
             model.train()
 
-            val_avg_loss = val_loss / max(val_total, 1)
-            val_acc = val_correct / max(val_total, 1)
             train_losses.append(avg_loss)
             train_accs.append(acc)
-            val_losses.append(val_avg_loss)
-            val_accs.append(val_acc)
-            print(
-                f"Epoch {epoch}/{args.epochs} | "
-                f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
-                f"val loss={val_avg_loss:.4f} acc={val_acc*100:.2f}%"
-            )
 
-            scheduler.step(val_avg_loss)
+            has_val = val_total > 0
+            if has_val:
+                val_avg_loss = val_loss / max(val_total, 1)
+                val_acc = val_correct / max(val_total, 1)
+                val_losses.append(val_avg_loss)
+                val_accs.append(val_acc)
+                print(
+                    f"Epoch {epoch}/{args.epochs} | "
+                    f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
+                    f"val loss={val_avg_loss:.4f} acc={val_acc*100:.2f}%"
+                )
+                scheduler.step(val_avg_loss)
+
+                if val_avg_loss < best_val_loss:
+                    best_val_loss = val_avg_loss
+                    patience_counter = 0
+                    best_path = os.path.join(checkpoint_dir, "model_best.pth")
+                    save_checkpoint(best_path, model, optimizer, epoch, cfg)
+                else:
+                    patience_counter += 1
+                    if patience_counter >= args.early_stop_patience:
+                        print(f"Early stopping at epoch {epoch}.")
+                        break
+            else:
+                print(
+                    f"Epoch {epoch}/{args.epochs} | "
+                    f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
+                    "val loss=N/A acc=N/A (no validation batches)"
+                )
 
             if args.save_every > 0 and epoch % args.save_every == 0:
-                ckpt_path = os.path.join(checkpoint_dir, f"model.pth")
+                ckpt_path = os.path.join(checkpoint_dir, "model.pth")
                 save_checkpoint(ckpt_path, model, optimizer, epoch, cfg)
-
-            if val_avg_loss < best_val_loss:
-                best_val_loss = val_avg_loss
-                patience_counter = 0
-                best_path = os.path.join(checkpoint_dir, "model_best.pth")
-                save_checkpoint(best_path, model, optimizer, epoch, cfg)
-            else:
-                patience_counter += 1
-                if patience_counter >= args.early_stop_patience:
-                    print(f"Early stopping at epoch {epoch}.")
-                    break
 
     final_path = os.path.join(checkpoint_dir, "model.pth")
     save_checkpoint(final_path, model, optimizer, args.epochs, cfg)
