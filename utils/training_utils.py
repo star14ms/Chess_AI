@@ -1,9 +1,15 @@
 """Utility functions for training that are not directly part of the training loop."""
+import csv
+import json
+import os
+import random
+from pathlib import Path
+from typing import Optional
+
 import torch
 import torch.nn as nn
-import random
 from omegaconf import OmegaConf
-from typing import Optional
+from torch.utils.data import IterableDataset
 
 
 def select_fen_from_dict(fen_dict):
@@ -50,6 +56,204 @@ def select_fen_from_dict(fen_dict):
     selected_quality = qualities[selected_idx]
     
     return selected_fen, selected_quality
+
+
+def iter_json_array(path: str | Path):
+    decoder = json.JSONDecoder()
+    buffer = ""
+    in_array = False
+    path = Path(path)
+    with path.open("r", encoding="utf-8") as handle:
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            while True:
+                buffer = buffer.lstrip()
+                if not in_array:
+                    if buffer.startswith("["):
+                        buffer = buffer[1:]
+                        in_array = True
+                    else:
+                        idx = buffer.find("[")
+                        if idx == -1:
+                            buffer = ""
+                            break
+                        buffer = buffer[idx + 1 :]
+                        in_array = True
+                buffer = buffer.lstrip()
+                if buffer.startswith(","):
+                    buffer = buffer[1:]
+                    buffer = buffer.lstrip()
+                if buffer.startswith("]"):
+                    return
+                try:
+                    obj, idx = decoder.raw_decode(buffer)
+                except json.JSONDecodeError:
+                    break
+                yield obj
+                buffer = buffer[idx:]
+                buffer = buffer.lstrip()
+                if buffer.startswith(","):
+                    buffer = buffer[1:]
+
+        buffer = buffer.strip()
+        if in_array and buffer:
+            if buffer.startswith(","):
+                buffer = buffer[1:].lstrip()
+            if buffer.startswith("]"):
+                return
+            try:
+                obj, _ = decoder.raw_decode(buffer)
+            except json.JSONDecodeError:
+                return
+            yield obj
+
+
+def iter_csv_rows(path: str | Path):
+    path = Path(path)
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            yield row
+
+
+def validate_json_lines(path: str | Path) -> int:
+    path = Path(path)
+    invalid_lines = 0
+    total_lines = 0
+    data_lines = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            total_lines += 1
+            stripped = line.strip()
+            if not stripped or stripped == "[" or stripped == "]":
+                continue
+            data_lines += 1
+            if stripped.endswith(","):
+                stripped = stripped[:-1].rstrip()
+            try:
+                json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                invalid_lines += 1
+                print(f"Invalid JSON line {line_number}: {exc}")
+                print(f"Invalid line content (head): {stripped[:240]}")
+                raise SystemExit("Invalid JSON line detected.")
+    print(f"Total lines: {total_lines} | Data lines: {data_lines} | Invalid: {invalid_lines}")
+    return data_lines
+
+
+def count_dataset_entries(dataset: IterableDataset) -> int:
+    return sum(1 for _ in dataset)
+
+
+def select_device(device_str: str | None) -> torch.device:
+    if device_str and device_str != "auto":
+        return torch.device(device_str)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def freeze_value_head(model: torch.nn.Module) -> None:
+    for name, param in model.named_parameters():
+        if name.startswith("value_head"):
+            param.requires_grad = False
+
+
+def save_checkpoint(
+    path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    cfg,
+    scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+    best_val_loss: float | None = None,
+    patience_counter: int | None = None,
+    train_losses: list[float] | None = None,
+    train_accs: list[float] | None = None,
+    val_losses: list[float] | None = None,
+    val_accs: list[float] | None = None,
+):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cfg_payload = OmegaConf.to_container(cfg, resolve=False)
+    payload = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "config": cfg_payload,
+    }
+    if scheduler is not None:
+        payload["scheduler_state_dict"] = scheduler.state_dict()
+    if best_val_loss is not None:
+        payload["best_val_loss"] = best_val_loss
+    if patience_counter is not None:
+        payload["patience_counter"] = patience_counter
+    if train_losses is not None:
+        payload["train_losses"] = train_losses
+    if train_accs is not None:
+        payload["train_accs"] = train_accs
+    if val_losses is not None:
+        payload["val_losses"] = val_losses
+    if val_accs is not None:
+        payload["val_accs"] = val_accs
+    torch.save(payload, path)
+
+
+def load_checkpoint(
+    path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler | None,
+    device: torch.device,
+) -> dict:
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    return checkpoint
+
+
+def select_random_fen_from_entries(entries) -> tuple[str | None, str | None]:
+    if not entries:
+        return None, None
+    valid = []
+    for entry in entries:
+        if isinstance(entry, str):
+            fen = entry.strip()
+        elif isinstance(entry, dict):
+            fen = entry.get("FEN") or entry.get("fen")
+            fen = str(fen).strip() if fen else None
+        else:
+            continue
+        if fen:
+            valid.append(fen)
+    if not valid:
+        return None, None
+    return random.choice(valid), None
+
+
+def select_random_fen_from_json_list(path: str | Path) -> tuple[str | None, str | None]:
+    selected = None
+    count = 0
+    for entry in iter_json_array(path):
+        if isinstance(entry, str):
+            fen = entry.strip()
+        elif isinstance(entry, dict):
+            fen = entry.get("FEN") or entry.get("fen")
+            fen = str(fen).strip() if fen else None
+        else:
+            continue
+        if not fen:
+            continue
+        count += 1
+        if random.randint(1, count) == 1:
+            selected = fen
+    return selected, None
 
 
 class RewardComputer:

@@ -1,5 +1,4 @@
 import argparse
-import csv
 import hashlib
 import json
 import math
@@ -17,6 +16,16 @@ import matplotlib.pyplot as plt
 
 from chess_gym.chess_custom import LegacyChessBoard, FullyTrackedBoard
 from MCTS.training_modules.chess import create_chess_network
+from utils.training_utils import (
+    count_dataset_entries,
+    freeze_value_head,
+    iter_csv_rows,
+    iter_json_array,
+    load_checkpoint,
+    save_checkpoint,
+    select_device,
+    validate_json_lines,
+)
 
 
 class MateInOneDataset(Dataset):
@@ -123,20 +132,6 @@ class MateInOneIterableDataset(IterableDataset):
         return is_val if self.split == "val" else not is_val
 
 
-def count_dataset_entries(dataset: IterableDataset) -> int:
-    return sum(1 for _ in dataset)
-
-
-def select_device(device_str: str | None) -> torch.device:
-    if device_str and device_str != "auto":
-        return torch.device(device_str)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
 def create_board_from_fen(fen: str, action_space_size: int):
     if action_space_size == 4672:
         board = LegacyChessBoard(fen)
@@ -164,95 +159,6 @@ def _extract_fen_and_move(entry: dict, source_type: str):
     moves_field = entry.get("Moves") or entry.get("moves")
     best_uci = _extract_best_move(moves_field)
     return fen, best_uci
-
-
-def iter_json_array(path: str):
-    decoder = json.JSONDecoder()
-    with open(path, "r", encoding="utf-8") as handle:
-        buffer = ""
-        in_array = False
-        while True:
-            chunk = handle.read(65536)
-            if not chunk:
-                break
-            buffer += chunk
-            while True:
-                buffer = buffer.lstrip()
-                if not in_array:
-                    if buffer.startswith("["):
-                        buffer = buffer[1:]
-                        in_array = True
-                    else:
-                        idx = buffer.find("[")
-                        if idx == -1:
-                            buffer = ""
-                            break
-                        buffer = buffer[idx + 1 :]
-                        in_array = True
-                buffer = buffer.lstrip()
-                if buffer.startswith(","):
-                    buffer = buffer[1:]
-                    buffer = buffer.lstrip()
-                if buffer.startswith("]"):
-                    return
-                try:
-                    obj, idx = decoder.raw_decode(buffer)
-                except json.JSONDecodeError:
-                    break
-                yield obj
-                buffer = buffer[idx:]
-                buffer = buffer.lstrip()
-                if buffer.startswith(","):
-                    buffer = buffer[1:]
-
-        buffer = buffer.strip()
-        if in_array and buffer:
-            if buffer.startswith(","):
-                buffer = buffer[1:].lstrip()
-            if buffer.startswith("]"):
-                return
-            try:
-                obj, _ = decoder.raw_decode(buffer)
-            except json.JSONDecodeError:
-                return
-            yield obj
-
-
-def iter_csv_rows(path: str):
-    with open(path, newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            yield row
-
-
-def validate_json_lines(path: str) -> int:
-    invalid_lines = 0
-    total_lines = 0
-    data_lines = 0
-    with open(path, "r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            total_lines += 1
-            stripped = line.strip()
-            if not stripped or stripped == "[" or stripped == "]":
-                continue
-            data_lines += 1
-            if stripped.endswith(","):
-                stripped = stripped[:-1].rstrip()
-            try:
-                json.loads(stripped)
-            except json.JSONDecodeError as exc:
-                invalid_lines += 1
-                print(f"Invalid JSON line {line_number}: {exc}")
-                print(f"Invalid line content (head): {stripped[:240]}")
-                raise SystemExit("Invalid JSON line detected.")
-    print(f"Total lines: {total_lines} | Data lines: {data_lines} | Invalid: {invalid_lines}")
-    return data_lines
-
-
-def freeze_value_head(model: torch.nn.Module) -> None:
-    for name, param in model.named_parameters():
-        if name.startswith("value_head"):
-            param.requires_grad = False
 
 
 def save_learning_curve(
@@ -284,60 +190,6 @@ def save_learning_curve(
     plot_path = os.path.join(checkpoint_dir, "learning_curve.png")
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
-
-
-def save_checkpoint(
-    path: str,
-    model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    epoch: int,
-    cfg,
-    scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
-    best_val_loss: float | None = None,
-    patience_counter: int | None = None,
-    train_losses: list[float] | None = None,
-    train_accs: list[float] | None = None,
-    val_losses: list[float] | None = None,
-    val_accs: list[float] | None = None,
-):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    cfg_payload = OmegaConf.to_container(cfg, resolve=False)
-    payload = {
-        "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "config": cfg_payload,
-    }
-    if scheduler is not None:
-        payload["scheduler_state_dict"] = scheduler.state_dict()
-    if best_val_loss is not None:
-        payload["best_val_loss"] = best_val_loss
-    if patience_counter is not None:
-        payload["patience_counter"] = patience_counter
-    if train_losses is not None:
-        payload["train_losses"] = train_losses
-    if train_accs is not None:
-        payload["train_accs"] = train_accs
-    if val_losses is not None:
-        payload["val_losses"] = val_losses
-    if val_accs is not None:
-        payload["val_accs"] = val_accs
-    torch.save(payload, path)
-
-
-def load_checkpoint(
-    path: str,
-    model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler | None,
-    device: torch.device,
-) -> dict:
-    checkpoint = torch.load(path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    if scheduler is not None and "scheduler_state_dict" in checkpoint:
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-    return checkpoint
 
 
 def main():
