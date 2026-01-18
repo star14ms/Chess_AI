@@ -788,7 +788,13 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 
     task_id_game = None
     if progress is not None:
-        task_id_game = progress.add_task(f"Max Moves (0/{max_moves})", total=max_moves, transient=True)
+        task_id_game = progress.add_task(
+            f"Max Moves (0/{max_moves})",
+            total=max_moves,
+            transient=True,
+            games=0,
+            steps=0,
+        )
         progress.start_task(task_id_game)
 
     # Cache FEN string to avoid repeated calls to env.board.fen()
@@ -1361,7 +1367,6 @@ def run_training_loop(cfg: DictConfig) -> None:
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
-            TextColumn("[{task.fields[details]}]"),  # Additional details at the end
         )
         progress = Progress(*default_columns, transient=False)
         progress.start()
@@ -1510,6 +1515,25 @@ def run_training_loop(cfg: DictConfig) -> None:
                         else:
                             actual_learning_rate = checkpoint_lr
                     
+                    # Pre-check optimizer param group sizes to avoid load errors
+                    skip_optimizer_load = False
+                    if 'param_groups' in checkpoint_opt_state:
+                        ckpt_groups = checkpoint_opt_state['param_groups']
+                        opt_groups = optimizer.param_groups
+                        if len(ckpt_groups) != len(opt_groups):
+                            skip_optimizer_load = True
+                        for ckpt_group, opt_group in zip(ckpt_groups, opt_groups):
+                            if len(ckpt_group.get('params', [])) != len(opt_group.get('params', [])):
+                                skip_optimizer_load = True
+                                break
+
+                    if skip_optimizer_load:
+                        progress.print(
+                            "Warning: Optimizer param_groups mismatch between checkpoint and current model. "
+                            "Skipping optimizer state load."
+                        )
+                        raise RuntimeError("skip_optimizer_load")
+
                     optimizer.load_state_dict(checkpoint_opt_state)
                     # Move optimizer state tensors to correct device
                     for state in optimizer.state.values():
@@ -1533,10 +1557,25 @@ def run_training_loop(cfg: DictConfig) -> None:
                     else:
                         progress.print(f"Successfully loaded optimizer state: LR={restored_lr:.2e}")
                 except Exception as e:
-                    progress.print(f"Warning: Failed to load optimizer state: {e}")
-                    progress.print("Optimizer will start fresh (this will cause higher initial losses)")
-                    import traceback
-                    traceback.print_exc()
+                    progress.print(f"Warning: Optimizer will start fresh and be reinitialized for RL training (this will cause higher initial losses)")
+                    if opt_cfg.type == "Adam":
+                        optimizer = optim.Adam(
+                            network.parameters(),
+                            lr=opt_cfg.learning_rate,
+                            weight_decay=opt_cfg.weight_decay,
+                        )
+                    elif opt_cfg.type == "SGD":
+                        momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                        optimizer = optim.SGD(
+                            network.parameters(),
+                            lr=opt_cfg.learning_rate,
+                            momentum=momentum,
+                            weight_decay=opt_cfg.weight_decay,
+                        )
+                    actual_learning_rate = opt_cfg.learning_rate
+                    if not isinstance(e, RuntimeError) or str(e) != "skip_optimizer_load":
+                        import traceback
+                        traceback.print_exc()
             else:
                 progress.print("Warning: No optimizer state found in checkpoint")
                 progress.print("Optimizer will start fresh (this will cause higher initial losses)")
@@ -1670,9 +1709,12 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         # --- Self-Play Phase --- 
         self_play_columns = (
-            TextColumn("[progress.description]{task.description}"), BarColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
-            TimeRemainingColumn(), TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+            TextColumn("{task.fields[games]} games, {task.fields[steps]} steps"),
         )
         progress.columns = self_play_columns
         
@@ -1712,7 +1754,11 @@ def run_training_loop(cfg: DictConfig) -> None:
             max_experiences = cfg.training.replay_buffer_size  # Maximum experiences to collect
             collected_games = 0
             queue_drain_start = time.time()
-            task_id_selfplay = progress.add_task("Self-Play", total=min_steps, details="") if show_progress else None
+            task_id_selfplay = (
+                progress.add_task("Self-Play", total=min_steps, games=0, steps=0)
+                if show_progress
+                else None
+            )
             
             # Phase 1: Drain all immediately available games from queue (non-blocking, batched)
             # Phase 3 optimization: Batch queue operations for better performance
@@ -1754,11 +1800,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 
                                 if task_id_selfplay is not None:
                                     progress.update(
-                                        task_id_selfplay, 
-                                        advance=len(game_data), 
+                                        task_id_selfplay,
+                                        advance=len(game_data),
                                         total=min_steps,
-                                        description="Self-Play",
-                                        details=f"{collected_games} games, {len(games_data_collected)} steps"
+                                        games=collected_games,
+                                        steps=len(games_data_collected),
+                                        refresh=True,
                                     )
                                 
                                 # Check if we've collected enough steps or hit buffer limit
@@ -1802,11 +1849,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                             if len(games_data_collected) >= min_steps or len(games_data_collected) >= max_experiences:
                                 if task_id_selfplay is not None:
                                     progress.update(
-                                        task_id_selfplay, 
-                                        advance=len(game_data), 
+                                        task_id_selfplay,
+                                        advance=len(game_data),
                                         total=min_steps,
-                                        description="Self-Play",
-                                        details=f"{collected_games} games, {len(games_data_collected)} steps"
+                                        games=collected_games,
+                                        steps=len(games_data_collected),
+                                        refresh=True,
                                     )
                                 if len(games_data_collected) >= max_experiences:
                                     break
@@ -1828,11 +1876,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 pass
                             if task_id_selfplay is not None:
                                 progress.update(
-                                    task_id_selfplay, 
-                                    advance=len(game_data), 
+                                    task_id_selfplay,
+                                    advance=len(game_data),
                                     total=min_steps,
-                                    description="Self-Play",
-                                    details=f"{collected_games} games, {len(games_data_collected)} steps"
+                                    games=collected_games,
+                                    steps=len(games_data_collected),
+                                    refresh=True,
                                 )
                     except queue.Empty:
                         # Keep waiting for actors to generate more (with reduced timeout)
@@ -1882,11 +1931,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     
                                     if task_id_selfplay is not None:
                                         progress.update(
-                                            task_id_selfplay, 
-                                            advance=len(game_data), 
+                                            task_id_selfplay,
+                                            advance=len(game_data),
                                             total=min_steps,
-                                            description="Self-Play",
-                                            details=f"{collected_games} games, {len(games_data_collected)} steps"
+                                            games=collected_games,
+                                            steps=len(games_data_collected),
+                                            refresh=True,
                                         )
                                     
                                     # Check if we've hit the buffer limit
@@ -1973,7 +2023,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                 results_iterator = pool.imap_unordered(worker_wrapper, worker_args_packed)
 
                 # Process results with a progress bar
-                task_id_selfplay = progress.add_task("Self-Play", total=min_steps, details="")
+                task_id_selfplay = progress.add_task(
+                    "Self-Play",
+                    total=min_steps,
+                    games=0,
+                    steps=0,
+                )
                 # Iterate over results as they become available
                 for game_result in results_iterator:
                     if game_result: # Check if worker returned valid data
@@ -2001,10 +2056,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                     # Update progress with steps collected
                     steps_in_game = len(game_data) if game_result and game_result[0] else 0
                     progress.update(
-                        task_id_selfplay, 
+                        task_id_selfplay,
                         advance=steps_in_game,
-                        description="Self-Play",
-                        details=f"{games_completed_this_iter} games, {len(games_data_collected)} steps"
+                        games=games_completed_this_iter,
+                        steps=len(games_data_collected),
+                        refresh=True,
                     )
                     
                     # Check if we've collected enough steps
@@ -2041,7 +2097,12 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         else: # Sequential Execution
             min_steps = cfg.training.self_play_steps_per_epoch
-            task_id_selfplay = progress.add_task("Self-Play", total=min_steps, details="")
+            task_id_selfplay = progress.add_task(
+                "Self-Play",
+                total=min_steps,
+                games=0,
+                steps=0,
+            )
             game_num = 0
             # Collect games until we have enough steps
             while len(games_data_collected) < min_steps:
@@ -2059,10 +2120,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                 game_moves_list.append(game_info)
                 # Update progress bar with current games and steps
                 progress.update(
-                    task_id_selfplay, 
+                    task_id_selfplay,
                     advance=len(game_data),
-                    description="Self-Play",
-                    details=f"{games_completed_this_iter} games, {len(games_data_collected)} steps"
+                    games=games_completed_this_iter,
+                    steps=len(games_data_collected),
+                    refresh=True,
                 )
                 # Track device contribution (sequential mode uses training device)
                 device_contributions[str(device)] += 1
@@ -2265,8 +2327,12 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_samples_in_iteration = 0
 
         task_id_train = progress.add_task(
-            "Training Epochs", total=cfg.training.num_training_steps,
-            loss_p=float('nan'), loss_v=float('nan'), illegal_r=float('nan'), illegal_p=float('nan')
+            "Training Epochs",
+            total=cfg.training.num_training_steps,
+            loss_p=float("nan"),
+            loss_v=float("nan"),
+            illegal_r=float("nan"),
+            illegal_p=float("nan"),
         )
         # Use values from cfg
         for epoch in range(cfg.training.num_training_steps):
