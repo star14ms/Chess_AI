@@ -1296,30 +1296,399 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
 
     return (full_game_data, game_info)
 
+
+def _parse_optional_seconds(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("", "none", "null"):
+            return None
+        return int(float(s))
+    if isinstance(value, (int, float)):
+        return int(value)
+    raise TypeError(
+        f"training.max_training_time_seconds must be int/float/str/None, got {type(value)}: {value!r}"
+    )
+
+
+def _select_training_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _init_progress(cfg: DictConfig) -> tuple[Progress, bool]:
+    progress = NullProgress(rich=cfg.training.progress_bar)
+    show_progress = bool(cfg.training.get("progress_bar", True))
+    if show_progress:
+        default_columns = (
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+        )
+        progress = Progress(*default_columns, transient=False)
+        progress.start()
+    return progress, show_progress
+
+
+def _init_network_and_optimizer(
+    cfg: DictConfig, device: torch.device, progress: Progress
+) -> tuple[nn.Module, optim.Optimizer, DictConfig, float]:
+    network = create_network(cfg, device)
+    network.eval()
+
+    profile_network = create_network(cfg, device)
+    profile_network.eval()
+    N, C, H, W = cfg.training.batch_size, cfg.network.input_channels, cfg.network.board_size, cfg.network.board_size
+    profile_model(profile_network, (torch.randn(N, C, H, W).to(device),))
+    del profile_network
+
+    opt_cfg = cfg.optimizer
+    actual_learning_rate = opt_cfg.learning_rate
+    if opt_cfg.type == "Adam":
+        optimizer = optim.Adam(network.parameters(), lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+    elif opt_cfg.type == "SGD":
+        momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+        optimizer = optim.SGD(
+            network.parameters(),
+            lr=opt_cfg.learning_rate,
+            momentum=momentum,
+            weight_decay=opt_cfg.weight_decay,
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {opt_cfg.type}")
+    progress.print(f"Optimizer initialized: {opt_cfg.type}")
+    return network, optimizer, opt_cfg, actual_learning_rate
+
+
+def _init_replay_buffer(cfg: DictConfig, progress: Progress):
+    use_prioritized_buffer = cfg.training.get("use_prioritized_buffer", False)
+    last_max_regular = None
+    last_max_checkmate = None
+    if use_prioritized_buffer:
+        checkmate_reserve = cfg.training.get("checkmate_reserve", 1000)
+        checkmate_sample_ratio = cfg.training.get("checkmate_sample_ratio", 0.2)
+        replay_buffer = PrioritizedReplayBuffer(
+            max_size=cfg.training.replay_buffer_size,
+            checkmate_reserve=checkmate_reserve,
+            checkmate_sample_ratio=checkmate_sample_ratio,
+        )
+        last_max_regular = replay_buffer.max_regular
+        last_max_checkmate = replay_buffer.max_checkmate
+        total_capacity = last_max_regular + last_max_checkmate
+        progress.print(
+            "Using PrioritizedReplayBuffer "
+            f"(regular={last_max_regular}, checkmate={last_max_checkmate}, total={total_capacity}, "
+            f"sample_ratio={checkmate_sample_ratio})"
+        )
+    else:
+        replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
+    return replay_buffer, use_prioritized_buffer, last_max_regular, last_max_checkmate
+
+
+def _init_checkpoint_dirs(cfg: DictConfig, progress: Progress):
+    checkpoint_dir = cfg.training.checkpoint_dir
+    checkpoint_dir_load = cfg.training.get("checkpoint_dir_load", None)
+    load_dir = checkpoint_dir_load if checkpoint_dir_load not in (None, "", "null") else checkpoint_dir
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
+    return checkpoint_dir, load_dir
+
+
+def _init_game_history_dir(cfg: DictConfig, progress: Progress):
+    game_history_dir = cfg.training.get("game_history_dir", None)
+    if game_history_dir not in (None, "", "null"):
+        os.makedirs(game_history_dir, exist_ok=True)
+        progress.print(f"Game histories will be saved in: {os.path.abspath(game_history_dir)}")
+    else:
+        game_history_dir = None
+    return game_history_dir
+
+
+def _init_self_play_infra(cfg: DictConfig):
+    manager = multiprocessing.Manager()
+    sp_queue = manager.Queue(maxsize=cfg.training.get("continual_queue_maxsize", 64))
+    stop_event = manager.Event()
+    continual_enabled = bool(cfg.training.get("continual_training", False))
+    actors: list[multiprocessing.Process] = []
+    actor_device_map: dict[int, str] = {}
+    return manager, sp_queue, stop_event, continual_enabled, actors, actor_device_map
+
+
+def _load_checkpoint(
+    cfg: DictConfig,
+    checkpoint_path: str,
+    network: nn.Module,
+    optimizer: optim.Optimizer,
+    opt_cfg: DictConfig,
+    device: torch.device,
+    progress: Progress,
+    replay_buffer,
+    use_prioritized_buffer: bool,
+    last_max_regular: int | None,
+    last_max_checkmate: int | None,
+    actual_learning_rate: float,
+    history: dict,
+) -> tuple[int, int, float, bool, int | None, int | None, dict]:
+    if not os.path.exists(checkpoint_path):
+        progress.print("No existing checkpoint found. Starting training from scratch...")
+        return 0, 0, actual_learning_rate, False, last_max_regular, last_max_checkmate, history
+
+    progress.print(f"\nFound existing checkpoint at {checkpoint_path}")
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        network.load_state_dict(checkpoint["model_state_dict"])
+        network.to(device)
+
+        if "optimizer_state_dict" in checkpoint:
+            try:
+                checkpoint_opt_state = checkpoint["optimizer_state_dict"]
+                if "param_groups" in checkpoint_opt_state and len(checkpoint_opt_state["param_groups"]) > 0:
+                    checkpoint_lr = checkpoint_opt_state["param_groups"][0].get(
+                        "lr", opt_cfg.learning_rate
+                    )
+                    if checkpoint_lr != opt_cfg.learning_rate:
+                        actual_learning_rate = checkpoint_lr
+                        progress.print(
+                            f"Using learning rate from checkpoint: {checkpoint_lr} (config had: {opt_cfg.learning_rate})"
+                        )
+                    else:
+                        actual_learning_rate = checkpoint_lr
+
+                skip_optimizer_load = False
+                optimizer_param_names = checkpoint.get("optimizer_param_names")
+                restored_by_name = False
+                if "param_groups" in checkpoint_opt_state:
+                    ckpt_groups = checkpoint_opt_state["param_groups"]
+                    opt_groups = optimizer.param_groups
+                    if len(ckpt_groups) != len(opt_groups):
+                        skip_optimizer_load = True
+                    for ckpt_group, opt_group in zip(ckpt_groups, opt_groups):
+                        if len(ckpt_group.get("params", [])) != len(opt_group.get("params", [])):
+                            skip_optimizer_load = True
+                            break
+
+                use_manual_state_restore = False
+                if skip_optimizer_load and optimizer_param_names:
+                    try:
+                        name_to_param = dict(network.named_parameters())
+                        new_state = optimizer.state_dict()
+                        loaded_states = 0
+                        total_candidates = 0
+                        state_dict = checkpoint_opt_state.get("state", {})
+                        for group, names in zip(
+                            checkpoint_opt_state.get("param_groups", []), optimizer_param_names
+                        ):
+                            for old_param_id, param_name in zip(group.get("params", []), names):
+                                if not isinstance(param_name, str) or not param_name:
+                                    continue
+                                if not isinstance(old_param_id, int):
+                                    try:
+                                        if isinstance(old_param_id, torch.Tensor):
+                                            old_param_id = int(old_param_id.item())
+                                        else:
+                                            old_param_id = int(old_param_id)
+                                    except Exception:
+                                        continue
+                                total_candidates += 1
+                                param = name_to_param.get(param_name)
+                                if param is None:
+                                    continue
+                                if old_param_id in state_dict:
+                                    new_state["state"][id(param)] = state_dict[old_param_id]
+                                    loaded_states += 1
+
+                        optimizer.state.clear()
+                        for group, names in zip(
+                            checkpoint_opt_state.get("param_groups", []), optimizer_param_names
+                        ):
+                            for old_param_id, param_name in zip(group.get("params", []), names):
+                                if not isinstance(param_name, str) or not param_name:
+                                    continue
+                                param = name_to_param.get(param_name)
+                                if param is None:
+                                    continue
+                                if not isinstance(old_param_id, int):
+                                    try:
+                                        if isinstance(old_param_id, torch.Tensor):
+                                            old_param_id = int(old_param_id.item())
+                                        else:
+                                            old_param_id = int(old_param_id)
+                                    except Exception:
+                                        continue
+                                if old_param_id in state_dict:
+                                    optimizer.state[param] = state_dict[old_param_id]
+                        use_manual_state_restore = True
+                        restored_by_name = loaded_states > 0
+                        if restored_by_name:
+                            progress.print(
+                                f"Loaded optimizer state by name for {loaded_states}/{total_candidates} params"
+                            )
+                        else:
+                            skip_optimizer_load = True
+                    except Exception as exc:
+                        progress.print(f"Warning: Name-based optimizer restore failed: {exc}")
+                        skip_optimizer_load = True
+
+                if skip_optimizer_load and not restored_by_name:
+                    progress.print(
+                        "Warning: Optimizer param_groups mismatch between checkpoint and current model. "
+                        "Skipping optimizer state load."
+                    )
+                    raise RuntimeError("skip_optimizer_load")
+
+                if not use_manual_state_restore:
+                    optimizer.load_state_dict(checkpoint_opt_state)
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(device)
+
+                restored_lr = optimizer.param_groups[0]["lr"]
+                if abs(restored_lr - actual_learning_rate) > 1e-8:
+                    progress.print(
+                        f"Warning: Learning rate mismatch! Checkpoint had {actual_learning_rate}, restored to {restored_lr}"
+                    )
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = actual_learning_rate
+
+                if opt_cfg.type == "Adam" and optimizer.state:
+                    first_param_id = optimizer.param_groups[0]["params"][0]
+                    step_count = (
+                        optimizer.state[first_param_id].get("step", 0)
+                        if first_param_id in optimizer.state
+                        else 0
+                    )
+                    progress.print(
+                        f"Successfully loaded optimizer state: LR={restored_lr:.2e}, Adam step={step_count}"
+                    )
+                else:
+                    progress.print(f"Successfully loaded optimizer state: LR={restored_lr:.2e}")
+            except Exception as e:
+                progress.print(
+                    "Warning: Optimizer will start fresh and be reinitialized for RL training (this will cause higher initial losses)"
+                )
+                if opt_cfg.type == "Adam":
+                    optimizer = optim.Adam(
+                        network.parameters(),
+                        lr=opt_cfg.learning_rate,
+                        weight_decay=opt_cfg.weight_decay,
+                    )
+                elif opt_cfg.type == "SGD":
+                    momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                    optimizer = optim.SGD(
+                        network.parameters(),
+                        lr=opt_cfg.learning_rate,
+                        momentum=momentum,
+                        weight_decay=opt_cfg.weight_decay,
+                    )
+                actual_learning_rate = opt_cfg.learning_rate
+                if not isinstance(e, RuntimeError) or str(e) != "skip_optimizer_load":
+                    import traceback
+
+                    traceback.print_exc()
+        else:
+            progress.print("Warning: No optimizer state found in checkpoint")
+            progress.print("Optimizer will start fresh (this will cause higher initial losses)")
+
+        start_iter = int(checkpoint.get("iteration", 0))
+        total_games_simulated = int(checkpoint.get("total_games_simulated", 0))
+
+        if "history" in checkpoint:
+            history = checkpoint["history"]
+            if "non_draw_count" not in history:
+                history["non_draw_count"] = [0] * len(history["policy_loss"])
+            if "repetition_draw_count" not in history:
+                history["repetition_draw_count"] = [0] * len(history["policy_loss"])
+            if "other_draw_count" not in history:
+                history["other_draw_count"] = [0] * len(history["policy_loss"])
+            progress.print(
+                f"Loaded training history with {len(history['policy_loss'])} recorded iterations"
+            )
+
+        buffer_loaded = False
+        if "replay_buffer_state" in checkpoint:
+            try:
+                replay_buffer_state = checkpoint["replay_buffer_state"]
+                is_prioritized = replay_buffer_state.get("prioritized", False)
+                if is_prioritized and not use_prioritized_buffer:
+                    progress.print(
+                        "Warning: Checkpoint has PrioritizedReplayBuffer but config uses regular buffer. Converting..."
+                    )
+                elif not is_prioritized and use_prioritized_buffer:
+                    progress.print(
+                        "Warning: Checkpoint has regular buffer but config uses PrioritizedReplayBuffer. Converting..."
+                    )
+
+                old_reserve = replay_buffer_state.get("checkmate_reserve", None)
+                new_reserve = cfg.training.get("checkmate_reserve", 1000) if use_prioritized_buffer else None
+
+                replay_buffer.load_state(replay_buffer_state, create_board_from_serialized)
+
+                if use_prioritized_buffer and hasattr(replay_buffer, "get_stats"):
+                    stats = replay_buffer.get_stats()
+                    if (
+                        old_reserve is not None
+                        and new_reserve is not None
+                        and old_reserve != new_reserve
+                    ):
+                        progress.print(
+                            f"Loaded replay buffer: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)"
+                        )
+                        progress.print(
+                            f"Changed checkmate_reserve from {old_reserve} to {new_reserve} - dropped oldest checkmate positions if over cap"
+                        )
+                    else:
+                        progress.print(
+                            f"Loaded replay buffer from checkpoint: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)"
+                        )
+                else:
+                    progress.print(
+                        f"Loaded replay buffer from checkpoint: {len(replay_buffer)} experiences"
+                    )
+                if use_prioritized_buffer:
+                    if last_max_regular is None or last_max_checkmate is None:
+                        last_max_regular = replay_buffer.max_regular
+                        last_max_checkmate = replay_buffer.max_checkmate
+                    if (
+                        replay_buffer.max_regular != last_max_regular
+                        or replay_buffer.max_checkmate != last_max_checkmate
+                    ):
+                        progress.print(
+                            "Replay buffer caps updated: "
+                            f"regular={replay_buffer.max_regular}, checkmate={replay_buffer.max_checkmate}, total={replay_buffer.total_max_size} "
+                            f"(from regular={last_max_regular}, checkmate={last_max_checkmate})"
+                        )
+                        last_max_regular = replay_buffer.max_regular
+                        last_max_checkmate = replay_buffer.max_checkmate
+                buffer_loaded = True
+            except Exception as e:
+                progress.print(f"Warning: Failed to load replay buffer from checkpoint: {e}")
+
+        if buffer_loaded:
+            progress.print(
+                f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated and {len(replay_buffer)} experiences in replay buffer"
+            )
+        else:
+            progress.print(
+                f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated (no replay buffer found)"
+            )
+        return start_iter, total_games_simulated, actual_learning_rate, buffer_loaded, last_max_regular, last_max_checkmate, history
+    except Exception as e:
+        progress.print(f"Error loading checkpoint: {e}")
+        progress.print("Starting training from scratch...")
+        return 0, 0, actual_learning_rate, False, last_max_regular, last_max_checkmate, history
+
 # --- Training Loop Function --- 
 # Use DictConfig for type hint from Hydra
 def run_training_loop(cfg: DictConfig) -> None: 
     """Main function to run the training loop using Hydra config."""
-    # Defer real progress creation until we know whether to display
-    progress = NullProgress(rich=cfg.training.progress_bar)
-
-    # Coerce optional numeric config values that may arrive as strings
-    # (e.g., Hydra CLI overrides like training.max_training_time_seconds="3600")
-    def _parse_optional_seconds(value):
-        if value is None:
-            return None
-        # OmegaConf may store numbers as strings depending on overrides/env
-        if isinstance(value, str):
-            s = value.strip().lower()
-            if s in ("", "none", "null"):
-                return None
-            # Allow "3600" or "3600.0"
-            return int(float(s))
-        if isinstance(value, (int, float)):
-            return int(value)
-        raise TypeError(
-            f"training.max_training_time_seconds must be int/float/str/None, got {type(value)}: {value!r}"
-        )
+    progress, show_progress = _init_progress(cfg)
 
     max_training_time_seconds = _parse_optional_seconds(
         cfg.training.get("max_training_time_seconds", None)
@@ -1329,13 +1698,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Ensure factories are initialized in the main process
     initialize_factories_from_cfg(cfg)
     # Training device selection: always use fastest available accelerator
-    # Priority: CUDA > MPS > CPU
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    device = _select_training_device()
     log_str_trining_device = f"{device} for training"
 
     # Print action space size
@@ -1355,104 +1718,36 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Check config flag to decide execution mode
     use_multiprocessing_flag = cfg.training.get('use_multiprocessing', False)
 
-    # Determine whether to show progress bars
-    show_progress = bool(cfg.training.get('progress_bar', True))
-
-    # Initialize real progress renderer only if showing progress
-    if show_progress:
-        # Set default columns to include description for all progress bars
-        default_columns = (
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
-            TimeRemainingColumn(),
-            TimeElapsedColumn(),
-        )
-        progress = Progress(*default_columns, transient=False)
-        progress.start()
-
     # Mode selection will occur after defining checkpoint and queue
-    
-    # Initialize Network using network factory
-    network = create_network(cfg, device)
-    network.eval()
 
-    # Create a separate network instance for profiling
-    profile_network = create_network(cfg, device)
-    profile_network.eval()
-
-    # Profile the network
-    N, C, H, W = cfg.training.batch_size, cfg.network.input_channels, cfg.network.board_size, cfg.network.board_size
-    profile_model(profile_network, (torch.randn(N, C, H, W).to(device),))
-    del profile_network  # Clean up the profiling network
-
-    # Initialize Optimizer using optimizer config
-    opt_cfg = cfg.optimizer
-    # Will be set from checkpoint if available, otherwise use config value
-    actual_learning_rate = opt_cfg.learning_rate
-    if opt_cfg.type == "Adam":
-        optimizer = optim.Adam(network.parameters(), lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
-    elif opt_cfg.type == "SGD":
-         # Ensure momentum is present if using SGD
-         momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
-         optimizer = optim.SGD(network.parameters(), lr=opt_cfg.learning_rate, momentum=momentum, weight_decay=opt_cfg.weight_decay)
-    else:
-        raise ValueError(f"Unsupported optimizer: {opt_cfg.type}")
-    progress.print(f"Optimizer initialized: {opt_cfg.type}")
-
-    # Initialize Replay Buffer
-    # Use PrioritizedReplayBuffer if enabled, otherwise use regular ReplayBuffer
-    use_prioritized_buffer = cfg.training.get('use_prioritized_buffer', False)
-    last_max_regular = None
-    last_max_checkmate = None
-    if use_prioritized_buffer:
-        checkmate_reserve = cfg.training.get('checkmate_reserve', 1000)
-        checkmate_sample_ratio = cfg.training.get('checkmate_sample_ratio', 0.2)
-        replay_buffer = PrioritizedReplayBuffer(
-            max_size=cfg.training.replay_buffer_size,
-            checkmate_reserve=checkmate_reserve,
-            checkmate_sample_ratio=checkmate_sample_ratio
-        )
-        last_max_regular = replay_buffer.max_regular
-        last_max_checkmate = replay_buffer.max_checkmate
-        total_capacity = last_max_regular + last_max_checkmate
-        progress.print(
-            "Using PrioritizedReplayBuffer "
-            f"(regular={last_max_regular}, checkmate={last_max_checkmate}, total={total_capacity}, "
-            f"sample_ratio={checkmate_sample_ratio})"
-        )
-    else:
-        replay_buffer = ReplayBuffer(cfg.training.replay_buffer_size)
+    network, optimizer, opt_cfg, actual_learning_rate = _init_network_and_optimizer(
+        cfg, device, progress
+    )
+    replay_buffer, use_prioritized_buffer, last_max_regular, last_max_checkmate = _init_replay_buffer(
+        cfg, progress
+    )
 
     # Loss Functions
     policy_loss_fn = nn.CrossEntropyLoss()
     value_loss_fn = nn.MSELoss()
 
     # Checkpoint directories (relative to hydra run dir)
-    checkpoint_dir = cfg.training.checkpoint_dir
-    # Allow loading from a different directory if specified
-    checkpoint_dir_load = cfg.training.get('checkpoint_dir_load', None)
-    load_dir = checkpoint_dir_load if checkpoint_dir_load not in (None, "", "null") else checkpoint_dir
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
-    
+    checkpoint_dir, load_dir = _init_checkpoint_dirs(cfg, progress)
+
     # Game history directory setup (optional)
-    game_history_dir = cfg.training.get('game_history_dir', None)
-    if game_history_dir not in (None, "", "null"):
-        os.makedirs(game_history_dir, exist_ok=True)
-        progress.print(f"Game histories will be saved in: {os.path.abspath(game_history_dir)}")
-    else:
-        game_history_dir = None
+    game_history_dir = _init_game_history_dir(cfg, progress)
 
     env = create_environment(cfg, render=not use_multiprocessing_flag)
 
     # Continual self-play setup (actors + queue)
-    manager = multiprocessing.Manager()
-    sp_queue = manager.Queue(maxsize=cfg.training.get('continual_queue_maxsize', 64))
-    stop_event = manager.Event()
-    continual_enabled = bool(cfg.training.get('continual_training', False))
-    actors = []
-    actor_device_map = {}  # Map process to device string for dynamic GPU assignment
+    (
+        manager,
+        sp_queue,
+        stop_event,
+        continual_enabled,
+        actors,
+        actor_device_map,
+    ) = _init_self_play_infra(cfg)
 
     # --- Mode selection for self-play ---
     # Note: Actor launching for continual mode happens after checkpoint loading
@@ -1493,225 +1788,29 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # Check for existing checkpoint
     checkpoint_path = os.path.join(load_dir, "model.pth")
-    if os.path.exists(checkpoint_path):
-        progress.print(f"\nFound existing checkpoint at {checkpoint_path}")
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-            network.load_state_dict(checkpoint['model_state_dict'])
-            # Ensure network is on correct device before loading optimizer state
-            network.to(device)
-            
-            # Load optimizer state with proper device handling
-            if 'optimizer_state_dict' in checkpoint:
-                try:
-                    # Extract learning rate from checkpoint before loading state
-                    # This preserves the actual learning rate used during training
-                    checkpoint_opt_state = checkpoint['optimizer_state_dict']
-                    if 'param_groups' in checkpoint_opt_state and len(checkpoint_opt_state['param_groups']) > 0:
-                        checkpoint_lr = checkpoint_opt_state['param_groups'][0].get('lr', opt_cfg.learning_rate)
-                        if checkpoint_lr != opt_cfg.learning_rate:
-                            actual_learning_rate = checkpoint_lr
-                            progress.print(f"Using learning rate from checkpoint: {checkpoint_lr} (config had: {opt_cfg.learning_rate})")
-                        else:
-                            actual_learning_rate = checkpoint_lr
-                    
-                    # Pre-check optimizer param group sizes to avoid load errors
-                    skip_optimizer_load = False
-                    optimizer_param_names = checkpoint.get("optimizer_param_names")
-                    restored_by_name = False
-                    if 'param_groups' in checkpoint_opt_state:
-                        ckpt_groups = checkpoint_opt_state['param_groups']
-                        opt_groups = optimizer.param_groups
-                        if len(ckpt_groups) != len(opt_groups):
-                            skip_optimizer_load = True
-                        for ckpt_group, opt_group in zip(ckpt_groups, opt_groups):
-                            if len(ckpt_group.get('params', [])) != len(opt_group.get('params', [])):
-                                skip_optimizer_load = True
-                                break
-
-                    use_manual_state_restore = False
-                    if skip_optimizer_load and optimizer_param_names:
-                        # Attempt name-based optimizer state restore (best-effort)
-                        try:
-                            name_to_param = dict(network.named_parameters())
-                            new_state = optimizer.state_dict()
-                            loaded_states = 0
-                            total_candidates = 0
-                            state_dict = checkpoint_opt_state.get("state", {})
-                            for group, names in zip(checkpoint_opt_state.get("param_groups", []), optimizer_param_names):
-                                for old_param_id, param_name in zip(group.get("params", []), names):
-                                    if not isinstance(param_name, str) or not param_name:
-                                        continue
-                                    if not isinstance(old_param_id, int):
-                                        try:
-                                            if isinstance(old_param_id, torch.Tensor):
-                                                old_param_id = int(old_param_id.item())
-                                            else:
-                                                old_param_id = int(old_param_id)
-                                        except Exception:
-                                            continue
-                                    total_candidates += 1
-                                    param = name_to_param.get(param_name)
-                                    if param is None:
-                                        continue
-                                    if old_param_id in state_dict:
-                                        new_state["state"][id(param)] = state_dict[old_param_id]
-                                        loaded_states += 1
-                            # Manual state restore: write states directly to avoid load_state_dict ambiguity
-                            optimizer.state.clear()
-                            for group, names in zip(checkpoint_opt_state.get("param_groups", []), optimizer_param_names):
-                                for old_param_id, param_name in zip(group.get("params", []), names):
-                                    if not isinstance(param_name, str) or not param_name:
-                                        continue
-                                    param = name_to_param.get(param_name)
-                                    if param is None:
-                                        continue
-                                    if not isinstance(old_param_id, int):
-                                        try:
-                                            if isinstance(old_param_id, torch.Tensor):
-                                                old_param_id = int(old_param_id.item())
-                                            else:
-                                                old_param_id = int(old_param_id)
-                                        except Exception:
-                                            continue
-                                    if old_param_id in state_dict:
-                                        optimizer.state[param] = state_dict[old_param_id]
-                            use_manual_state_restore = True
-                            restored_by_name = loaded_states > 0
-                            if restored_by_name:
-                                progress.print(
-                                    f"Loaded optimizer state by name for {loaded_states}/{total_candidates} params"
-                                )
-                            else:
-                                skip_optimizer_load = True
-                        except Exception as exc:
-                            progress.print(f"Warning: Name-based optimizer restore failed: {exc}")
-                            skip_optimizer_load = True
-
-                    if skip_optimizer_load and not restored_by_name:
-                        progress.print(
-                            "Warning: Optimizer param_groups mismatch between checkpoint and current model. "
-                            "Skipping optimizer state load."
-                        )
-                        raise RuntimeError("skip_optimizer_load")
-
-                    if not use_manual_state_restore:
-                        optimizer.load_state_dict(checkpoint_opt_state)
-                    # Move optimizer state tensors to correct device
-                    for state in optimizer.state.values():
-                        for k, v in state.items():
-                            if isinstance(v, torch.Tensor):
-                                state[k] = v.to(device)
-                    
-                    # Verify learning rate was restored correctly
-                    restored_lr = optimizer.param_groups[0]['lr']
-                    if abs(restored_lr - actual_learning_rate) > 1e-8:
-                        progress.print(f"Warning: Learning rate mismatch! Checkpoint had {actual_learning_rate}, restored to {restored_lr}")
-                        # Fix it
-                        for param_group in optimizer.param_groups:
-                            param_group['lr'] = actual_learning_rate
-                    
-                    # Log optimizer state info
-                    if opt_cfg.type == "Adam" and optimizer.state:
-                        first_param_id = optimizer.param_groups[0]['params'][0]
-                        step_count = optimizer.state[first_param_id].get('step', 0) if first_param_id in optimizer.state else 0
-                        progress.print(f"Successfully loaded optimizer state: LR={restored_lr:.2e}, Adam step={step_count}")
-                    else:
-                        progress.print(f"Successfully loaded optimizer state: LR={restored_lr:.2e}")
-                except Exception as e:
-                    progress.print(f"Warning: Optimizer will start fresh and be reinitialized for RL training (this will cause higher initial losses)")
-                    if opt_cfg.type == "Adam":
-                        optimizer = optim.Adam(
-                            network.parameters(),
-                            lr=opt_cfg.learning_rate,
-                            weight_decay=opt_cfg.weight_decay,
-                        )
-                    elif opt_cfg.type == "SGD":
-                        momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
-                        optimizer = optim.SGD(
-                            network.parameters(),
-                            lr=opt_cfg.learning_rate,
-                            momentum=momentum,
-                            weight_decay=opt_cfg.weight_decay,
-                        )
-                    actual_learning_rate = opt_cfg.learning_rate
-                    if not isinstance(e, RuntimeError) or str(e) != "skip_optimizer_load":
-                        import traceback
-                        traceback.print_exc()
-            else:
-                progress.print("Warning: No optimizer state found in checkpoint")
-                progress.print("Optimizer will start fresh (this will cause higher initial losses)")
-            
-            start_iter = int(checkpoint.get('iteration', 0))
-            total_games_simulated = int(checkpoint.get('total_games_simulated', 0))
-            
-            # Load training history if available
-            if 'history' in checkpoint:
-                history = checkpoint['history']
-                # Initialize new draw statistics fields if they don't exist (for backward compatibility)
-                if 'non_draw_count' not in history:
-                    history['non_draw_count'] = [0] * len(history['policy_loss'])
-                if 'repetition_draw_count' not in history:
-                    history['repetition_draw_count'] = [0] * len(history['policy_loss'])
-                if 'other_draw_count' not in history:
-                    history['other_draw_count'] = [0] * len(history['policy_loss'])
-                progress.print(f"Loaded training history with {len(history['policy_loss'])} recorded iterations")
-            
-            # Try to load replay buffer from checkpoint
-            buffer_loaded = False
-            if 'replay_buffer_state' in checkpoint:
-                try:
-                    replay_buffer_state = checkpoint['replay_buffer_state']
-                    # Check if checkpoint was saved with PrioritizedReplayBuffer
-                    is_prioritized = replay_buffer_state.get('prioritized', False)
-                    if is_prioritized and not use_prioritized_buffer:
-                        progress.print("Warning: Checkpoint has PrioritizedReplayBuffer but config uses regular buffer. Converting...")
-                        # Could convert here if needed, but for now just load as regular
-                    elif not is_prioritized and use_prioritized_buffer:
-                        progress.print("Warning: Checkpoint has regular buffer but config uses PrioritizedReplayBuffer. Converting...")
-                        # Convert regular buffer to prioritized (checkmate positions will be detected on add)
-                    
-                    # Check if checkmate_reserve changed
-                    old_reserve = replay_buffer_state.get('checkmate_reserve', None)
-                    new_reserve = cfg.training.get('checkmate_reserve', 1000) if use_prioritized_buffer else None
-                    
-                    replay_buffer.load_state(replay_buffer_state, create_board_from_serialized)
-                    
-                    if use_prioritized_buffer and hasattr(replay_buffer, 'get_stats'):
-                        stats = replay_buffer.get_stats()
-                        if old_reserve is not None and new_reserve is not None and old_reserve != new_reserve:
-                            progress.print(f"Loaded replay buffer: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)")
-                            progress.print(f"Changed checkmate_reserve from {old_reserve} to {new_reserve} - dropped oldest checkmate positions if over cap")
-                        else:
-                            progress.print(f"Loaded replay buffer from checkpoint: {stats['total']} experiences ({stats['checkmate']} checkmate, {stats['regular']} regular)")
-                    else:
-                        progress.print(f"Loaded replay buffer from checkpoint: {len(replay_buffer)} experiences")
-                    if use_prioritized_buffer:
-                        if last_max_regular is None or last_max_checkmate is None:
-                            last_max_regular = replay_buffer.max_regular
-                            last_max_checkmate = replay_buffer.max_checkmate
-                        if replay_buffer.max_regular != last_max_regular or replay_buffer.max_checkmate != last_max_checkmate:
-                            progress.print(
-                                "Replay buffer caps updated: "
-                                f"regular={replay_buffer.max_regular}, checkmate={replay_buffer.max_checkmate}, total={replay_buffer.total_max_size} "
-                                f"(from regular={last_max_regular}, checkmate={last_max_checkmate})"
-                            )
-                            last_max_regular = replay_buffer.max_regular
-                            last_max_checkmate = replay_buffer.max_checkmate
-                    buffer_loaded = True
-                except Exception as e:
-                    progress.print(f"Warning: Failed to load replay buffer from checkpoint: {e}")
-            
-            if buffer_loaded:
-                progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated and {len(replay_buffer)} experiences in replay buffer")
-            else:
-                progress.print(f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated (no replay buffer found)")
-        except Exception as e:
-            progress.print(f"Error loading checkpoint: {e}")
-            progress.print("Starting training from scratch...")
-            start_iter = 0
-    else:
-        progress.print("No existing checkpoint found. Starting training from scratch...")
+    (
+        start_iter,
+        total_games_simulated,
+        actual_learning_rate,
+        buffer_loaded,
+        last_max_regular,
+        last_max_checkmate,
+        history,
+    ) = _load_checkpoint(
+        cfg=cfg,
+        checkpoint_path=checkpoint_path,
+        network=network,
+        optimizer=optimizer,
+        opt_cfg=opt_cfg,
+        device=device,
+        progress=progress,
+        replay_buffer=replay_buffer,
+        use_prioritized_buffer=use_prioritized_buffer,
+        last_max_regular=last_max_regular,
+        last_max_checkmate=last_max_checkmate,
+        actual_learning_rate=actual_learning_rate,
+        history=history,
+    )
 
     # --- Launch continual self-play actors (after checkpoint loading) ---
     if continual_enabled:
