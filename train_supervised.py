@@ -255,6 +255,37 @@ def freeze_value_head(model: torch.nn.Module) -> None:
             param.requires_grad = False
 
 
+def save_learning_curve(
+    train_losses: list[float],
+    train_accs: list[float],
+    val_losses: list[float],
+    val_accs: list[float],
+    checkpoint_dir: str,
+) -> None:
+    if not train_losses or not val_losses:
+        return
+    epochs = list(range(1, len(train_losses) + 1))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    axes[0].plot(epochs, train_losses, label="train")
+    axes[0].plot(epochs, val_losses, label="val")
+    axes[0].set_title("Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].legend()
+
+    axes[1].plot(epochs, [a * 100 for a in train_accs], label="train")
+    axes[1].plot(epochs, [a * 100 for a in val_accs], label="val")
+    axes[1].set_title("Accuracy")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Accuracy (%)")
+    axes[1].legend()
+
+    fig.tight_layout()
+    plot_path = os.path.join(checkpoint_dir, "learning_curve.png")
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+
+
 def save_checkpoint(
     path: str,
     model: torch.nn.Module,
@@ -331,7 +362,7 @@ def main():
     parser.add_argument("--val-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--conv-dropout", type=float, default=0.1)
-    parser.add_argument("--policy-dropout", type=float, default=0.3)
+    parser.add_argument("--policy-dropout", type=float, default=0.25)
     parser.add_argument("--early-stop-patience", type=int, default=10)
     parser.add_argument("--lr-patience", type=int, default=5)
     parser.add_argument("--lr-factor", type=float, default=0.5)
@@ -415,11 +446,25 @@ def main():
     train_total = None
     val_total = None
     print("Counting dataset for progress totals...")
-    train_count = count_dataset_entries(train_dataset)
-    val_count = count_dataset_entries(val_dataset)
+    if total_rows is not None:
+        effective_rows = total_rows
+        if args.max_rows is not None:
+            effective_rows = min(effective_rows, args.max_rows)
+        if args.val_split <= 0:
+            val_count = 0
+        elif args.val_split >= 1:
+            val_count = effective_rows
+        else:
+            val_count = int(effective_rows * args.val_split)
+        train_count = max(effective_rows - val_count, 0)
+        print("Using line-count totals (skips/filters not applied).")
+    else:
+        train_count = count_dataset_entries(train_dataset)
+        val_count = count_dataset_entries(val_dataset)
     train_total = math.ceil(train_count / batch_size) if train_count else 0
     val_total = math.ceil(val_count / batch_size) if val_count else 0
-    print(f"Total batches | train={train_total} | val={val_total}")
+    print(f"Total data entries | train={train_count} | val={val_count}")
+    print(f"Total batches      | train={train_total} | val={val_total}")
     if args.num_workers > 0:
         print("Note: totals are computed without worker partitioning.")
 
@@ -555,6 +600,8 @@ def main():
                     "val loss=N/A acc=N/A (no validation batches)"
                 )
 
+            save_learning_curve(train_losses, train_accs, val_losses, val_accs, checkpoint_dir)
+
             if args.save_every > 0 and epoch % args.save_every == 0:
                 ckpt_path = os.path.join(checkpoint_dir, "model.pth")
                 save_checkpoint(
@@ -588,28 +635,7 @@ def main():
         val_accs=val_accs,
     )
     print(f"Saved final checkpoint to {final_path}")
-
-    if train_losses and val_losses:
-        epochs = list(range(1, len(train_losses) + 1))
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        axes[0].plot(epochs, train_losses, label="train")
-        axes[0].plot(epochs, val_losses, label="val")
-        axes[0].set_title("Loss")
-        axes[0].set_xlabel("Epoch")
-        axes[0].set_ylabel("Loss")
-        axes[0].legend()
-
-        axes[1].plot(epochs, [a * 100 for a in train_accs], label="train")
-        axes[1].plot(epochs, [a * 100 for a in val_accs], label="val")
-        axes[1].set_title("Accuracy")
-        axes[1].set_xlabel("Epoch")
-        axes[1].set_ylabel("Accuracy (%)")
-        axes[1].legend()
-
-        fig.tight_layout()
-        plot_path = os.path.join(checkpoint_dir, "learning_curve.png")
-        fig.savefig(plot_path, dpi=150)
-        print(f"Saved learning curve to {plot_path}")
+    save_learning_curve(train_losses, train_accs, val_losses, val_accs, checkpoint_dir)
 
 
 if __name__ == "__main__":
