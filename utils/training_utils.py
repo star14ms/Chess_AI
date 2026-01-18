@@ -180,10 +180,16 @@ def save_checkpoint(
 ):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     cfg_payload = OmegaConf.to_container(cfg, resolve=False)
+    name_by_id = {id(param): name for name, param in model.named_parameters()}
+    optimizer_param_names = []
+    for group in optimizer.param_groups:
+        names = [name_by_id.get(id(param)) for param in group.get("params", [])]
+        optimizer_param_names.append(names)
     payload = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "optimizer_param_names": optimizer_param_names,
         "config": cfg_payload,
     }
     if scheduler is not None:
