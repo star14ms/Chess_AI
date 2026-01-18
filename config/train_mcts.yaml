@@ -84,7 +84,7 @@ training:
   checkpoint_dir: ./checkpoints
   checkpoint_dir_load: null # If set, load checkpoints from here; otherwise use checkpoint_dir
   game_history_dir: ./game_history # Directory to save game history files. Set to null to disable.
-  initial_board_fen: config/mate_in_one_positions_doubled.json  # Path to JSON file containing initial board positions with weights and qualities
+  initial_board_fen: data/mate_in_1_flipped.json  # JSON dict with weights/qualities or JSON array (e.g., mate_in_1_flipped.json, uniform weight)
   progress_bar: true
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
   draw_reward: null # Fixed reward value for draws. Set to null to use draw_reward_table

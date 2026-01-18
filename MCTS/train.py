@@ -25,7 +25,12 @@ from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from utils.profile_model import get_optimal_worker_count, profile_model, format_time
 from utils.progress import NullProgress
-from utils.training_utils import select_fen_from_dict, RewardComputer
+from utils.training_utils import (
+    RewardComputer,
+    select_fen_from_dict,
+    select_random_fen_from_entries,
+    select_random_fen_from_json_list,
+)
 
 create_network = None
 create_environment = None
@@ -695,10 +700,32 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                     # If none found, use the original path and let it fail with a clear error
                     json_path = os.path.join(project_root, json_path)
             try:
-                with open(json_path, 'r') as f:
-                    initial_board_fen_cfg = json.load(f)
-                if isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
-                    initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
+                with open(json_path, "r", encoding="utf-8") as f:
+                    first_char = ""
+                    while True:
+                        chunk = f.read(1024)
+                        if not chunk:
+                            break
+                        stripped = chunk.lstrip()
+                        if stripped:
+                            first_char = stripped[0]
+                            break
+                if first_char == "{":
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        initial_board_fen_cfg = json.load(f)
+                    if isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
+                        initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
+                elif first_char == "[":
+                    initial_fen, initial_position_quality = select_random_fen_from_json_list(json_path)
+                else:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        initial_board_fen_cfg = json.load(f)
+                    if isinstance(initial_board_fen_cfg, list) and initial_board_fen_cfg:
+                        initial_fen, initial_position_quality = select_random_fen_from_entries(
+                            initial_board_fen_cfg
+                        )
+                    elif isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
+                        initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
             except Exception as e:
                 print(f"Warning: Failed to load initial_board_fen from JSON file {json_path}: {e}")
                 initial_board_fen_cfg = None
