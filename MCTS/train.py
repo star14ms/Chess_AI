@@ -1864,6 +1864,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         num_wins = 0
         num_losses = 0
         num_draws = 0
+        num_checkmates = 0
         games_completed_this_iter = 0
         # Track draw reasons and collect game moves
         from collections import defaultdict
@@ -1906,6 +1907,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 games_data_collected.extend(game_data)
                                 collected_games += 1
                                 game_moves_list.append(game_info)
+                                if game_info.get('termination') == "CHECKMATE":
+                                    num_checkmates += 1
                                 # Track device contribution
                                 if 'device' in game_info:
                                     device_contributions[game_info['device']] += 1
@@ -1972,6 +1975,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                             games_data_collected.extend(game_data)
                             collected_games += 1
                             game_moves_list.append(game_info)
+                            if game_info.get('termination') == "CHECKMATE":
+                                num_checkmates += 1
                             # Track device contribution
                             if 'device' in game_info:
                                 device_contributions[game_info['device']] += 1
@@ -2037,6 +2042,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     games_data_collected.extend(game_data)
                                     collected_games += 1
                                     game_moves_list.append(game_info)
+                                    if game_info.get('termination') == "CHECKMATE":
+                                        num_checkmates += 1
                                     # Track device contribution
                                     if 'device' in game_info:
                                         device_contributions[game_info['device']] += 1
@@ -2166,6 +2173,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                         games_data_collected.extend(game_data)
                         games_completed_this_iter += 1
                         game_moves_list.append(game_info)
+                        if game_info.get('termination') == "CHECKMATE":
+                            num_checkmates += 1
                         # Update game outcome counters (use actual winner, not result_value perspective)
                         try:
                             import chess
@@ -2248,6 +2257,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                 games_data_collected.extend(game_data)
                 games_completed_this_iter += 1
                 game_moves_list.append(game_info)
+                if game_info.get('termination') == "CHECKMATE":
+                    num_checkmates += 1
                 # Update progress bar with current games and steps
                 progress.update(
                     task_id_selfplay,
@@ -2324,7 +2335,12 @@ def run_training_loop(cfg: DictConfig) -> None:
             stats = replay_buffer.get_stats()
             buffer_info = f", buffer={stats['total']} (checkmate={stats['checkmate']}, regular={stats['regular']})"
         
-        progress.print(f"Self-play: {games_completed_this_iter} games, total={total_games_simulated}, steps={len(games_data_collected)}{buffer_info} | W Wins: {num_wins}, B Wins: {num_losses}, Draws: {num_draws}{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}")
+        progress.print(
+            f"Self-play: {games_completed_this_iter} games, total={total_games_simulated}, "
+            f"steps={len(games_data_collected)}{buffer_info} | W Wins: {num_wins}, "
+            f"B Wins: {num_losses}, Draws: {num_draws}, Checkmates: {num_checkmates}"
+            f"{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}"
+        )
         
         # Save game moves to file
         if game_moves_list and game_history_dir:
