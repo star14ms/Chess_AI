@@ -277,7 +277,7 @@ class RewardComputer:
         self.network = network
         self.device = device
         self.draw_reward_table = cfg.training.get('draw_reward_table', None)
-        self.default_draw_reward = cfg.training.get('draw_reward', -0.1)
+        self.default_draw_reward = cfg.training.get('draw_reward', -0.0)
         
         # Default rewards if table not available
         self.default_rewards = {

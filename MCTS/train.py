@@ -840,9 +840,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             # Repetition detection is handled in the actual game board, not in MCTS tree nodes.
             root_node = MCTSNode(env.board.copy(stack=False))
             mcts_env = env if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False) else None
-            draw_reward = cfg.training.get('draw_reward', -0.1)
+            draw_reward = cfg.training.get('draw_reward', -0.0)
             # MCTS needs a numeric draw_reward value (use default if None for position-aware)
-            draw_reward_for_mcts = draw_reward if draw_reward is not None else -0.1
+            draw_reward_for_mcts = draw_reward if draw_reward is not None else -0.0
             mcts_player = MCTS(
                 network,
                 device=device,
@@ -1131,9 +1131,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             gc.collect()
 
     # Get draw reward from config (can be None for position-aware rewards)
-    draw_reward = cfg.training.get('draw_reward', -0.1)
+    draw_reward = cfg.training.get('draw_reward', -0.0)
     # Use a default value for calculate_chess_reward (it needs a numeric value)
-    draw_reward_for_calc = draw_reward if draw_reward is not None else -0.1
+    draw_reward_for_calc = draw_reward if draw_reward is not None else -0.0
     
     # Get final game result from the perspective of the player whose turn it is at the final state
     # calculate_chess_reward returns from previous player's perspective (who just moved)
@@ -1147,9 +1147,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     else:
         # Convert from previous player's perspective to current player's perspective (flip)
         final_value = -final_value_from_prev
-    # Store the turn at the final state for later comparison
-    final_state_turn = env.board.turn
-    
+
     # Get game outcome/termination reason
     # Check if we terminated due to manual repetition detection
     manual_repetition = False
@@ -1203,49 +1201,15 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # Check if game ended in draw (using sentinel value)
     draw_sentinel = draw_reward if draw_reward is not None else -0.1
     is_draw = abs(final_value - draw_sentinel) < 0.01
-    
-    # Determine device for network inference (use training device if available)
-    inference_device = device
-    if inference_device is None and network is not None:
-        # Try to infer device from network parameters
-        try:
-            inference_device = next(network.parameters()).device
-        except:
-            inference_device = torch.device('cpu')
-    elif inference_device is None:
-        inference_device = torch.device('cpu')
-    
+
     full_game_data = []
     for i, history_item in enumerate(game_history):
-        # Handle both old format (3 items) and new format (4 items with value)
-        if len(history_item) == 3:
-            state_obs, policy_target, board_at_state = history_item
-            precomputed_value = None
-        else:
-            state_obs, policy_target, board_at_state, precomputed_value = history_item
-        
-        # Use final game result, adjusted for the player whose turn it is at this state
-        # board_at_state is BEFORE the move, so board_at_state.turn is the player who will make the move
-        # The reward should be from their perspective (they will move, then get the final result)
-        is_first_player = is_first_player_turn(board_at_state)
-        
-        # For draws with position-aware rewards enabled, compute position-specific reward
-        if is_draw and use_position_aware:
-            # Reward computer computes reward from the current player's perspective
-            # Pass precomputed_value if available to avoid re-running network
-            # Pass termination_reason to apply termination-specific penalties
-            # Pass initial_position_quality to use config-based quality (for both endgames and full games)
-            # This ensures consistent rewards based on the starting position quality from config
-            value_target = reward_computer.compute_draw_reward(
-                state_obs, is_first_player, termination_reason,
-                precomputed_value, initial_position_quality
+        # New format only: (state_obs, policy_target, board_at_state, mcts_value)
+        if len(history_item) != 4:
+            raise ValueError(
+                f"Invalid game_history item length: expected 4, got {len(history_item)}"
             )
-        else:
-            # Use standard reward assignment (wins/losses or uniform draw reward)
-            # final_value is from the perspective of the player whose turn it is at the final state
-            # Flip if this state's turn differs from the final state's turn
-            value_target = final_value if board_at_state.turn == final_state_turn else -final_value
-        
+        state_obs, policy_target, board_at_state, value_target = history_item
         full_game_data.append((state_obs, policy_target, board_at_state, value_target))
     
     if progress is not None and task_id_game is not None:
