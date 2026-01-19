@@ -2508,7 +2508,20 @@ def run_training_loop(cfg: DictConfig) -> None:
 
             policy_logits, value_preds = network(states_tensor)
 
-            policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
+            # AlphaZero-style: mask illegal actions before policy loss
+            legal_mask = torch.zeros_like(policy_logits, dtype=torch.bool)
+            for i, current_board in enumerate(boards_batch):
+                legal_moves = get_legal_actions(current_board)
+                if not legal_moves:
+                    # Safety fallback: avoid all -inf rows if no legal moves
+                    legal_mask[i] = True
+                    continue
+                legal_indices = [move_id - 1 for move_id in legal_moves if 0 <= (move_id - 1) < policy_logits.shape[1]]
+                if legal_indices:
+                    legal_mask[i, legal_indices] = True
+            masked_policy_logits = policy_logits.masked_fill(~legal_mask, -1e9)
+
+            policy_loss = policy_loss_fn(masked_policy_logits, policy_targets_tensor)
             # Ensure value shapes match before loss calc
             value_loss = value_loss_fn(value_preds.squeeze(-1), value_targets_tensor.squeeze(-1))
 
