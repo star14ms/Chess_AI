@@ -1844,7 +1844,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
-            TextColumn("{task.fields[games]} games, {task.fields[steps]} steps"),
+            TextColumn("{task.fields[games]} Games ({task.fields[draw_rate]:.1f}% Draw), {task.fields[steps]} Steps"),
         )
         progress.columns = self_play_columns
         
@@ -1886,7 +1886,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             collected_games = 0
             queue_drain_start = time.time()
             task_id_selfplay = (
-                progress.add_task("Self-Play", total=min_steps, games=0, steps=0)
+                progress.add_task("Self-Play", total=min_steps, games=0, steps=0, draw_rate=0.0)
                 if show_progress
                 else None
             )
@@ -1932,12 +1932,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     pass
                                 
                                 if task_id_selfplay is not None:
+                                    draw_rate = (num_draws / collected_games * 100.0) if collected_games > 0 else 0.0
                                     progress.update(
                                         task_id_selfplay,
                                         advance=len(game_data),
                                         total=min_steps,
                                         games=collected_games,
                                         steps=len(games_data_collected),
+                                        draw_rate=draw_rate,
                                         refresh=True,
                                     )
                                 
@@ -1983,12 +1985,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                             # Check if we've reached step threshold or hit buffer limit
                             if len(games_data_collected) >= min_steps or len(games_data_collected) >= max_experiences:
                                 if task_id_selfplay is not None:
+                                    draw_rate = (num_draws / collected_games * 100.0) if collected_games > 0 else 0.0
                                     progress.update(
                                         task_id_selfplay,
                                         advance=len(game_data),
                                         total=min_steps,
                                         games=collected_games,
                                         steps=len(games_data_collected),
+                                        draw_rate=draw_rate,
                                         refresh=True,
                                     )
                                 if len(games_data_collected) >= max_experiences:
@@ -2010,12 +2014,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                             except Exception:
                                 pass
                             if task_id_selfplay is not None:
+                                draw_rate = (num_draws / collected_games * 100.0) if collected_games > 0 else 0.0
                                 progress.update(
                                     task_id_selfplay,
                                     advance=len(game_data),
                                     total=min_steps,
                                     games=collected_games,
                                     steps=len(games_data_collected),
+                                    draw_rate=draw_rate,
                                     refresh=True,
                                 )
                     except queue.Empty:
@@ -2067,12 +2073,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                                         pass
                                     
                                     if task_id_selfplay is not None:
+                                        draw_rate = (num_draws / collected_games * 100.0) if collected_games > 0 else 0.0
                                         progress.update(
                                             task_id_selfplay,
                                             advance=len(game_data),
                                             total=min_steps,
                                             games=collected_games,
                                             steps=len(games_data_collected),
+                                            draw_rate=draw_rate,
                                             refresh=True,
                                         )
                                     
@@ -2165,6 +2173,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     total=min_steps,
                     games=0,
                     steps=0,
+                    draw_rate=0.0,
                 )
                 # Iterate over results as they become available
                 for game_result in results_iterator:
@@ -2194,11 +2203,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                             pass
                     # Update progress with steps collected
                     steps_in_game = len(game_data) if game_result and game_result[0] else 0
+                    draw_rate = (num_draws / games_completed_this_iter * 100.0) if games_completed_this_iter > 0 else 0.0
                     progress.update(
                         task_id_selfplay,
                         advance=steps_in_game,
                         games=games_completed_this_iter,
                         steps=len(games_data_collected),
+                        draw_rate=draw_rate,
                         refresh=True,
                     )
                     
@@ -2241,6 +2252,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 total=min_steps,
                 games=0,
                 steps=0,
+                draw_rate=0.0,
             )
             game_num = 0
             # Collect games until we have enough steps
@@ -2260,11 +2272,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                 if game_info.get('termination') == "CHECKMATE":
                     num_checkmates += 1
                 # Update progress bar with current games and steps
+                draw_rate = (num_draws / games_completed_this_iter * 100.0) if games_completed_this_iter > 0 else 0.0
                 progress.update(
                     task_id_selfplay,
                     advance=len(game_data),
                     games=games_completed_this_iter,
                     steps=len(games_data_collected),
+                    draw_rate=draw_rate,
                     refresh=True,
                 )
                 # Track device contribution (sequential mode uses training device)
@@ -2335,10 +2349,11 @@ def run_training_loop(cfg: DictConfig) -> None:
             stats = replay_buffer.get_stats()
             buffer_info = f", buffer={stats['total']} (checkmate={stats['checkmate']}, regular={stats['regular']})"
         
+        draw_rate_iter = (num_draws / games_completed_this_iter * 100.0) if games_completed_this_iter > 0 else 0.0
         progress.print(
             f"Self-play: {games_completed_this_iter} games, total={total_games_simulated}, "
             f"steps={len(games_data_collected)}{buffer_info} | W Wins: {num_wins}, "
-            f"B Wins: {num_losses}, Draws: {num_draws}, Checkmates: {num_checkmates}"
+            f"B Wins: {num_losses}, Draws: {num_draws} ({draw_rate_iter:.1f}% Draw)"
             f"{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}"
         )
         
