@@ -746,9 +746,14 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # Initialize reward computer
     reward_computer = RewardComputer(cfg, network, device)
 
-    # If we don't have a hardcoded quality from config and this is an endgame, evaluate with network
+    # If we don't have a hardcoded quality from config, assume side-to-move is winning.
+    # Store quality from White's perspective to stay compatible with draw reward logic.
     if initial_position_quality is None:
-        initial_position_quality = 'equal'
+        try:
+            white_to_move = bool(env.board.turn)
+        except Exception:
+            white_to_move = True
+        initial_position_quality = 'winning' if white_to_move else 'losing'
 
     game_history = []
     move_list_san = []  # Track moves in SAN notation
