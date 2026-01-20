@@ -1059,6 +1059,51 @@ def _init_game_history_dir(cfg: DictConfig, progress: Progress):
     return game_history_dir
 
 
+def _save_game_history(
+    game_moves_list,
+    game_history_dir: str | None,
+    iteration: int,
+    avg_policy_loss: float,
+    avg_value_loss: float,
+):
+    if not game_moves_list or not game_history_dir:
+        return
+    games_file = os.path.join(
+        game_history_dir,
+        f"games_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.txt",
+    )
+    with open(games_file, 'w') as f:
+        for i, game_info in enumerate(game_moves_list):
+            # Use actual winner to determine result string
+            import chess
+            winner = game_info.get('winner', None)
+            if winner is None:
+                result_str = "1/2-1/2"  # Draw
+            elif winner == chess.WHITE:
+                result_str = "1-0"  # White won
+            else:
+                result_str = "0-1"  # Black won
+            f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
+            # Write initial FEN and quality if available
+            initial_fen = game_info.get('initial_fen', None)
+            initial_quality = game_info.get('initial_position_quality', None)
+            if initial_fen or initial_quality:
+                parts = []
+                if initial_fen:
+                    parts.append(f"Initial FEN: {initial_fen}")
+                if initial_quality:
+                    parts.append(f"White's perspective: {initial_quality}")
+                f.write(" | ".join(parts) + "\n")
+            # Write reward value (use actual_reward if available, otherwise result)
+            actual_reward = game_info.get('actual_reward', None)
+            result_value = game_info.get('result', None)
+            if actual_reward is not None:
+                f.write(f"Reward: {actual_reward:.4f}\n")
+            elif result_value is not None:
+                f.write(f"Reward: {result_value:.4f}\n")
+            f.write(f"{game_info['moves_san']}\n\n")
+
+
 def _init_self_play_infra(cfg: DictConfig):
     manager = multiprocessing.Manager()
     sp_queue = manager.Queue(maxsize=cfg.training.get("continual_queue_maxsize", 64))
@@ -1977,43 +2022,6 @@ def run_training_loop(cfg: DictConfig) -> None:
             f"{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}"
         )
         
-        # Save game moves to file
-        if game_moves_list and game_history_dir:
-            games_file = os.path.join(
-                game_history_dir,
-                f"games_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.txt",
-            )
-            with open(games_file, 'w') as f:
-                for i, game_info in enumerate(game_moves_list):
-                    # Use actual winner to determine result string
-                    import chess
-                    winner = game_info.get('winner', None)
-                    if winner is None:
-                        result_str = "1/2-1/2"  # Draw
-                    elif winner == chess.WHITE:
-                        result_str = "1-0"  # White won
-                    else:
-                        result_str = "0-1"  # Black won
-                    f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
-                    # Write initial FEN and quality if available
-                    initial_fen = game_info.get('initial_fen', None)
-                    initial_quality = game_info.get('initial_position_quality', None)
-                    if initial_fen or initial_quality:
-                        parts = []
-                        if initial_fen:
-                            parts.append(f"Initial FEN: {initial_fen}")
-                        if initial_quality:
-                            parts.append(f"White's perspective: {initial_quality}")
-                        f.write(" | ".join(parts) + "\n")
-                    # Write reward value (use actual_reward if available, otherwise result)
-                    actual_reward = game_info.get('actual_reward', None)
-                    result_value = game_info.get('result', None)
-                    if actual_reward is not None:
-                        f.write(f"Reward: {actual_reward:.4f}\n")
-                    elif result_value is not None:
-                        f.write(f"Reward: {result_value:.4f}\n")
-                    f.write(f"{game_info['moves_san']}\n\n")
-
         # --- Training Phase ---
         # Cleanup and prep GPU before training
         if torch.cuda.is_available():
@@ -2025,6 +2033,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         gc.collect()
         if len(replay_buffer) < cfg.training.batch_size:
             progress.print("Not enough data in buffer to start training. Skipping phase.")
+            avg_policy_loss = float("nan")
+            avg_value_loss = float("nan")
+            _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
             continue
         
         # Dynamic accelerator assignment: if we have enough data and using GPU/MPS, wait for first available accelerator
@@ -2199,6 +2210,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             f"Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, "
             f"Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%}"
         )
+        _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
         
