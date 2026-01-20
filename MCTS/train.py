@@ -1979,7 +1979,10 @@ def run_training_loop(cfg: DictConfig) -> None:
         
         # Save game moves to file
         if game_moves_list and game_history_dir:
-            games_file = os.path.join(game_history_dir, f"games_iter_{iteration+1}.txt")
+            games_file = os.path.join(
+                game_history_dir,
+                f"games_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.txt",
+            )
             with open(games_file, 'w') as f:
                 for i, game_info in enumerate(game_moves_list):
                     # Use actual winner to determine result string
@@ -2223,12 +2226,20 @@ def run_training_loop(cfg: DictConfig) -> None:
             'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
             'history': history,
         }
-        torch.save(checkpoint, os.path.join(checkpoint_dir, "model.pth"))
+        checkpoint_path = os.path.join(
+            checkpoint_dir,
+            f"model_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.pth",
+        )
+        torch.save(checkpoint, checkpoint_path)
         
-        checkpoint_size_mb = os.path.getsize(os.path.join(checkpoint_dir, "model.pth")) / (1024 * 1024)
+        checkpoint_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024)
         buffer_size_str = str(len(replay_buffer))
         
-        progress.print(f"Iteration {iteration+1} completed in {format_time(iteration_duration)} (total: {format_time(total_elapsed_time)}) | Checkpoint saved with {buffer_size_str} experiences in replay buffer ({checkpoint_size_mb:.1f} MB)")
+        progress.print(
+            f"Iteration {iteration+1} completed in {format_time(iteration_duration)} "
+            f"(total: {format_time(total_elapsed_time)}) | Checkpoint saved with "
+            f"{buffer_size_str} experiences in replay buffer ({checkpoint_size_mb:.1f} MB)"
+        )
         
         # Check if training would exceed maximum time after next iteration
         # Do this AFTER saving checkpoint so current iteration's work is preserved
