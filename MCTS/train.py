@@ -1513,7 +1513,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
-            TextColumn("{task.fields[games]} Games ({task.fields[draw_rate]:.1f}% Draw), {task.fields[steps]} Steps"),
+            TextColumn("{task.fields[games]} Games (1st: {task.fields[first_wins]}, 2nd: {task.fields[second_wins]}, {task.fields[draw_rate]:.1f}% Draw), {task.fields[steps]} Steps"),
         )
         progress.columns = self_play_columns
         
@@ -1532,6 +1532,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         # Track game-level outcomes from the first player's perspective
         num_wins = 0
         num_losses = 0
+        num_first_wins = 0
+        num_second_wins = 0
         num_draws = 0
         num_checkmates = 0
         games_completed_this_iter = 0
@@ -1545,6 +1547,38 @@ def run_training_loop(cfg: DictConfig) -> None:
         # Track games per device
         device_contributions = defaultdict(int)
 
+        def _first_player_from_game_info(game_info) -> str:
+            initial_fen = game_info.get('initial_fen', None)
+            if cfg.env.type == 'gomoku':
+                return 'b'
+            if initial_fen:
+                parts = initial_fen.split()
+                if len(parts) >= 2 and parts[1].lower() in ('w', 'b'):
+                    return parts[1].lower()
+            return 'w'
+
+        def _update_outcome_stats(game_info):
+            nonlocal num_wins, num_losses, num_first_wins, num_second_wins, num_draws
+            import chess
+            winner = game_info.get('winner', None)
+            if winner is None:
+                num_draws += 1
+                draw_reasons[game_info['termination']] += 1
+                return
+            if winner == chess.WHITE:
+                num_wins += 1
+                winner_color = 'w'
+            elif winner == chess.BLACK:
+                num_losses += 1
+                winner_color = 'b'
+            else:
+                return
+            first_player = _first_player_from_game_info(game_info)
+            if winner_color == first_player:
+                num_first_wins += 1
+            else:
+                num_second_wins += 1
+
         if continual_enabled:
             # Drain queue to collect games for this iteration
             # Strategy: Drain all available games, wait if needed to reach minimum threshold
@@ -1555,7 +1589,15 @@ def run_training_loop(cfg: DictConfig) -> None:
             collected_games = 0
             queue_drain_start = time.time()
             task_id_selfplay = (
-                progress.add_task("Self-Play", total=min_steps, games=0, steps=0, draw_rate=0.0)
+                progress.add_task(
+                    "Self-Play",
+                    total=min_steps,
+                    games=0,
+                    steps=0,
+                    draw_rate=0.0,
+                    first_wins=0,
+                    second_wins=0,
+                )
                 if show_progress
                 else None
             )
@@ -1583,20 +1625,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     device_contributions[game_info['device']] += 1
                                 batch_collected += 1
                                 
-                                # Update game outcome counters (use actual winner, not result_value perspective)
+                                # Update game outcome counters
                                 try:
-                                    import chess
-                                    winner = game_info.get('winner', None)
-                                    if winner is None:
-                                        # Draw
-                                        num_draws += 1
-                                        draw_reasons[game_info['termination']] += 1
-                                    elif winner == chess.WHITE:
-                                        # White won
-                                        num_wins += 1
-                                    elif winner == chess.BLACK:
-                                        # Black won
-                                        num_losses += 1
+                                    _update_outcome_stats(game_info)
                                 except Exception:
                                     pass
                                 
@@ -1609,6 +1640,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                                         games=collected_games,
                                         steps=len(games_data_collected),
                                         draw_rate=draw_rate,
+                                        first_wins=num_first_wins,
+                                        second_wins=num_second_wins,
                                         refresh=True,
                                     )
                                 
@@ -1662,24 +1695,15 @@ def run_training_loop(cfg: DictConfig) -> None:
                                         games=collected_games,
                                         steps=len(games_data_collected),
                                         draw_rate=draw_rate,
+                                        first_wins=num_first_wins,
+                                        second_wins=num_second_wins,
                                         refresh=True,
                                     )
                                 if len(games_data_collected) >= max_experiences:
                                     break
-                            # Update game outcome counters (use actual winner, not result_value perspective)
+                            # Update game outcome counters
                             try:
-                                import chess
-                                winner = game_info.get('winner', None)
-                                if winner is None:
-                                    # Draw
-                                    num_draws += 1
-                                    draw_reasons[game_info['termination']] += 1
-                                elif winner == chess.WHITE:
-                                    # White won
-                                    num_wins += 1
-                                elif winner == chess.BLACK:
-                                    # Black won
-                                    num_losses += 1
+                                _update_outcome_stats(game_info)
                             except Exception:
                                 pass
                             if task_id_selfplay is not None:
@@ -1691,6 +1715,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     games=collected_games,
                                     steps=len(games_data_collected),
                                     draw_rate=draw_rate,
+                                    first_wins=num_first_wins,
+                                    second_wins=num_second_wins,
                                     refresh=True,
                                 )
                     except queue.Empty:
@@ -1724,20 +1750,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                                         device_contributions[game_info['device']] += 1
                                     batch_collected += 1
                                     
-                                    # Update game outcome counters (use actual winner, not result_value perspective)
+                                    # Update game outcome counters
                                     try:
-                                        import chess
-                                        winner = game_info.get('winner', None)
-                                        if winner is None:
-                                            # Draw
-                                            num_draws += 1
-                                            draw_reasons[game_info['termination']] += 1
-                                        elif winner == chess.WHITE:
-                                            # White won
-                                            num_wins += 1
-                                        elif winner == chess.BLACK:
-                                            # Black won
-                                            num_losses += 1
+                                        _update_outcome_stats(game_info)
                                     except Exception:
                                         pass
                                     
@@ -1750,6 +1765,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                                             games=collected_games,
                                             steps=len(games_data_collected),
                                             draw_rate=draw_rate,
+                                            first_wins=num_first_wins,
+                                            second_wins=num_second_wins,
                                             refresh=True,
                                         )
                                     
@@ -1853,20 +1870,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                         game_moves_list.append(game_info)
                         if game_info.get('termination') == "CHECKMATE":
                             num_checkmates += 1
-                        # Update game outcome counters (use actual winner, not result_value perspective)
+                        # Update game outcome counters
                         try:
-                            import chess
-                            winner = game_info.get('winner', None)
-                            if winner is None:
-                                # Draw
-                                num_draws += 1
-                                draw_reasons[game_info['termination']] += 1
-                            elif winner == chess.WHITE:
-                                # White won
-                                num_wins += 1
-                            elif winner == chess.BLACK:
-                                # Black won
-                                num_losses += 1
+                            _update_outcome_stats(game_info)
                         except Exception:
                             # If unexpected structure, skip counting for this game
                             pass
@@ -1879,6 +1885,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                         games=games_completed_this_iter,
                         steps=len(games_data_collected),
                         draw_rate=draw_rate,
+                        first_wins=num_first_wins,
+                        second_wins=num_second_wins,
                         refresh=True,
                     )
                     
@@ -1948,25 +1956,16 @@ def run_training_loop(cfg: DictConfig) -> None:
                     games=games_completed_this_iter,
                     steps=len(games_data_collected),
                     draw_rate=draw_rate,
+                    first_wins=num_first_wins,
+                    second_wins=num_second_wins,
                     refresh=True,
                 )
                 # Track device contribution (sequential mode uses training device)
                 device_contributions[str(device)] += 1
-                # Count outcomes from the actual winner (not result_value perspective)
+                # Count outcomes from the actual winner
                 if game_data:
                     try:
-                        import chess
-                        winner = game_info.get('winner', None)
-                        if winner is None:
-                            # Draw
-                            num_draws += 1
-                            draw_reasons[game_info['termination']] += 1
-                        elif winner == chess.WHITE:
-                            # White won
-                            num_wins += 1
-                        elif winner == chess.BLACK:
-                            # Black won
-                            num_losses += 1
+                        _update_outcome_stats(game_info)
                     except Exception:
                         pass
                 # Note: progress already updated above with description and details
@@ -2018,7 +2017,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.print(
             f"Self-play: {games_completed_this_iter} games, total={total_games_simulated}, "
             f"steps={len(games_data_collected)}{buffer_info} | W Wins: {num_wins}, "
-            f"B Wins: {num_losses}, Draws: {num_draws} ({draw_rate_iter:.1f}% Draw)"
+            f"B Wins: {num_losses}, 1st Wins: {num_first_wins}, 2nd Wins: {num_second_wins}, "
+            f"Draws: {num_draws} ({draw_rate_iter:.1f}% Draw)"
             f"{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}"
         )
         
