@@ -869,7 +869,22 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 # If tree stats calculation fails, continue without it
                 pass
             
-            action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1 # +1 because actions are 1-indexed
+            # AlphaZero-style: sample only from legal actions
+            legal_actions = get_legal_actions(env.board)
+            if legal_actions:
+                legal_indices = [a - 1 for a in legal_actions if 0 <= (a - 1) < len(mcts_policy)]
+                if legal_indices:
+                    legal_probs = np.array([mcts_policy[i] for i in legal_indices], dtype=np.float64)
+                    if legal_probs.sum() > 0:
+                        legal_probs = legal_probs / legal_probs.sum()
+                        action_to_take = np.random.choice([i + 1 for i in legal_indices], p=legal_probs)
+                    else:
+                        action_to_take = np.random.choice(legal_actions)
+                else:
+                    action_to_take = np.random.choice(legal_actions)
+            else:
+                # Fallback to full policy if no legal actions (should be terminal)
+                action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1  # +1 because actions are 1-indexed
             
             # Save a copy of mcts_policy before cleanup (needed for game_history)
             mcts_policy_copy = mcts_policy.copy()
@@ -939,13 +954,35 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         # Record SAN notation BEFORE playing the move, but ensure board is in correct state
         # This prevents issues with pop/push affecting turn alternation
         if action_to_take not in env.board.legal_actions:
-            # Log illegal action attempt
-            policy_value = mcts_policy[action_to_take - 1] if mcts_policy is not None and action_to_take - 1 < len(mcts_policy) else None
-            logging.warning(
-                f"Action {action_to_take} not in legal_actions: "
-                f"policy_value={policy_value}, root_value={root_value}, "
-                f"FEN={env.board.fen()}, legal_actions_count={len(env.board.legal_actions)}"
-            )
+            # Enforce legal action selection (AlphaZero-style: only legal moves allowed)
+            legal_actions = list(env.board.legal_actions)
+            if legal_actions:
+                if mcts_policy is not None and len(mcts_policy) > 0:
+                    legal_indices = [a - 1 for a in legal_actions if 0 <= (a - 1) < len(mcts_policy)]
+                    if legal_indices:
+                        legal_probs = np.array([mcts_policy[i] for i in legal_indices], dtype=np.float64)
+                        if legal_probs.sum() > 0:
+                            legal_probs = legal_probs / legal_probs.sum()
+                            action_to_take = np.random.choice([i + 1 for i in legal_indices], p=legal_probs)
+                        else:
+                            action_to_take = np.random.choice(legal_actions)
+                    else:
+                        action_to_take = np.random.choice(legal_actions)
+                else:
+                    action_to_take = np.random.choice(legal_actions)
+                logging.warning(
+                    f"Illegal action replaced with legal move: action={action_to_take}, "
+                    f"root_value={root_value}, FEN={env.board.fen()}, "
+                    f"legal_actions_count={len(legal_actions)}"
+                )
+            else:
+                logging.warning(
+                    f"No legal actions available after illegal action detection: "
+                    f"action={action_to_take}, root_value={root_value}, FEN={env.board.fen()}"
+                )
+            # Continue with SAN logging using the corrected legal action (if any)
+
+        if action_to_take not in env.board.legal_actions:
             san_move = "ILLEGAL"
         else:
             # Get the move and record SAN BEFORE playing it
@@ -2499,20 +2536,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
             policy_logits, value_preds = network(states_tensor)
 
-            # AlphaZero-style: mask illegal actions before policy loss
-            legal_mask = torch.zeros_like(policy_logits, dtype=torch.bool)
-            for i, current_board in enumerate(boards_batch):
-                legal_moves = get_legal_actions(current_board)
-                if not legal_moves:
-                    # Safety fallback: avoid all -inf rows if no legal moves
-                    legal_mask[i] = True
-                    continue
-                legal_indices = [move_id - 1 for move_id in legal_moves if 0 <= (move_id - 1) < policy_logits.shape[1]]
-                if legal_indices:
-                    legal_mask[i, legal_indices] = True
-            masked_policy_logits = policy_logits.masked_fill(~legal_mask, -1e9)
-
-            policy_loss = policy_loss_fn(masked_policy_logits, policy_targets_tensor)
+            # AlphaZero-style: policy targets are already legal-only, no masking needed.
+            policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
             # Ensure value shapes match before loss calc
             value_loss = value_loss_fn(value_preds.squeeze(-1), value_targets_tensor.squeeze(-1))
 
