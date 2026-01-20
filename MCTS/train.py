@@ -12,7 +12,6 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import multiprocessing # Keep for potential parallel execution
 import queue
-import torch.nn.functional as F
 from torch import nn
 import pickle
 import gzip
@@ -833,7 +832,6 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         # Use FEN string for restoration (more efficient than full board copy)
         # The FEN string is immutable and won't be affected by any board modifications
         fen_string_before_mcts = cached_fen  # Use cached FEN instead of calling env.board.fen()
-        foul_before_mcts = getattr(env.board, 'foul', False)  # Save foul flag
         
         if cfg.mcts.iterations > 0:
             # Use stack=False for MCTS nodes - they only need current position (FEN) for exploration.
@@ -926,7 +924,6 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             # Restore board from the FEN string saved before MCTS (more reliable than board copy)
             # This ensures we restore to the exact state we saved, even if the board copy was modified
             env.board.set_fen(fen_string_before_mcts)
-            env.board.foul = foul_before_mcts
             
             # Note: We don't restore move_stack because set_fen() already restores the board state correctly
             # The FEN contains all necessary information (position, turn, castling rights, en passant)
@@ -2514,7 +2511,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_value_loss = 0.0
         total_illegal_moves_in_iteration = 0
         total_samples_in_iteration = 0
-
+        avg_illegal_prob_mass = 0.0
         task_id_train = progress.add_task(
             "Training Epochs",
             total=cfg.training.num_training_steps,
@@ -2550,26 +2547,26 @@ def run_training_loop(cfg: DictConfig) -> None:
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
             
-            # Calculate both metrics for this batch
+            # Track illegal move metrics (model behavior monitoring)
             with torch.no_grad():
-                # 1. Calculate illegal move probability mass
-                policy_probs = F.softmax(policy_logits, dim=1)
+                policy_probs = torch.softmax(policy_logits, dim=1)
                 batch_illegal_prob_mass = 0.0
-                
-                # 2. Calculate argmax legality ratio
                 batch_illegal_moves = 0
-                predicted_action_indices = torch.argmax(policy_logits, dim=1)  # Shape: (batch_size)
+                predicted_action_indices = torch.argmax(policy_logits, dim=1)
                 
                 for i in range(len(boards_batch)):
                     current_board = boards_batch[i]
-                    
-                    # Calculate illegal probability mass
                     legal_moves = set(get_legal_actions(current_board))
-                    legal_indices = torch.tensor([move_id - 1 for move_id in legal_moves], device=device, dtype=torch.long)
+                    if not legal_moves:
+                        continue
+                    legal_indices = torch.tensor(
+                        [move_id - 1 for move_id in legal_moves],
+                        device=device,
+                        dtype=torch.long,
+                    )
                     illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
                     batch_illegal_prob_mass += illegal_prob
                     
-                    # Check if argmax move is legal
                     predicted_action_id = predicted_action_indices[i].item() + 1
                     if predicted_action_id not in legal_moves:
                         batch_illegal_moves += 1
@@ -2581,7 +2578,11 @@ def run_training_loop(cfg: DictConfig) -> None:
             
             current_avg_policy_loss = total_policy_loss / (epoch + 1)
             current_avg_value_loss = total_value_loss / (epoch + 1)
-            current_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
+            current_illegal_ratio = (
+                total_illegal_moves_in_iteration / total_samples_in_iteration
+                if total_samples_in_iteration > 0
+                else 0.0
+            )
 
             progress.update(
                 task_id_train, advance=1,
@@ -2594,7 +2595,12 @@ def run_training_loop(cfg: DictConfig) -> None:
         avg_policy_loss = total_policy_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
         avg_value_loss = total_value_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
         avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
-        progress.print(f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}, Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%}")
+        progress.print(
+            f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, "
+            f"Avg Value Loss: {avg_value_loss:.4f}, "
+            f"Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, "
+            f"Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%}"
+        )
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
         

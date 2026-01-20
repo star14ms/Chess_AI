@@ -71,15 +71,10 @@ def calculate_chess_reward(board: BaseChessBoard, claim_draw: bool = True, draw_
     
     Returns:
         float: Reward value from the previous player's perspective (who just moved)
-        - -1.0 if foul (previous player made illegal move)
         - +1.0 if previous player's side won
         - -1.0 if previous player's side lost
         - draw_reward for draws (equally penalized for both colors)
     """
-    # If foul: previous player made illegal move, always -1.0 from their perspective
-    if hasattr(board, 'foul') and board.foul:
-        return -1.0
-    
     result_str = board.result(claim_draw=claim_draw)
     # After push(move), board.turn is the next player, so previous turn is the opposite
     previous_turn = not board.turn

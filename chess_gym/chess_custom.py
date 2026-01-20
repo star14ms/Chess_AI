@@ -4,7 +4,6 @@ import logging
 from typing import Dict, Tuple, Optional, Union, List, ClassVar, Mapping
 from collections import Counter, defaultdict
 import numpy as np
-import enum
 
 from utils.analyze import create_piece_instance_map, get_action_id_for_piece_abs, create_piece_instance_map_4672, get_action_id_for_piece_abs_4672
 
@@ -13,14 +12,11 @@ PieceInstanceId = Tuple[chess.Color, chess.PieceType, int] # (Color, OriginalPie
 PieceTrackingInfo = Dict[str, Optional[Union[chess.Square, chess.PieceType]]]
 PieceTracker = Dict[PieceInstanceId, PieceTrackingInfo]
 
-chess.Termination.ILLEGAL_MOVE = enum.auto()
-
 class BaseChessBoard(chess.Board):
     """Base class for chess boards with vector representation capability."""
     
     def __init__(self, fen: Optional[str] = chess.STARTING_FEN, *, chess960: bool = False):
-        """Initialize the board with foul state tracking."""
-        self.foul: bool = False
+        """Initialize the board."""
         super().__init__(fen, chess960=chess960)
     
     def get_board_vector(self, history_steps: int = 8) -> np.ndarray:
@@ -112,10 +108,6 @@ class BaseChessBoard(chess.Board):
         """Abstract method to be implemented by child classes for setting piece identity channels."""
         raise NotImplementedError("Child classes must implement _set_piece_identity_channels")
 
-    def is_foul(self) -> bool:
-        """Returns True if the board is in a foul state (illegal move)."""
-        return self.foul
-
     def is_game_over(self, *, claim_draw: bool = False) -> bool:
         return self.outcome(claim_draw=claim_draw) is not None
 
@@ -124,9 +116,6 @@ class BaseChessBoard(chess.Board):
         # Save a copy of the board before calling outcome to prevent reset
         # This is the safest way to restore the board state if it gets reset
         board_copy = self.copy(stack=True)
-        
-        if self.foul:
-            return chess.Outcome(chess.Termination.ILLEGAL_MOVE, not self.turn)
         
         # Clean _stack before calling super().outcome() to prevent AttributeError
         # Only filter out items that are None - don't modify structure since _stack items
@@ -224,7 +213,7 @@ class BaseChessBoard(chess.Board):
                         # Restore _stack if it was saved
                         if hasattr(self, '_stack') and saved_stack:
                             self._stack = list(saved_stack)
-                    return None  # Return None instead of ILLEGAL_MOVE to allow game to continue
+                    return None  # Return None to allow game to continue
             raise
     
     def is_repetition(self, count: int = 3) -> bool:
@@ -264,30 +253,22 @@ class BaseChessBoard(chess.Board):
             raise
 
     def push(self, move: chess.Move | None):
-        """Pushes a move to the board, handling illegal moves."""
+        """Pushes a move to the board."""
         if move is None or move == chess.Move.null():
-            self.foul = True
-            return
+            raise ValueError("push() received None or null move.")
         super().push(move)
         
     def pop(self):
-        """Pops a move from the board, handling illegal moves."""
-        if self.foul:
-            # Last push was illegal and was not applied to the move stack.
-            # Just clear foul state and do not pop a real move.
-            self.foul = False
-            return
+        """Pops a move from the board."""
         super().pop()
         
     def reset(self):
         """Resets the board to the standard starting position and populates the tracker."""
-        self.foul = False
         super().reset()
 
     def copy(self, *, stack: Union[bool, int] = True) -> 'BaseChessBoard':
-        """Creates a copy of the board, including the foul state."""
+        """Creates a copy of the board."""
         board_copy = super().copy(stack=stack)
-        board_copy.foul = self.foul
         # Filter None moves from move_stack to prevent propagation of corrupted state
         if stack and hasattr(board_copy, 'move_stack') and board_copy.move_stack:
             if any(move is None for move in board_copy.move_stack):
@@ -311,10 +292,8 @@ class BaseChessBoard(chess.Board):
     def get_squares_to_action_ids_map(self) -> Dict[chess.Square, List[int]]:
         raise NotImplementedError("Subclasses must implement get_squares_to_action_ids_map")
     
-    def set_fen(self, fen: str, reset_foul: bool = False, *args, **kwargs):
+    def set_fen(self, fen: str, *args, **kwargs):
         super().set_fen(fen)
-        if reset_foul:
-            self.foul = False
     
     @property
     def legal_moves(self):
@@ -380,7 +359,6 @@ class LegacyChessBoard(BaseChessBoard):
 
         Returns:
             The corresponding chess.Move if legal and found, otherwise None.
-            If None is returned, the move will be considered illegal and the game will terminate.
         """
         if not (1 <= action_id <= 4672):
             logging.warning(f"Legacy ID to Move: action_id {action_id} is outside expected range (1-4672).")
@@ -408,7 +386,7 @@ class LegacyChessBoard(BaseChessBoard):
 
         # If we get here, the action_id doesn't correspond to any legal move
         logging.warning(f"Legacy ID to Move: action_id {action_id} does not correspond to any legal move.")
-        return None  # This will trigger the foul state in push()
+        return None
 
     def move_to_action_id(self, move: chess.Move) -> Optional[int]:
         """
@@ -832,9 +810,7 @@ class FullyTrackedBoard(BaseChessBoard):
     # Override push to store the flag state
     def push(self, move: chess.Move | None):
         if move is None or move == chess.Move.null():
-            self.foul = True
-            return
-
+            raise ValueError("push() received None or null move.")
         # --- Store current tracker state AND flag before applying the move ---
         current_tracker_copy = copy.deepcopy(self.piece_tracker)
         current_flag_state = self.is_theoretically_possible_state
@@ -901,11 +877,6 @@ class FullyTrackedBoard(BaseChessBoard):
     # Override pop to restore the flag state
     def pop(self) -> chess.Move:
         """Pops a move and restores the piece tracker state and possibility flag."""
-        # If the last action was a foul (no move applied), just clear the flag and return a null move
-        if self.foul:
-            self.foul = False
-            return chess.Move.null()
-
         move = super().pop()
         if self._piece_tracker_stack:
             # Restore both tracker and flag state
