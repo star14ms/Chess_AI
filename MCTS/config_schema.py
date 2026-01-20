@@ -69,9 +69,6 @@ class TrainingConfig:
     max_training_time_seconds: Optional[int] = None # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
     draw_reward: Optional[float] = None # Fixed reward value for draws. If None, uses draw_reward_table based on termination type and position quality
     draw_reward_table: Optional[Dict[str, Dict[str, float]]] = None # Nested dictionary: {termination_type: {position_quality: reward}}. Used when draw_reward is None
-    use_prioritized_buffer: bool = False # If True, use PrioritizedReplayBuffer that preserves checkmate positions
-    checkmate_reserve: int = 1000 # Number of checkmate positions to preserve in prioritized buffer (never evicted)
-    checkmate_sample_ratio: float = 0.2 # Fraction of training batch that should be checkmate positions (0.0-1.0)
 
 @dataclass
 class Config:

@@ -5,15 +5,14 @@ This document summarizes non-hyperparameter differences between this codebase
 and the standard AlphaZero chess setup. It focuses on algorithmic behavior and
 data representation rather than tuning values.
 
-1) Value Target Construction
+1) Value Target Construction (Resolved)
    - AlphaZero (paper): value head is trained on the final game outcome z.
    - This codebase: value target uses the MCTS root value Q(s) stored per state.
      Positions without an MCTS value are skipped (no outcome fallback).
 
-2) Replay Buffer Policy
+2) Replay Buffer Policy (Resolved)
    - AlphaZero: uniform replay buffer with FIFO eviction.
-   - This codebase: optional prioritized buffer with a dedicated checkmate
-     reserve (checkmate positions are never evicted and sampled preferentially).
+   - This codebase: uniform replay buffer with FIFO eviction.
 
 3) Draw Handling and Termination
    - AlphaZero: draws are 0 and game termination follows standard rules
@@ -22,10 +21,10 @@ data representation rather than tuning values.
      (threefold/fivefold) can end games early. Draw rewards are configured
      and used for logging/statistics even if value targets use MCTS Q.
 
-4) Illegal Move Handling
+4) Illegal Move Handling (Resolved)
    - AlphaZero: assumes perfect legality; no illegal-move penalties needed.
-   - This codebase: includes illegal-move detection and metrics. (The pipeline
-     is designed to tolerate/measure illegal actions.)
+   - This codebase: enforces legal moves by construction and no longer applies
+     foul states or illegal-move penalties; only optional monitoring metrics remain.
 
 5) Self-Play Scheduling
    - AlphaZero: sequential loop of self-play -> training -> evaluation.
