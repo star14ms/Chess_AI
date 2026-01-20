@@ -1196,11 +1196,15 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             RuntimeWarning
         )
 
-    # Check if position-aware draw rewards are enabled (draw_reward is None)
-    use_position_aware = (draw_reward is None)
-    # Check if game ended in draw (using sentinel value)
-    draw_sentinel = draw_reward if draw_reward is not None else -0.1
-    is_draw = abs(final_value - draw_sentinel) < 0.01
+    # AlphaZero-style value targets: final outcome from the current player's perspective
+    draw_value = draw_reward if draw_reward is not None else 0.0
+
+    def _value_from_winner(board_at_state, outcome_winner, draw_val):
+        if outcome_winner is None:
+            return float(draw_val)
+        if board_at_state.turn == chess.WHITE:
+            return 1.0 if outcome_winner == chess.WHITE else -1.0
+        return 1.0 if outcome_winner == chess.BLACK else -1.0
 
     full_game_data = []
     for i, history_item in enumerate(game_history):
@@ -1209,8 +1213,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             raise ValueError(
                 f"Invalid game_history item length: expected 4, got {len(history_item)}"
             )
-        state_obs, policy_target, board_at_state, value_target = history_item
-        full_game_data.append((state_obs, policy_target, board_at_state, value_target))
+        state_obs, policy_target, board_at_state, _value_target = history_item
+        outcome_value = _value_from_winner(board_at_state, winner, draw_value)
+        full_game_data.append((state_obs, policy_target, board_at_state, outcome_value))
     
     if progress is not None and task_id_game is not None:
         progress.update(task_id_game, visible=False)
@@ -1227,26 +1232,12 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         }
     
     # Store the actual computed reward for the first state (for logging/debugging)
-    # This is the position-aware reward if enabled, otherwise the sentinel value
-    # For draws with position-aware rewards, compute the reward directly to ensure consistency
     actual_reward_for_logging = None
     if full_game_data:
-        if is_draw and use_position_aware and initial_position_quality is not None:
-            # Recompute reward using initial_position_quality to ensure consistency
-            # Get the first state's perspective
-            first_state_board = full_game_data[0][2] if len(full_game_data[0]) > 2 else None
-            if first_state_board is not None:
-                is_first_player_first_state = is_first_player_turn(first_state_board)
-                # Compute reward directly using initial_position_quality
-                actual_reward_for_logging = reward_computer.compute_draw_reward(
-                    full_game_data[0][0] if len(full_game_data[0]) > 0 else None,
-                    is_first_player_first_state,
-                    termination_reason,
-                    None,  # precomputed_value
-                    initial_position_quality
-                )
-        if actual_reward_for_logging is None:
-            # Fallback to value_target from first state
+        first_state_board = full_game_data[0][2] if len(full_game_data[0]) > 2 else None
+        if first_state_board is not None:
+            actual_reward_for_logging = _value_from_winner(first_state_board, winner, draw_value)
+        else:
             actual_reward_for_logging = full_game_data[0][3] if len(full_game_data[0]) > 3 else final_value
     
     # Return game data, move list in SAN, and termination reason
