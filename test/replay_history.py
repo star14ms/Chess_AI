@@ -388,6 +388,7 @@ def select_and_replay_game(
     
     Controls:
     - ↑/↓ or W/S: Navigate through games
+    - ←/→: Page up/down
     - Enter/Space: Select and replay game
     - Esc: Exit without replaying
     
@@ -418,6 +419,11 @@ def select_and_replay_game(
         
         screen = pygame.display.set_mode((window_width, window_height))
         clock = pygame.time.Clock()
+        
+        # Hold-to-repeat settings for navigation keys
+        key_repeat_delay_ms = 500
+        key_repeat_interval_ms = 100
+        held_keys = {}
         
         # Fonts
         title_font = pygame.font.SysFont(None, 32)
@@ -495,17 +501,85 @@ def select_and_replay_game(
             else:  # Draw (1/2-1/2)
                 return result_draw  # Draw -> yellow
         
+        def _apply_navigation(key: int):
+            nonlocal selected_idx, scroll_offset
+            if key in (pygame.K_UP, pygame.K_w):
+                if selected_idx <= 0:
+                    selected_idx = len(games) - 1
+                else:
+                    selected_idx -= 1
+                if selected_idx < scroll_offset or selected_idx >= scroll_offset + games_per_page:
+                    scroll_offset = (selected_idx // games_per_page) * games_per_page
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                if selected_idx >= len(games) - 1:
+                    selected_idx = 0
+                else:
+                    selected_idx += 1
+                if selected_idx < scroll_offset or selected_idx >= scroll_offset + games_per_page:
+                    scroll_offset = (selected_idx // games_per_page) * games_per_page
+            elif key == pygame.K_RIGHT:
+                last_page_start = max(0, len(games) - games_per_page)
+                if scroll_offset >= last_page_start:
+                    selected_idx = 0
+                    scroll_offset = 0
+                else:
+                    selected_idx = min(len(games) - 1, selected_idx + games_per_page)
+                    scroll_offset = (selected_idx // games_per_page) * games_per_page
+            elif key == pygame.K_LEFT:
+                if selected_idx < games_per_page:
+                    selected_idx = len(games) - 1
+                else:
+                    selected_idx = max(0, selected_idx - games_per_page)
+                scroll_offset = (selected_idx // games_per_page) * games_per_page
+            elif key == pygame.K_HOME:
+                selected_idx = 0
+                scroll_offset = 0
+            elif key == pygame.K_END:
+                selected_idx = len(games) - 1
+                scroll_offset = max(0, len(games) - games_per_page)
+
         while running:
             clock.tick(fps)
+            now_ms = pygame.time.get_ticks()
             
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                     return
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mouse_x, mouse_y = event.pos
+                    list_start_y = header_height + margin
+                    list_end_y = list_start_y + games_per_page * item_height
+                    list_left_x = margin
+                    list_right_x = window_width - margin
+                    if list_left_x <= mouse_x <= list_right_x and list_start_y <= mouse_y <= list_end_y:
+                        list_idx = (mouse_y - list_start_y) // item_height
+                        selected_idx = scroll_offset + int(list_idx)
+                        if 0 <= selected_idx < len(games):
+                            result = replay_game_pygame(games[selected_idx], board_px, fps, white_perspective)
+                            if result == 'back':
+                                pygame.init()
+                                screen = pygame.display.set_mode((window_width, window_height))
+                                continue
+                            elif result == 'quit':
+                                running = False
+                                return
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                         return
+                    elif event.key in (
+                        pygame.K_UP, pygame.K_w,
+                        pygame.K_DOWN, pygame.K_s,
+                        pygame.K_LEFT, pygame.K_RIGHT,
+                        pygame.K_HOME, pygame.K_END,
+                    ):
+                        _apply_navigation(event.key)
+                        if event.key not in held_keys:
+                            held_keys[event.key] = {
+                                "pressed_since": now_ms,
+                                "last_repeat": now_ms,
+                            }
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         # Select and replay
                         result = replay_game_pygame(games[selected_idx], board_px, fps, white_perspective)
@@ -518,22 +592,16 @@ def select_and_replay_game(
                         elif result == 'quit':
                             running = False
                             return
-                    elif event.key in (pygame.K_UP, pygame.K_w):
-                        selected_idx = max(0, selected_idx - 1)
-                        # Auto-scroll
-                        if selected_idx < scroll_offset:
-                            scroll_offset = selected_idx
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        selected_idx = min(len(games) - 1, selected_idx + 1)
-                        # Auto-scroll
-                        if selected_idx >= scroll_offset + games_per_page:
-                            scroll_offset = selected_idx - games_per_page + 1
-                    elif event.key == pygame.K_HOME:
-                        selected_idx = 0
-                        scroll_offset = 0
-                    elif event.key == pygame.K_END:
-                        selected_idx = len(games) - 1
-                        scroll_offset = max(0, len(games) - games_per_page)
+                elif event.type == pygame.KEYUP:
+                    if event.key in held_keys:
+                        held_keys.pop(event.key, None)
+
+            # Handle hold-to-repeat navigation
+            for key, state in list(held_keys.items()):
+                if now_ms - state["pressed_since"] >= key_repeat_delay_ms:
+                    if now_ms - state["last_repeat"] >= key_repeat_interval_ms:
+                        _apply_navigation(key)
+                        state["last_repeat"] = now_ms
             
             # Draw
             screen.fill(bg_color)
@@ -545,7 +613,7 @@ def select_and_replay_game(
             screen.blit(title_text, (margin, 15))
             
             # Instructions
-            inst_text = small_font.render("↑/↓: Navigate | Enter/Space: Select | Esc: Exit | In replay: B/Tab to go back", True, (150, 150, 150))
+            inst_text = small_font.render("↑/↓: Navigate | ←/→: Page | Enter/Space: Select | Esc: Exit | In replay: B/Tab to go back", True, (150, 150, 150))
             screen.blit(inst_text, (window_width - margin - inst_text.get_width(), header_height - 25))
             
             # Game list
@@ -630,5 +698,5 @@ def select_and_replay_game(
 
 # Example usage:
 if __name__ == "__main__":
-    games = parse_game_file("./game_history/games_iter_60.txt")
+    games = parse_game_file("./game_history/_games_iter_1.txt")
     select_and_replay_game(games)
