@@ -221,13 +221,10 @@ class Board(object):
         self.move = 0                 # how many move has been made
         self.last_coord = (-1,-1)     # last action coord
         self.last_action = None       # last action made
-        self.foul = False             # flag for illegal move
         if fen is not None:
             self.set_fen(fen)
     
     def is_game_over(self, claim_draw=False):
-        if self.foul:
-            return True
         if claim_draw:
             return all(self.board_state[i][j] != 0 for i in range(self.size) for j in range(self.size))
         return self.is_terminal()
@@ -257,10 +254,7 @@ class Board(object):
         coord = self.action_to_coord(action)
         # check if it's legal move
         if (self.board_state[coord[0]][coord[1]] != 0): # the action coordinate is not empty
-            self.foul = True
-            self.last_coord = coord
-            self.last_action = action
-            return self
+            raise ValueError(f"Illegal move: position {coord} is not empty.")
         # Place stone: 1 for black, -1 for white
         if color == 'black':
             self.board_state[coord[0]][coord[1]] = 1
@@ -272,8 +266,6 @@ class Board(object):
         return self
     
     def is_terminal(self):
-        if self.foul:
-            return True
         # First check if the board is full
         is_full = all(self.board_state[i][j] != 0 for i in range(self.size) for j in range(self.size))
         if is_full:

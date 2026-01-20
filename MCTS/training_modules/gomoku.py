@@ -27,12 +27,6 @@ def create_gomoku_env(cfg, render=False) -> GomokuEnv:
 
 def get_gomoku_game_result(board: Board) -> float | None:
     """Get the game result from a Gomoku board (Board instance)."""
-    if getattr(board, 'foul', False):
-        # The player who just moved made an illegal move, so the opponent wins
-        # If board.move is even, black's turn, so white just won
-        # If board.move is odd, white's turn, so black just won
-        last_player = 'black' if board.move % 2 == 0 else 'white'
-        return -1.0 if last_player == 'black' else 1.0
     exist, win_color = gomoku_util.check_five_in_row(board.board_state)
     is_full = all(board.board_state[i][j] != 0 for i in range(board.size) for j in range(board.size))
     if exist:
