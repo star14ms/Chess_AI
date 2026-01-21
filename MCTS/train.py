@@ -37,6 +37,7 @@ get_game_result = None
 is_first_player_turn = None
 get_legal_actions = None
 create_board_from_serialized = None
+_INITIAL_FEN_CACHE = {}
 
 def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
     global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions, create_board_from_serialized
@@ -374,32 +375,17 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                     # If none found, use the original path and let it fail with a clear error
                     json_path = os.path.join(project_root, json_path)
             try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    first_char = ""
-                    while True:
-                        chunk = f.read(1024)
-                        if not chunk:
-                            break
-                        stripped = chunk.lstrip()
-                        if stripped:
-                            first_char = stripped[0]
-                            break
-                if first_char == "{":
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        initial_board_fen_cfg = json.load(f)
-                    if isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
-                        initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
-                elif first_char == "[":
-                    initial_fen, initial_position_quality = select_random_fen_from_json_list(json_path)
+                cache_key = os.path.abspath(json_path)
+                if cache_key in _INITIAL_FEN_CACHE:
+                    loaded = _INITIAL_FEN_CACHE[cache_key]
                 else:
                     with open(json_path, "r", encoding="utf-8") as f:
-                        initial_board_fen_cfg = json.load(f)
-                    if isinstance(initial_board_fen_cfg, list) and initial_board_fen_cfg:
-                        initial_fen, initial_position_quality = select_random_fen_from_entries(
-                            initial_board_fen_cfg
-                        )
-                    elif isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
-                        initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
+                        loaded = json.load(f)
+                    _INITIAL_FEN_CACHE[cache_key] = loaded
+                if isinstance(loaded, dict) and len(loaded) > 0:
+                    initial_fen, initial_position_quality = select_fen_from_dict(loaded)
+                elif isinstance(loaded, list) and loaded:
+                    initial_fen, initial_position_quality = select_random_fen_from_entries(loaded)
             except Exception as e:
                 print(f"Warning: Failed to load initial_board_fen from JSON file {json_path}: {e}")
                 initial_board_fen_cfg = None
@@ -2121,6 +2107,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_illegal_moves_in_iteration = 0
         total_samples_in_iteration = 0
         avg_illegal_prob_mass = 0.0
+        illegal_metrics_interval = max(1, int(cfg.training.get("illegal_metrics_interval", 1)))
         task_id_train = progress.add_task(
             "Training Epochs",
             total=cfg.training.num_training_steps,
@@ -2157,33 +2144,39 @@ def run_training_loop(cfg: DictConfig) -> None:
             total_value_loss += value_loss.item()
             
             # Track illegal move metrics (model behavior monitoring)
-            with torch.no_grad():
-                policy_probs = torch.softmax(policy_logits, dim=1)
-                batch_illegal_prob_mass = 0.0
-                batch_illegal_moves = 0
-                predicted_action_indices = torch.argmax(policy_logits, dim=1)
-                
-                for i in range(len(boards_batch)):
-                    current_board = boards_batch[i]
-                    legal_moves = set(get_legal_actions(current_board))
-                    if not legal_moves:
-                        continue
-                    legal_indices = torch.tensor(
-                        [move_id - 1 for move_id in legal_moves],
-                        device=device,
-                        dtype=torch.long,
-                    )
-                    illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
-                    batch_illegal_prob_mass += illegal_prob
+            do_illegal_metrics = (
+                illegal_metrics_interval == 1
+                or epoch % illegal_metrics_interval == 0
+                or epoch == cfg.training.num_training_steps - 1
+            )
+            if do_illegal_metrics:
+                with torch.no_grad():
+                    policy_probs = torch.softmax(policy_logits, dim=1)
+                    batch_illegal_prob_mass = 0.0
+                    batch_illegal_moves = 0
+                    predicted_action_indices = torch.argmax(policy_logits, dim=1)
                     
-                    predicted_action_id = predicted_action_indices[i].item() + 1
-                    if predicted_action_id not in legal_moves:
-                        batch_illegal_moves += 1
+                    for i in range(len(boards_batch)):
+                        current_board = boards_batch[i]
+                        legal_moves = set(get_legal_actions(current_board))
+                        if not legal_moves:
+                            continue
+                        legal_indices = torch.tensor(
+                            [move_id - 1 for move_id in legal_moves],
+                            device=device,
+                            dtype=torch.long,
+                        )
+                        illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
+                        batch_illegal_prob_mass += illegal_prob
+                        
+                        predicted_action_id = predicted_action_indices[i].item() + 1
+                        if predicted_action_id not in legal_moves:
+                            batch_illegal_moves += 1
+                    
+                    avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
                 
-                avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
-            
-            total_illegal_moves_in_iteration += batch_illegal_moves
-            total_samples_in_iteration += len(boards_batch)
+                total_illegal_moves_in_iteration += batch_illegal_moves
+                total_samples_in_iteration += len(boards_batch)
             
             current_avg_policy_loss = total_policy_loss / (epoch + 1)
             current_avg_value_loss = total_value_loss / (epoch + 1)

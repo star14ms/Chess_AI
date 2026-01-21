@@ -266,7 +266,7 @@ class MCTS:
         # Get reward from the perspective of the previous player (who just moved to reach this terminal state)
         return calculate_chess_reward(leaf_board, claim_draw=True, draw_reward=self.draw_reward)
 
-    def _prepare_observation(self, leaf_node: MCTSNode) -> torch.Tensor:
+    def _prepare_observation(self, leaf_node: MCTSNode, reuse_buffer: bool = True) -> torch.Tensor:
         """Prepares observation tensor for a leaf node. Returns None if terminal."""
         leaf_board = leaf_node.get_board()
         if leaf_board.is_game_over(claim_draw=True):
@@ -275,13 +275,15 @@ class MCTS:
         if steps is None:
             steps = self.history_steps
         obs_vector = leaf_board.get_board_vector(history_steps=steps)
-        
+        if not reuse_buffer:
+            return torch.from_numpy(obs_vector).to(self.device, dtype=torch.float32)
+
         # Reuse buffer if shape matches, otherwise create new one (Phase 3 optimization)
         obs_shape = obs_vector.shape
         if self._obs_buffer is None or self._obs_buffer_shape != obs_shape:
             self._obs_buffer = torch.empty(obs_shape, dtype=torch.float32, device=self.device)
             self._obs_buffer_shape = obs_shape
-        
+
         # Copy data into buffer (more efficient than creating new tensor)
         self._obs_buffer.copy_(torch.from_numpy(obs_vector))
         return self._obs_buffer
@@ -359,8 +361,7 @@ class MCTS:
                 steps = getattr(self.env, 'history_steps', None) if self.env is not None else None
                 if steps is None:
                     steps = self.history_steps
-                obs_vector = leaf_board.get_board_vector(history_steps=steps)
-                obs_tensor = torch.tensor(obs_vector, dtype=torch.float32, device=self.device).unsqueeze(0)
+                obs_tensor = self._prepare_observation(leaf_node, reuse_buffer=True).unsqueeze(0)
                 with torch.no_grad():
                     policy_logits, value_pred = self.network(obs_tensor)
                 policy_logits = policy_logits.squeeze(0)
@@ -464,7 +465,7 @@ class MCTS:
                     terminal_values[i] = self._get_terminal_value(leaf)
                     leaf.is_expanded = True
                 else:
-                    obs_t = self._prepare_observation(leaf)
+                    obs_t = self._prepare_observation(leaf, reuse_buffer=False)
                     if obs_t is not None:
                         obs_tensors.append(obs_t)
                         obs_indices.append(i)
@@ -478,12 +479,13 @@ class MCTS:
                 policy_logits_batch, value_preds_batch = self.network(obs_batch)
 
         # Phase 4: EXPAND & BACKPROP - Remove virtual loss, expand, backprop
+        obs_index_to_batch = {leaf_idx: batch_idx for batch_idx, leaf_idx in enumerate(obs_indices)}
         for i, (leaf, path) in enumerate(zip(leaves, paths)):
             self._remove_virtual_loss(path, virtual_loss=1.0)
             if i in terminal_values:
                 value = terminal_values[i]
-            elif i in obs_indices:
-                batch_idx = obs_indices.index(i)
+            elif i in obs_index_to_batch:
+                batch_idx = obs_index_to_batch[i]
                 policy_logits = policy_logits_batch[batch_idx]
                 value = value_preds_batch[batch_idx].item()
                 if not leaf.is_expanded:
