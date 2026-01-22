@@ -218,9 +218,108 @@ def load_checkpoint(
 ) -> dict:
     checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    optimizer_loaded = False
+    if "optimizer_state_dict" in checkpoint:
+        checkpoint_opt_state = checkpoint["optimizer_state_dict"]
+        optimizer_param_names = checkpoint.get("optimizer_param_names")
+        skip_optimizer_load = False
+
+        if "param_groups" in checkpoint_opt_state:
+            ckpt_groups = checkpoint_opt_state["param_groups"]
+            opt_groups = optimizer.param_groups
+            if len(ckpt_groups) != len(opt_groups):
+                skip_optimizer_load = True
+            for ckpt_group, opt_group in zip(ckpt_groups, opt_groups):
+                if len(ckpt_group.get("params", [])) != len(opt_group.get("params", [])):
+                    skip_optimizer_load = True
+                    break
+
+        use_manual_state_restore = False
+        restored_by_name = False
+        if skip_optimizer_load and optimizer_param_names:
+            try:
+                name_to_param = dict(model.named_parameters())
+                loaded_states = 0
+                total_candidates = 0
+                state_dict = checkpoint_opt_state.get("state", {})
+                for group, names in zip(
+                    checkpoint_opt_state.get("param_groups", []), optimizer_param_names
+                ):
+                    for old_param_id, param_name in zip(group.get("params", []), names):
+                        if not isinstance(param_name, str) or not param_name:
+                            continue
+                        if not isinstance(old_param_id, int):
+                            try:
+                                if isinstance(old_param_id, torch.Tensor):
+                                    old_param_id = int(old_param_id.item())
+                                else:
+                                    old_param_id = int(old_param_id)
+                            except Exception:
+                                continue
+                        total_candidates += 1
+                        param = name_to_param.get(param_name)
+                        if param is None:
+                            continue
+                        if old_param_id in state_dict:
+                            loaded_states += 1
+
+                optimizer.state.clear()
+                for group, names in zip(
+                    checkpoint_opt_state.get("param_groups", []), optimizer_param_names
+                ):
+                    for old_param_id, param_name in zip(group.get("params", []), names):
+                        if not isinstance(param_name, str) or not param_name:
+                            continue
+                        param = name_to_param.get(param_name)
+                        if param is None:
+                            continue
+                        if not isinstance(old_param_id, int):
+                            try:
+                                if isinstance(old_param_id, torch.Tensor):
+                                    old_param_id = int(old_param_id.item())
+                                else:
+                                    old_param_id = int(old_param_id)
+                            except Exception:
+                                continue
+                        if old_param_id in state_dict:
+                            optimizer.state[param] = state_dict[old_param_id]
+                use_manual_state_restore = True
+                restored_by_name = loaded_states > 0
+                if restored_by_name:
+                    print(
+                        f"Loaded optimizer state by name for {loaded_states}/{total_candidates} params."
+                    )
+                else:
+                    skip_optimizer_load = True
+            except Exception as exc:
+                print(f"Warning: Name-based optimizer restore failed: {exc}")
+                skip_optimizer_load = True
+
+        if skip_optimizer_load and not restored_by_name:
+            print(
+                "Warning: Optimizer param_groups mismatch between checkpoint and current model. "
+                "Skipping optimizer state load."
+            )
+        else:
+            if not use_manual_state_restore:
+                optimizer.load_state_dict(checkpoint_opt_state)
+            optimizer_loaded = True
+
+    if optimizer_loaded:
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+
     if scheduler is not None and "scheduler_state_dict" in checkpoint:
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        try:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        except Exception as exc:
+            print(f"Warning: Failed to load scheduler state: {exc}")
+
+    if not optimizer_loaded:
+        print("Optimizer will start fresh.")
+
     return checkpoint
 
 

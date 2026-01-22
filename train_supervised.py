@@ -4,6 +4,7 @@ import json
 import math
 import os
 import time
+import random
 
 import chess
 import numpy as np
@@ -45,7 +46,7 @@ class MateInOneIterableDataset(IterableDataset):
     def __init__(
         self,
         cfg,
-        data_path: str,
+        data_paths: list[str],
         split: str,
         val_split: float,
         seed: int,
@@ -54,7 +55,7 @@ class MateInOneIterableDataset(IterableDataset):
         if split not in {"train", "val"}:
             raise ValueError("split must be 'train' or 'val'.")
         self.cfg = cfg
-        self.data_path = data_path
+        self.data_paths = data_paths
         self.split = split
         self.val_split = val_split
         self.seed = seed
@@ -68,12 +69,15 @@ class MateInOneIterableDataset(IterableDataset):
         if max_rows is not None and num_workers > 1:
             max_rows = math.ceil(max_rows / num_workers)
 
-        if self.data_path.lower().endswith(".json"):
-            entry_iter = iter_json_array(self.data_path)
-            source_type = "json"
-        else:
-            entry_iter = iter_csv_rows(self.data_path)
-            source_type = "csv"
+        sources = []
+        for data_path in self.data_paths:
+            if data_path.lower().endswith(".json"):
+                entry_iter = iter_json_array(data_path)
+                source_type = "json"
+            else:
+                entry_iter = iter_csv_rows(data_path)
+                source_type = "csv"
+            sources.append((entry_iter, source_type))
 
         action_space_size = self.cfg.network.action_space_size
         input_channels = self.cfg.network.input_channels
@@ -81,7 +85,17 @@ class MateInOneIterableDataset(IterableDataset):
 
         raw_index = 0
         yielded = 0
-        for entry in entry_iter:
+        rng = random.Random(self.seed + worker_id)
+        active = list(range(len(sources)))
+        while active:
+            active_idx = rng.randrange(len(active))
+            source_id = active[active_idx]
+            iterator, source_type = sources[source_id]
+            try:
+                entry = next(iterator)
+            except StopIteration:
+                active.pop(active_idx)
+                continue
             if raw_index % num_workers != worker_id:
                 raw_index += 1
                 continue
@@ -111,8 +125,10 @@ class MateInOneIterableDataset(IterableDataset):
                     "Check action_space_size vs input_channels and board type."
                 )
             action_index = action_id - 1
-            yield torch.from_numpy(obs.astype(np.float32, copy=False)).float(), torch.tensor(
-                action_index, dtype=torch.long
+            yield (
+                torch.from_numpy(obs.astype(np.float32, copy=False)).float(),
+                torch.tensor(action_index, dtype=torch.long),
+                torch.tensor(source_id, dtype=torch.long),
             )
             yielded += 1
             if max_rows is not None and yielded >= max_rows:
@@ -197,9 +213,10 @@ def main():
     parser.add_argument(
         "--data",
         "--csv",
-        dest="data_path",
-        default="data/mate_in_1_flipped.json",
-        help="Path to mate-in-one data (CSV or JSON).",
+        dest="data_paths",
+        nargs="+",
+        default=["data/mate_in_1_flipped.json", "data/mate_in_2_flipped.json"],
+        help="Paths to mate-in-one data (CSV or JSON). Pass multiple paths to mix datasets.",
     )
     parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
     parser.add_argument("--epochs", type=int, default=4)
@@ -225,9 +242,37 @@ def main():
     cfg.network.policy_dropout = args.policy_dropout
     device = select_device(args.device or cfg.training.get("device", "auto"))
 
-    if args.data_path.lower().endswith(".json"):
-        total_rows = validate_json_lines(args.data_path)
-    else:
+    raw_labels = [os.path.basename(p) or p for p in args.data_paths]
+    shortened_labels: list[str] = []
+    for label in raw_labels:
+        base = os.path.splitext(label)[0]
+        lower = base.lower()
+        if "mate_in_1" in lower:
+            shortened = "m1"
+        elif "mate_in_2" in lower:
+            shortened = "m2"
+        else:
+            shortened = base[:6] or "data"
+        shortened_labels.append(shortened)
+    label_counts: dict[str, int] = {}
+    source_labels: list[str] = []
+    for idx, label in enumerate(shortened_labels):
+        count = label_counts.get(label, 0)
+        label_counts[label] = count + 1
+        if count > 0:
+            source_labels.append(f"{label}#{count + 1}")
+        else:
+            source_labels.append(label)
+    num_sources = len(source_labels)
+
+    total_rows = 0
+    json_only = True
+    for data_path in args.data_paths:
+        if data_path.lower().endswith(".json"):
+            total_rows += validate_json_lines(data_path)
+        else:
+            json_only = False
+    if not json_only:
         total_rows = None
 
     batch_size = args.batch_size or cfg.training.batch_size
@@ -235,7 +280,7 @@ def main():
     weight_decay = args.weight_decay if args.weight_decay is not None else cfg.optimizer.weight_decay
     train_dataset = MateInOneIterableDataset(
         cfg,
-        args.data_path,
+        args.data_paths,
         split="train",
         val_split=args.val_split,
         seed=args.seed,
@@ -243,7 +288,7 @@ def main():
     )
     val_dataset = MateInOneIterableDataset(
         cfg,
-        args.data_path,
+        args.data_paths,
         split="val",
         val_split=args.val_split,
         seed=args.seed,
@@ -291,7 +336,8 @@ def main():
             return
 
     max_rows_label = args.max_rows if args.max_rows is not None else "all"
-    print(f"Streaming data from {args.data_path} (max_rows={max_rows_label}).")
+    joined_paths = ", ".join(args.data_paths)
+    print(f"Streaming data from {joined_paths} (max_rows={max_rows_label}).")
     print(f"Split: val={args.val_split:.2f} | seed={args.seed}")
     print(f"Training on {device} | batch_size={batch_size} | epochs={args.epochs}")
 
@@ -327,6 +373,7 @@ def main():
         TimeRemainingColumn(),
         TimeElapsedColumn(),
         TextColumn("loss={task.fields[loss]:.4f} acc={task.fields[acc]:.2f}%"),
+        TextColumn("src={task.fields[src]}"),
     )
 
     with Progress(*progress_columns, transient=False) as progress:
@@ -336,24 +383,28 @@ def main():
             completed=start_epoch - 1,
             loss=float("nan"),
             acc=float("nan"),
+            src="-",
         )
         train_task = progress.add_task(
-            "Train", total=train_total, loss=float("nan"), acc=float("nan")
+            "Train", total=train_total, loss=float("nan"), acc=float("nan"), src="-"
         )
         val_task = progress.add_task(
-            "Val", total=val_total, loss=float("nan"), acc=float("nan")
+            "Val", total=val_total, loss=float("nan"), acc=float("nan"), src="-"
         )
 
         for epoch in range(start_epoch, args.epochs + 1):
             total_loss = 0.0
             correct = 0
             total = 0
+            per_source_correct = [0 for _ in range(num_sources)]
+            per_source_total = [0 for _ in range(num_sources)]
             progress.reset(
                 train_task,
                 total=train_total,
                 completed=0,
                 loss=float("nan"),
                 acc=float("nan"),
+                src="-",
             )
             progress.update(train_task, description=f"Train (epoch {epoch})")
             progress.reset(
@@ -362,12 +413,14 @@ def main():
                 completed=0,
                 loss=float("nan"),
                 acc=float("nan"),
+                src="-",
             )
             progress.update(val_task, description="Val")
 
-            for obs, target in train_loader:
+            for obs, target, source_ids in train_loader:
                 obs = obs.to(device)
                 target = target.to(device)
+                source_ids = source_ids.to(device)
                 optimizer.zero_grad()
                 logits, _ = model(obs, policy_only=True)
                 loss = criterion(logits, target)
@@ -378,10 +431,28 @@ def main():
                 preds = torch.argmax(logits, dim=1)
                 correct += (preds == target).sum().item()
                 total += obs.size(0)
+                for source_idx in range(num_sources):
+                    mask = source_ids == source_idx
+                    count = mask.sum().item()
+                    if count:
+                        per_source_total[source_idx] += count
+                        per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
 
                 avg_loss = total_loss / max(total, 1)
                 acc = correct / max(total, 1)
-                progress.update(train_task, advance=1, loss=avg_loss, acc=acc * 100)
+                per_source_train = [
+                    f"{label}={per_source_correct[i] / per_source_total[i] * 100:.1f}%"
+                    for i, label in enumerate(source_labels)
+                    if per_source_total[i] > 0
+                ]
+                per_source_train_str = " | ".join(per_source_train) if per_source_train else "-"
+                progress.update(
+                    train_task,
+                    advance=1,
+                    loss=avg_loss,
+                    acc=acc * 100,
+                    src=per_source_train_str,
+                )
 
             avg_loss = total_loss / max(total, 1)
             acc = correct / max(total, 1)
@@ -391,19 +462,40 @@ def main():
             val_loss = 0.0
             val_correct = 0
             val_total = 0
+            val_per_source_correct = [0 for _ in range(num_sources)]
+            val_per_source_total = [0 for _ in range(num_sources)]
             with torch.no_grad():
-                for obs, target in val_loader:
+                for obs, target, source_ids in val_loader:
                     obs = obs.to(device)
                     target = target.to(device)
+                    source_ids = source_ids.to(device)
                     logits, _ = model(obs, policy_only=True)
                     loss = criterion(logits, target)
                     val_loss += loss.item() * obs.size(0)
                     preds = torch.argmax(logits, dim=1)
                     val_correct += (preds == target).sum().item()
                     val_total += obs.size(0)
+                    for source_idx in range(num_sources):
+                        mask = source_ids == source_idx
+                        count = mask.sum().item()
+                        if count:
+                            val_per_source_total[source_idx] += count
+                            val_per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
                     val_avg_loss = val_loss / max(val_total, 1)
                     val_acc = val_correct / max(val_total, 1)
-                    progress.update(val_task, advance=1, loss=val_avg_loss, acc=val_acc * 100)
+                    per_source_val = [
+                        f"{label}={val_per_source_correct[i] / val_per_source_total[i] * 100:.1f}%"
+                        for i, label in enumerate(source_labels)
+                        if val_per_source_total[i] > 0
+                    ]
+                    per_source_val_str = " | ".join(per_source_val) if per_source_val else "-"
+                    progress.update(
+                        val_task,
+                        advance=1,
+                        loss=val_avg_loss,
+                        acc=val_acc * 100,
+                        src=per_source_val_str,
+                    )
             model.train()
 
             train_losses.append(avg_loss)
@@ -415,10 +507,24 @@ def main():
                 val_acc = val_correct / max(val_total, 1)
                 val_losses.append(val_avg_loss)
                 val_accs.append(val_acc)
+                per_source_train = [
+                    f"{label}={per_source_correct[i] / per_source_total[i] * 100:.2f}%"
+                    for i, label in enumerate(source_labels)
+                    if per_source_total[i] > 0
+                ]
+                per_source_val = [
+                    f"{label}={val_per_source_correct[i] / val_per_source_total[i] * 100:.2f}%"
+                    for i, label in enumerate(source_labels)
+                    if val_per_source_total[i] > 0
+                ]
+                per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
+                per_source_val_str = " | ".join(per_source_val) if per_source_val else "N/A"
                 print(
                     f"Epoch {epoch}/{args.epochs} | "
                     f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
-                    f"val loss={val_avg_loss:.4f} acc={val_acc*100:.2f}%"
+                    f"val loss={val_avg_loss:.4f} acc={val_acc*100:.2f}% | "
+                    f"train acc by source: {per_source_train_str} | "
+                    f"val acc by source: {per_source_val_str}"
                 )
                 scheduler.step(val_avg_loss)
 
@@ -446,10 +552,17 @@ def main():
                         print(f"Early stopping at epoch {epoch}.")
                         break
             else:
+                per_source_train = [
+                    f"{label}={per_source_correct[i] / per_source_total[i] * 100:.2f}%"
+                    for i, label in enumerate(source_labels)
+                    if per_source_total[i] > 0
+                ]
+                per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
                 print(
                     f"Epoch {epoch}/{args.epochs} | "
                     f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
-                    "val loss=N/A acc=N/A (no validation batches)"
+                    f"val loss=N/A acc=N/A (no validation batches) | "
+                    f"train acc by source: {per_source_train_str}"
                 )
 
             save_learning_curve(train_losses, train_accs, val_losses, val_accs, checkpoint_dir)
