@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 
 from chess_gym.chess_custom import LegacyChessBoard, FullyTrackedBoard
 from MCTS.training_modules.chess import create_chess_network
+from utils.profile_model import profile_model
 from utils.training_utils import (
     count_dataset_entries,
     freeze_value_head,
@@ -27,6 +28,23 @@ from utils.training_utils import (
     select_device,
     validate_json_lines,
 )
+
+
+class NullProgress:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb):
+        return False
+
+    def add_task(self, *args, **kwargs):
+        return 0
+
+    def reset(self, *args, **kwargs):
+        return None
+
+    def update(self, *args, **kwargs):
+        return None
 
 
 class MateInOneDataset(Dataset):
@@ -236,6 +254,7 @@ def main():
     parser.add_argument("--lr-patience", type=int, default=5)
     parser.add_argument("--lr-factor", type=float, default=0.5)
     parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable progress bars.")
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
@@ -300,6 +319,17 @@ def main():
     model = create_chess_network(cfg, device)
     freeze_value_head(model)
     model.train()
+    try:
+        dummy_input = torch.zeros(
+            1,
+            cfg.network.input_channels,
+            cfg.network.board_size,
+            cfg.network.board_size,
+            device=device,
+        )
+        profile_model(model, inputs=(dummy_input,))
+    except Exception as exc:
+        print(f"Warning: Model profiling failed: {exc}")
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
@@ -376,7 +406,10 @@ def main():
         TextColumn("src={task.fields[src]}"),
     )
 
-    with Progress(*progress_columns, transient=False) as progress:
+    progress_manager = (
+        NullProgress() if args.no_progress else Progress(*progress_columns, transient=False)
+    )
+    with progress_manager as progress:
         epoch_task = progress.add_task(
             "Epochs",
             total=args.epochs,
