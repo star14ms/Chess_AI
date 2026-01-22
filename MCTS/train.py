@@ -18,6 +18,7 @@ import gzip
 import json
 import chess
 import random
+import re
 
 # Assuming files are in the MCTS directory relative to the project root
 from mcts_node import MCTSNode
@@ -116,6 +117,57 @@ def _parse_dataset_entry(entry):
             weight = 1.0
         return entry, float(weight)
     return None, None
+
+
+def _shorten_dataset_label(source) -> str:
+    if isinstance(source, str):
+        base = os.path.splitext(os.path.basename(source))[0]
+        lower = base.lower()
+        mate_match = re.search(r"mate[_-]?in[_-]?(\d+)", lower)
+        if mate_match:
+            return f"m{mate_match.group(1)}"
+        return base[:6] or "data"
+    return "data"
+
+
+def _collect_dataset_entries(initial_board_fen_cfg):
+    if not isinstance(initial_board_fen_cfg, list):
+        return []
+    entries = []
+    for entry in initial_board_fen_cfg:
+        source, weight = _parse_dataset_entry(entry)
+        if source is None:
+            continue
+        label = None
+        if isinstance(entry, dict):
+            label = entry.get("label") or entry.get("name")
+        if not label:
+            label = _shorten_dataset_label(source)
+        entry_weight = float(weight) if isinstance(weight, (int, float)) else 1.0
+        entries.append({"source": source, "weight": entry_weight, "label": label})
+    if not entries:
+        return []
+    label_counts: dict[str, int] = {}
+    for item in entries:
+        label = item["label"]
+        count = label_counts.get(label, 0)
+        label_counts[label] = count + 1
+        if count > 0:
+            item["label"] = f"{label}#{count + 1}"
+    return entries
+
+
+def _format_source_accuracy(labels: list[str], correct: list[int], total: list[int], digits: int = 2) -> str:
+    if not labels:
+        return "-"
+    parts: list[str] = []
+    for label, c, t in zip(labels, correct, total):
+        if t > 0:
+            acc = c / t * 100
+            parts.append(f"{label}={acc:.{digits}f}%")
+        else:
+            parts.append(f"{label}=N/A")
+    return " | ".join(parts)
 
 def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
     global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions, create_board_from_serialized
@@ -272,6 +324,7 @@ class ReplayBuffer:
         
         # Pre-allocate policy array and use vectorized operations where possible
         normalized_policies = np.zeros((batch_size, action_space_size), dtype=np.float32)
+        source_ids = np.full((batch_size,), -1, dtype=np.int64)
         for i, exp in enumerate(batch):
             policy = exp[1]
             if isinstance(policy, np.ndarray):
@@ -285,6 +338,11 @@ class ReplayBuffer:
                     # Truncate if larger
                     normalized_policies[i] = policy[:action_space_size]
             # else: already zeros from pre-allocation
+            if len(exp) > 4 and exp[4] is not None:
+                try:
+                    source_ids[i] = int(exp[4])
+                except (TypeError, ValueError):
+                    source_ids[i] = -1
         
         policy_targets = normalized_policies
         # Ensure FENs are handled as a list of strings, not converted to numpy array directly if they vary in length etc.
@@ -293,7 +351,7 @@ class ReplayBuffer:
         # Pre-allocate value targets array
         value_targets = np.array([exp[3] for exp in batch], dtype=np.float32).reshape(-1, 1)
 
-        return states, policy_targets, boards, value_targets # Return boards
+        return states, policy_targets, boards, value_targets, source_ids # Return boards
 
     def __len__(self):
         return len(self.buffer)
@@ -315,7 +373,11 @@ class ReplayBuffer:
         # Store board as serialized strings instead of full board objects
         compact_buffer = []
         for exp in self.buffer:
-            state, policy, board, value = exp
+            if len(exp) == 5:
+                state, policy, board, value, source_id = exp
+            else:
+                state, policy, board, value = exp
+                source_id = None
             # Handle None policy - replace with zero array of default action space size
             if policy is None:
                 # Default action space size (4672 for legacy, can be overridden)
@@ -344,7 +406,8 @@ class ReplayBuffer:
                 state.astype(np.float16),  # Use half precision to save space
                 policy.astype(np.float16),
                 board_str,
-                float(value)
+                float(value),
+                source_id
             )
             compact_buffer.append(compact_exp)
         
@@ -383,10 +446,20 @@ class ReplayBuffer:
             # Convert back to full format with board objects
             full_buffer = []
             for compact_exp in compact_buffer:
-                state_data, policy, board_str, value = compact_exp
+                if len(compact_exp) == 5:
+                    state_data, policy, board_str, value, source_id = compact_exp
+                else:
+                    state_data, policy, board_str, value = compact_exp
+                    source_id = None
                 # Reconstruct board object from serialized string
                 board = board_factory_fn(board_str)
                 exp = (
+                    state_data.astype(np.float32),  # Convert back to float32
+                    policy.astype(np.float32),
+                    board,
+                    value,
+                    source_id
+                ) if source_id is not None else (
                     state_data.astype(np.float32),  # Convert back to float32
                     policy.astype(np.float32),
                     board,
@@ -410,6 +483,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     # Handle initial_board_fen: supports single dataset or weighted list of datasets
     initial_fen = None
     initial_position_quality = None
+    initial_dataset_id = None
+    initial_dataset_label = None
     initial_board_fen_cfg = cfg.training.get('initial_board_fen', None)
     
     # Convert OmegaConf DictConfig to plain dict if needed (for pickling/multiprocessing)
@@ -424,24 +499,21 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             pass
 
         if isinstance(initial_board_fen_cfg, list):
-            dataset_sources = []
-            dataset_weights = []
-            for entry in initial_board_fen_cfg:
-                source, weight = _parse_dataset_entry(entry)
-                if source is None:
-                    continue
-                if weight <= 0:
-                    continue
-                dataset_sources.append(source)
-                dataset_weights.append(weight)
-            if dataset_sources:
+            dataset_entries = _collect_dataset_entries(initial_board_fen_cfg)
+            if dataset_entries:
+                dataset_weights = [max(0.0, entry["weight"]) for entry in dataset_entries]
                 total_weight = sum(dataset_weights)
-                normalized = [w / total_weight for w in dataset_weights]
-                selected_idx = random.choices(range(len(dataset_sources)), weights=normalized, k=1)[0]
-                selected_source = dataset_sources[selected_idx]
-                initial_fen, initial_position_quality = _select_fen_from_source(selected_source)
+                if total_weight > 0:
+                    normalized = [w / total_weight for w in dataset_weights]
+                    selected_idx = random.choices(range(len(dataset_entries)), weights=normalized, k=1)[0]
+                    selected_entry = dataset_entries[selected_idx]
+                    initial_dataset_id = selected_idx
+                    initial_dataset_label = selected_entry["label"]
+                    initial_fen, initial_position_quality = _select_fen_from_source(selected_entry["source"])
         else:
             initial_fen, initial_position_quality = _select_fen_from_source(initial_board_fen_cfg)
+            if isinstance(initial_board_fen_cfg, str) and initial_board_fen_cfg.endswith(".json"):
+                initial_dataset_label = _shorten_dataset_label(initial_board_fen_cfg)
     
     options = {
         'fen': initial_fen
@@ -957,7 +1029,10 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             )
         state_obs, policy_target, board_at_state, _value_target = history_item
         outcome_value = _value_from_winner(board_at_state, winner, draw_value)
-        full_game_data.append((state_obs, policy_target, board_at_state, outcome_value))
+        if initial_dataset_id is not None:
+            full_game_data.append((state_obs, policy_target, board_at_state, outcome_value, initial_dataset_id))
+        else:
+            full_game_data.append((state_obs, policy_target, board_at_state, outcome_value))
     
     if progress is not None and task_id_game is not None:
         progress.update(task_id_game, visible=False)
@@ -993,7 +1068,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         'tree_stats': avg_tree_stats if avg_tree_stats else None,
         'draw_reward': draw_reward,  # Store draw_reward for reference in statistics
         'initial_fen': initial_fen,  # Store initial board FEN for game history
-        'initial_position_quality': initial_position_quality  # Store initial position quality
+        'initial_position_quality': initial_position_quality,  # Store initial position quality
+        'initial_dataset_label': initial_dataset_label,
+        'initial_dataset_id': initial_dataset_id,
     }
 
     return (full_game_data, game_info)
@@ -1402,6 +1479,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         cfg, device, progress
     )
     replay_buffer = _init_replay_buffer(cfg, progress)
+
+    dataset_entries = _collect_dataset_entries(cfg.training.get("initial_board_fen", None))
+    source_labels = [entry["label"] for entry in dataset_entries]
 
     # Loss Functions
     policy_loss_fn = nn.CrossEntropyLoss()
@@ -2154,6 +2234,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         total_illegal_moves_in_iteration = 0
         total_samples_in_iteration = 0
         avg_illegal_prob_mass = 0.0
+        per_source_correct = [0 for _ in source_labels]
+        per_source_total = [0 for _ in source_labels]
         illegal_metrics_interval = max(1, int(cfg.training.get("illegal_metrics_interval", 1)))
         task_id_train = progress.add_task(
             "Training Epochs",
@@ -2169,7 +2251,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             if batch is None: continue
 
             # states_np, policy_targets_np, fens_batch, value_targets_np = batch
-            states_np, policy_targets_np, boards_batch, value_targets_np = batch # Unpack boards
+            states_np, policy_targets_np, boards_batch, value_targets_np, source_ids_np = batch # Unpack boards
             states_tensor = torch.from_numpy(states_np).to(device)
             policy_targets_tensor = torch.from_numpy(policy_targets_np).to(device)
             value_targets_tensor = torch.from_numpy(value_targets_np).to(device)
@@ -2189,6 +2271,17 @@ def run_training_loop(cfg: DictConfig) -> None:
 
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
+
+            if source_labels and source_ids_np is not None:
+                source_ids_tensor = torch.from_numpy(source_ids_np).to(device)
+                preds = torch.argmax(policy_logits, dim=1)
+                target_indices = torch.argmax(policy_targets_tensor, dim=1)
+                for source_idx in range(len(source_labels)):
+                    mask = source_ids_tensor == source_idx
+                    count = mask.sum().item()
+                    if count:
+                        per_source_total[source_idx] += count
+                        per_source_correct[source_idx] += (preds[mask] == target_indices[mask]).sum().item()
             
             # Track illegal move metrics (model behavior monitoring)
             do_illegal_metrics = (
@@ -2244,11 +2337,15 @@ def run_training_loop(cfg: DictConfig) -> None:
         avg_policy_loss = total_policy_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
         avg_value_loss = total_value_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
         avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
+        per_source_acc_str = _format_source_accuracy(
+            source_labels, per_source_correct, per_source_total, digits=2
+        )
         progress.print(
             f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, "
             f"Avg Value Loss: {avg_value_loss:.4f}, "
             f"Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, "
-            f"Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%}"
+            f"Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%} | "
+            f"Acc by source: {per_source_acc_str}"
         )
         _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
         iteration_duration = int(time.time() - iteration_start_time)
