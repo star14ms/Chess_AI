@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 
 # Note: These defaults should ideally match the YAML defaults
 
@@ -65,7 +65,14 @@ class TrainingConfig:
     checkpoint_dir_load: Optional[str] = None # Optional separate directory to load checkpoints from (defaults to checkpoint_dir if None or empty)
     game_history_dir: Optional[str] = "./output/" # Directory to save game history files (moves in SAN notation). Set to None to disable.
     progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
-    initial_board_fen: Optional[Dict[str, float | Dict[str, float | str]]] = None # Dict mapping FEN->weight or {"weight","quality"}; if string, can be FEN or JSON path. JSON path may be dict (weighted) or array of entries (uniform selection, uses "FEN"/"fen" field).
+    initial_board_fen: Optional[
+        Union[
+            Dict[str, float | Dict[str, float | str]],
+            List[Dict[str, float | str]],
+            List[str],
+            str,
+        ]
+    ] = None # Dict mapping FEN->weight or {"weight","quality"}; string can be FEN or JSON path. JSON path may be dict (weighted) or array of entries (uniform selection, uses "FEN"/"fen" field). List enables multi-dataset selection with weights.
     max_training_time_seconds: Optional[int] = None # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
     draw_reward: Optional[float] = None # Fixed reward value for draws. If None, uses draw_reward_table based on termination type and position quality
     draw_reward_table: Optional[Dict[str, Dict[str, float]]] = None # Nested dictionary: {termination_type: {position_quality: reward}}. Used when draw_reward is None

@@ -39,6 +39,84 @@ get_legal_actions = None
 create_board_from_serialized = None
 _INITIAL_FEN_CACHE = {}
 
+
+def _resolve_json_path(json_path: str) -> str:
+    if os.path.isabs(json_path):
+        return json_path
+    train_file_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(train_file_dir, '..'))
+    potential_paths = [
+        json_path,
+        os.path.join(project_root, json_path),
+        os.path.join(project_root, 'config', os.path.basename(json_path)),
+        os.path.join(train_file_dir, json_path),
+    ]
+    if 'config/' in json_path:
+        potential_paths.insert(0, os.path.join(project_root, json_path))
+    for path in potential_paths:
+        if os.path.exists(path):
+            return os.path.abspath(path)
+    return os.path.join(project_root, json_path)
+
+
+def _select_fen_from_loaded(loaded):
+    if isinstance(loaded, dict) and len(loaded) > 0:
+        return select_fen_from_dict(loaded)
+    if isinstance(loaded, list) and loaded:
+        return select_random_fen_from_entries(loaded)
+    return None, None
+
+
+def _select_fen_from_json_path(json_path: str):
+    try:
+        resolved = _resolve_json_path(json_path)
+        cache_key = os.path.abspath(resolved)
+        if cache_key in _INITIAL_FEN_CACHE:
+            loaded = _INITIAL_FEN_CACHE[cache_key]
+        else:
+            with open(resolved, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            _INITIAL_FEN_CACHE[cache_key] = loaded
+        return _select_fen_from_loaded(loaded)
+    except Exception as e:
+        print(f"Warning: Failed to load initial_board_fen from JSON file {json_path}: {e}")
+        return None, None
+
+
+def _select_fen_from_source(source):
+    if isinstance(source, str) and source.endswith('.json'):
+        return _select_fen_from_json_path(source)
+    if isinstance(source, dict):
+        return select_fen_from_dict(source)
+    if isinstance(source, list):
+        return select_random_fen_from_entries(source)
+    if isinstance(source, str):
+        return source, None
+    return None, None
+
+
+def _parse_dataset_entry(entry):
+    if isinstance(entry, str):
+        return entry, 1.0
+    if isinstance(entry, dict):
+        if "path" in entry or "file" in entry or "dataset" in entry:
+            source = entry.get("path") or entry.get("file") or entry.get("dataset")
+            weight = float(entry.get("weight", 1.0))
+            return source, weight
+        if "entries" in entry or "data" in entry or "fens" in entry:
+            source = entry.get("entries") or entry.get("data") or entry.get("fens")
+            weight = float(entry.get("weight", 1.0))
+            return source, weight
+        if len(entry) == 1:
+            key, value = next(iter(entry.items()))
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                return key, float(value)
+        weight = entry.get("weight", 1.0)
+        if not isinstance(weight, (int, float)):
+            weight = 1.0
+        return entry, float(weight)
+    return None, None
+
 def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
     global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions, create_board_from_serialized
     if cfg.env.type == "chess":
@@ -329,7 +407,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     if env is None:
         env = create_environment(cfg, render=device.type == 'cpu' and not cfg.training.get('use_multiprocessing', False))
     
-    # Handle initial_board_fen: can be dict (weighted selection), string (legacy FEN or JSON file path), or None
+    # Handle initial_board_fen: supports single dataset or weighted list of datasets
     initial_fen = None
     initial_position_quality = None
     initial_board_fen_cfg = cfg.training.get('initial_board_fen', None)
@@ -344,57 +422,26 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         except Exception:
             # If conversion fails, try to use as-is (might already be a plain dict)
             pass
-        
-        # Check if it's a string that looks like a file path (ends with .json)
-        if isinstance(initial_board_fen_cfg, str) and initial_board_fen_cfg.endswith('.json'):
-            # Load from JSON file
-            # Handle both relative and absolute paths
-            json_path = initial_board_fen_cfg
-            if not os.path.isabs(json_path):
-                # If relative, try to resolve relative to config directory or project root
-                # Get the directory where this train.py file is located
-                train_file_dir = os.path.dirname(os.path.abspath(__file__))
-                # Project root is one level up from MCTS directory
-                project_root = os.path.abspath(os.path.join(train_file_dir, '..'))
-                # Try multiple potential paths
-                potential_paths = [
-                    json_path,  # Try as-is (might be relative to current working directory)
-                    os.path.join(project_root, json_path),  # Relative to project root
-                    os.path.join(project_root, 'config', os.path.basename(json_path)),  # In config/ directory
-                    os.path.join(train_file_dir, json_path),  # Relative to MCTS directory
-                ]
-                # If path contains 'config/', try that too
-                if 'config/' in json_path:
-                    potential_paths.insert(0, os.path.join(project_root, json_path))
-                
-                for path in potential_paths:
-                    if os.path.exists(path):
-                        json_path = os.path.abspath(path)
-                        break
-                else:
-                    # If none found, use the original path and let it fail with a clear error
-                    json_path = os.path.join(project_root, json_path)
-            try:
-                cache_key = os.path.abspath(json_path)
-                if cache_key in _INITIAL_FEN_CACHE:
-                    loaded = _INITIAL_FEN_CACHE[cache_key]
-                else:
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        loaded = json.load(f)
-                    _INITIAL_FEN_CACHE[cache_key] = loaded
-                if isinstance(loaded, dict) and len(loaded) > 0:
-                    initial_fen, initial_position_quality = select_fen_from_dict(loaded)
-                elif isinstance(loaded, list) and loaded:
-                    initial_fen, initial_position_quality = select_random_fen_from_entries(loaded)
-            except Exception as e:
-                print(f"Warning: Failed to load initial_board_fen from JSON file {json_path}: {e}")
-                initial_board_fen_cfg = None
-        # Now check if it's a dict (plain dict or OmegaConf DictConfig which is a dict subclass)
-        elif isinstance(initial_board_fen_cfg, dict) and len(initial_board_fen_cfg) > 0:
-            initial_fen, initial_position_quality = select_fen_from_dict(initial_board_fen_cfg)
-        elif isinstance(initial_board_fen_cfg, str):
-            # Legacy: single FEN string
-            initial_fen = initial_board_fen_cfg
+
+        if isinstance(initial_board_fen_cfg, list):
+            dataset_sources = []
+            dataset_weights = []
+            for entry in initial_board_fen_cfg:
+                source, weight = _parse_dataset_entry(entry)
+                if source is None:
+                    continue
+                if weight <= 0:
+                    continue
+                dataset_sources.append(source)
+                dataset_weights.append(weight)
+            if dataset_sources:
+                total_weight = sum(dataset_weights)
+                normalized = [w / total_weight for w in dataset_weights]
+                selected_idx = random.choices(range(len(dataset_sources)), weights=normalized, k=1)[0]
+                selected_source = dataset_sources[selected_idx]
+                initial_fen, initial_position_quality = _select_fen_from_source(selected_source)
+        else:
+            initial_fen, initial_position_quality = _select_fen_from_source(initial_board_fen_cfg)
     
     options = {
         'fen': initial_fen

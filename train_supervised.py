@@ -494,7 +494,7 @@ def main():
             model.eval()
             val_loss = 0.0
             val_correct = 0
-            val_total = 0
+            val_samples = 0
             val_per_source_correct = [0 for _ in range(num_sources)]
             val_per_source_total = [0 for _ in range(num_sources)]
             with torch.no_grad():
@@ -507,15 +507,15 @@ def main():
                     val_loss += loss.item() * obs.size(0)
                     preds = torch.argmax(logits, dim=1)
                     val_correct += (preds == target).sum().item()
-                    val_total += obs.size(0)
+                    val_samples += obs.size(0)
                     for source_idx in range(num_sources):
                         mask = source_ids == source_idx
                         count = mask.sum().item()
                         if count:
                             val_per_source_total[source_idx] += count
                             val_per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
-                    val_avg_loss = val_loss / max(val_total, 1)
-                    val_acc = val_correct / max(val_total, 1)
+                    val_avg_loss = val_loss / max(val_samples, 1)
+                    val_acc = val_correct / max(val_samples, 1)
                     per_source_val = [
                         f"{label}={val_per_source_correct[i] / val_per_source_total[i] * 100:.1f}%"
                         for i, label in enumerate(source_labels)
@@ -534,10 +534,10 @@ def main():
             train_losses.append(avg_loss)
             train_accs.append(acc)
 
-            has_val = val_total > 0
+            has_val = val_samples > 0
             if has_val:
-                val_avg_loss = val_loss / max(val_total, 1)
-                val_acc = val_correct / max(val_total, 1)
+                val_avg_loss = val_loss / max(val_samples, 1)
+                val_acc = val_correct / max(val_samples, 1)
                 val_losses.append(val_avg_loss)
                 val_accs.append(val_acc)
                 per_source_train = [
