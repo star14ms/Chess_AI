@@ -5,6 +5,7 @@ import math
 import os
 import time
 import random
+import re
 
 import chess
 import numpy as np
@@ -266,10 +267,9 @@ def main():
     for label in raw_labels:
         base = os.path.splitext(label)[0]
         lower = base.lower()
-        if "mate_in_1" in lower:
-            shortened = "m1"
-        elif "mate_in_2" in lower:
-            shortened = "m2"
+        mate_match = re.search(r"mate[_-]?in[_-]?(\d+)", lower)
+        if mate_match:
+            shortened = f"m{mate_match.group(1)}"
         else:
             shortened = base[:6] or "data"
         shortened_labels.append(shortened)
