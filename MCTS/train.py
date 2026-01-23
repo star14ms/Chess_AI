@@ -39,6 +39,7 @@ is_first_player_turn = None
 get_legal_actions = None
 create_board_from_serialized = None
 _INITIAL_FEN_CACHE = {}
+_DATASET_ENTRIES_CACHE = {}
 
 
 def _resolve_json_path(json_path: str) -> str:
@@ -94,6 +95,36 @@ def _select_fen_from_source(source):
     if isinstance(source, str):
         return source, None
     return None, None
+
+
+def _dataset_cache_key(value) -> str:
+    try:
+        return json.dumps(value, sort_keys=True)
+    except Exception:
+        return repr(value)
+
+
+def _get_cached_dataset_entries(initial_board_fen_cfg):
+    if not isinstance(initial_board_fen_cfg, list):
+        return [], None, []
+    cache_key = _dataset_cache_key(initial_board_fen_cfg)
+    cached = _DATASET_ENTRIES_CACHE.get(cache_key)
+    if cached is not None:
+        return cached["entries"], cached["weights"], cached["labels"]
+    entries = _collect_dataset_entries(initial_board_fen_cfg)
+    if not entries:
+        _DATASET_ENTRIES_CACHE[cache_key] = {"entries": [], "weights": None, "labels": []}
+        return [], None, []
+    dataset_weights = [max(0.0, entry["weight"]) for entry in entries]
+    total_weight = sum(dataset_weights)
+    normalized = [w / total_weight for w in dataset_weights] if total_weight > 0 else None
+    labels = [entry["label"] for entry in entries]
+    _DATASET_ENTRIES_CACHE[cache_key] = {
+        "entries": entries,
+        "weights": normalized,
+        "labels": labels,
+    }
+    return entries, normalized, labels
 
 
 def _parse_dataset_entry(entry):
@@ -499,17 +530,13 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
             pass
 
         if isinstance(initial_board_fen_cfg, list):
-            dataset_entries = _collect_dataset_entries(initial_board_fen_cfg)
-            if dataset_entries:
-                dataset_weights = [max(0.0, entry["weight"]) for entry in dataset_entries]
-                total_weight = sum(dataset_weights)
-                if total_weight > 0:
-                    normalized = [w / total_weight for w in dataset_weights]
-                    selected_idx = random.choices(range(len(dataset_entries)), weights=normalized, k=1)[0]
-                    selected_entry = dataset_entries[selected_idx]
-                    initial_dataset_id = selected_idx
-                    initial_dataset_label = selected_entry["label"]
-                    initial_fen, initial_position_quality = _select_fen_from_source(selected_entry["source"])
+            dataset_entries, normalized_weights, _labels = _get_cached_dataset_entries(initial_board_fen_cfg)
+            if dataset_entries and normalized_weights:
+                selected_idx = random.choices(range(len(dataset_entries)), weights=normalized_weights, k=1)[0]
+                selected_entry = dataset_entries[selected_idx]
+                initial_dataset_id = selected_idx
+                initial_dataset_label = selected_entry["label"]
+                initial_fen, initial_position_quality = _select_fen_from_source(selected_entry["source"])
         else:
             initial_fen, initial_position_quality = _select_fen_from_source(initial_board_fen_cfg)
             if isinstance(initial_board_fen_cfg, str) and initial_board_fen_cfg.endswith(".json"):
@@ -1480,8 +1507,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     )
     replay_buffer = _init_replay_buffer(cfg, progress)
 
-    dataset_entries = _collect_dataset_entries(cfg.training.get("initial_board_fen", None))
-    source_labels = [entry["label"] for entry in dataset_entries]
+    dataset_entries, _weights, source_labels = _get_cached_dataset_entries(cfg.training.get("initial_board_fen", None))
 
     # Loss Functions
     policy_loss_fn = nn.CrossEntropyLoss()
