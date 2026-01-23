@@ -185,4 +185,3 @@ if __name__ == "__main__":
     print("\n\nWould you like to run more diagnostic games? (Ctrl+C to stop)")
     input("Press Enter to run another game...")
     stats2 = run_diagnostic_game(cfg, model, device, max_moves=100, deterministic=True)
-
