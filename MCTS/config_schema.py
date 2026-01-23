@@ -64,6 +64,7 @@ class TrainingConfig:
     checkpoint_dir: str = "./checkpoints" # Will be relative to hydra output dir
     checkpoint_dir_load: Optional[str] = None # Optional separate directory to load checkpoints from (defaults to checkpoint_dir if None or empty)
     game_history_dir: Optional[str] = "./output/" # Directory to save game history files (moves in SAN notation). Set to None to disable.
+    initial_fen_pool_size: Optional[int] = None # Max samples per dataset for initial FEN pooling; None uses runtime default
     progress_bar: bool = True # If True, show bars only when not multiprocessing; if False, never show
     initial_board_fen: Optional[
         Union[

@@ -27,6 +27,7 @@ from utils.profile_model import get_optimal_worker_count, profile_model, format_
 from utils.progress import NullProgress
 from utils.training_utils import (
     RewardComputer,
+    iter_json_array,
     select_fen_from_dict,
     select_random_fen_from_entries,
     select_random_fen_from_json_list,
@@ -76,8 +77,15 @@ def _select_fen_from_json_path(json_path: str):
         if cache_key in _INITIAL_FEN_CACHE:
             loaded = _INITIAL_FEN_CACHE[cache_key]
         else:
+            load_start = time.perf_counter()
             with open(resolved, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
+            load_elapsed = time.perf_counter() - load_start
+            loaded_count = None
+            try:
+                loaded_count = len(loaded)
+            except Exception:
+                loaded_count = None
             _INITIAL_FEN_CACHE[cache_key] = loaded
         return _select_fen_from_loaded(loaded)
     except Exception as e:
@@ -104,7 +112,75 @@ def _dataset_cache_key(value) -> str:
         return repr(value)
 
 
+def _extract_fen_from_entry(entry):
+    if isinstance(entry, str):
+        return entry.strip()
+    if isinstance(entry, dict):
+        fen = entry.get("FEN") or entry.get("fen")
+        return str(fen).strip() if fen else None
+    return None
+
+
+def _sample_fens_from_json(path: str, max_samples: int) -> tuple[list[str], int]:
+    sample: list[str] = []
+    seen = 0
+    for entry in iter_json_array(path):
+        fen = _extract_fen_from_entry(entry)
+        if not fen:
+            continue
+        seen += 1
+        if len(sample) < max_samples:
+            sample.append(fen)
+        else:
+            j = random.randint(1, seen)
+            if j <= max_samples:
+                sample[j - 1] = fen
+    return sample, seen
+
+
+def _build_initial_fen_pool_cfg(initial_board_fen_cfg, max_samples: int | None):
+    if max_samples is None:
+        return None
+    if initial_board_fen_cfg is not None:
+        try:
+            if OmegaConf.is_config(initial_board_fen_cfg):
+                initial_board_fen_cfg = OmegaConf.to_container(initial_board_fen_cfg, resolve=True)
+        except Exception:
+            pass
+    if not isinstance(initial_board_fen_cfg, list):
+        return None
+    pooled_entries = []
+    for entry in initial_board_fen_cfg:
+        source, weight = _parse_dataset_entry(entry)
+        if source is None:
+            continue
+        label = None
+        if isinstance(entry, dict):
+            label = entry.get("label") or entry.get("name")
+        if not label:
+            label = _shorten_dataset_label(source)
+        if isinstance(source, str) and source.endswith(".json"):
+            resolved = _resolve_json_path(source)
+            start = time.perf_counter()
+            sample, total = _sample_fens_from_json(resolved, max_samples)
+            elapsed = time.perf_counter() - start
+            pooled_entries.append({
+                "entries": sample,
+                "weight": float(weight) if isinstance(weight, (int, float)) else 1.0,
+                "label": label,
+            })
+        else:
+            pooled_entries.append(entry)
+    return pooled_entries if pooled_entries else None
+
+
 def _get_cached_dataset_entries(initial_board_fen_cfg):
+    if initial_board_fen_cfg is not None:
+        try:
+            if OmegaConf.is_config(initial_board_fen_cfg):
+                initial_board_fen_cfg = OmegaConf.to_container(initial_board_fen_cfg, resolve=True)
+        except Exception:
+            pass
     if not isinstance(initial_board_fen_cfg, list):
         return [], None, []
     cache_key = _dataset_cache_key(initial_board_fen_cfg)
@@ -659,7 +735,9 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 history_steps=cfg.env.history_steps,
                 draw_reward=draw_reward_for_mcts
             )
+            mcts_start = time.perf_counter()
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
+            mcts_elapsed = time.perf_counter() - mcts_start
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
             
             # Get value prediction from root node (MCTS value estimate, better than raw network value)
@@ -1507,6 +1585,17 @@ def run_training_loop(cfg: DictConfig) -> None:
     )
     replay_buffer = _init_replay_buffer(cfg, progress)
 
+    # Build a pooled initial FEN list to avoid per-worker JSON loads
+    pool_size = cfg.training.get("initial_fen_pool_size", None)
+    if pool_size is None and use_multiprocessing_flag:
+        pool_size = 50000
+    pooled_initial_fen_cfg = _build_initial_fen_pool_cfg(
+        cfg.training.get("initial_board_fen", None),
+        int(pool_size) if pool_size is not None else None,
+    )
+    if pooled_initial_fen_cfg is not None:
+        cfg.training.initial_board_fen = pooled_initial_fen_cfg
+
     dataset_entries, _weights, source_labels = _get_cached_dataset_entries(cfg.training.get("initial_board_fen", None))
 
     # Loss Functions
@@ -2341,8 +2430,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     
                     avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
                 
-                total_illegal_moves_in_iteration += batch_illegal_moves
-                total_samples_in_iteration += len(boards_batch)
+                    total_illegal_moves_in_iteration += batch_illegal_moves
+                    total_samples_in_iteration += len(boards_batch)
             
             current_avg_policy_loss = total_policy_loss / (epoch + 1)
             current_avg_value_loss = total_value_loss / (epoch + 1)
