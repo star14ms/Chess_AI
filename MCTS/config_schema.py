@@ -73,7 +73,7 @@ class TrainingConfig:
             List[str],
             str,
         ]
-    ] = None # Dict mapping FEN->weight or {"weight","quality"}; string can be FEN or JSON path. JSON path may be dict (weighted) or array of entries (uniform selection, uses "FEN"/"fen" field). List enables multi-dataset selection with weights.
+    ] = None # Dict mapping FEN->weight or {"weight","quality","max_game_moves"}; string can be FEN or JSON path. JSON path may be dict (weighted) or array of entries (uniform selection, uses "FEN"/"fen" field). List enables multi-dataset selection with weights and optional per-dataset max_game_moves.
     max_training_time_seconds: Optional[int] = None # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
     draw_reward: Optional[float] = None # Fixed reward value for draws. If None, uses draw_reward_table based on termination type and position quality
     draw_reward_table: Optional[Dict[str, Dict[str, float]]] = None # Nested dictionary: {termination_type: {position_quality: reward}}. Used when draw_reward is None

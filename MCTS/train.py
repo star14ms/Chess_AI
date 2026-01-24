@@ -155,8 +155,10 @@ def _build_initial_fen_pool_cfg(initial_board_fen_cfg, max_samples: int | None):
         if source is None:
             continue
         label = None
+        max_game_moves = None
         if isinstance(entry, dict):
             label = entry.get("label") or entry.get("name")
+            max_game_moves = entry.get("max_game_moves")
         if not label:
             label = _shorten_dataset_label(source)
         if isinstance(source, str) and source.endswith(".json"):
@@ -164,11 +166,14 @@ def _build_initial_fen_pool_cfg(initial_board_fen_cfg, max_samples: int | None):
             start = time.perf_counter()
             sample, total = _sample_fens_from_json(resolved, max_samples)
             elapsed = time.perf_counter() - start
-            pooled_entries.append({
+            pooled_entry = {
                 "entries": sample,
                 "weight": float(weight) if isinstance(weight, (int, float)) else 1.0,
                 "label": label,
-            })
+            }
+            if max_game_moves is not None:
+                pooled_entry["max_game_moves"] = max_game_moves
+            pooled_entries.append(pooled_entry)
         else:
             pooled_entries.append(entry)
     return pooled_entries if pooled_entries else None
@@ -246,12 +251,17 @@ def _collect_dataset_entries(initial_board_fen_cfg):
         if source is None:
             continue
         label = None
+        max_game_moves = None
         if isinstance(entry, dict):
             label = entry.get("label") or entry.get("name")
+            max_game_moves = entry.get("max_game_moves")
         if not label:
             label = _shorten_dataset_label(source)
         entry_weight = float(weight) if isinstance(weight, (int, float)) else 1.0
-        entries.append({"source": source, "weight": entry_weight, "label": label})
+        entry_info = {"source": source, "weight": entry_weight, "label": label}
+        if max_game_moves is not None:
+            entry_info["max_game_moves"] = max_game_moves
+        entries.append(entry_info)
     if not entries:
         return []
     label_counts: dict[str, int] = {}
@@ -592,6 +602,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     initial_position_quality = None
     initial_dataset_id = None
     initial_dataset_label = None
+    max_game_moves_override = None
     initial_board_fen_cfg = cfg.training.get('initial_board_fen', None)
     
     # Convert OmegaConf DictConfig to plain dict if needed (for pickling/multiprocessing)
@@ -612,11 +623,14 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 selected_entry = dataset_entries[selected_idx]
                 initial_dataset_id = selected_idx
                 initial_dataset_label = selected_entry["label"]
+                max_game_moves_override = selected_entry.get("max_game_moves")
                 initial_fen, initial_position_quality = _select_fen_from_source(selected_entry["source"])
         else:
             initial_fen, initial_position_quality = _select_fen_from_source(initial_board_fen_cfg)
             if isinstance(initial_board_fen_cfg, str) and initial_board_fen_cfg.endswith(".json"):
                 initial_dataset_label = _shorten_dataset_label(initial_board_fen_cfg)
+            if isinstance(initial_board_fen_cfg, dict):
+                max_game_moves_override = initial_board_fen_cfg.get("max_game_moves")
     
     options = {
         'fen': initial_fen
@@ -653,6 +667,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
     dirichlet_epsilon = cfg.mcts.dirichlet_epsilon
     action_space_size = cfg.network.action_space_size
     max_moves = cfg.training.max_game_moves
+    if isinstance(max_game_moves_override, (int, float)) and max_game_moves_override > 0:
+        max_moves = int(max_game_moves_override)
     
     # Check if we started from a non-standard position
     # Standard starting position board part: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
@@ -1586,6 +1602,8 @@ def run_training_loop(cfg: DictConfig) -> None:
     replay_buffer = _init_replay_buffer(cfg, progress)
 
     # Build a pooled initial FEN list to avoid per-worker JSON loads
+    progress.print("Loading initial FEN datasets (sampling/weighting)...")
+    fen_pool_start = time.perf_counter()
     pool_size = cfg.training.get("initial_fen_pool_size", None)
     if pool_size is None and use_multiprocessing_flag:
         pool_size = 50000
@@ -1595,6 +1613,8 @@ def run_training_loop(cfg: DictConfig) -> None:
     )
     if pooled_initial_fen_cfg is not None:
         cfg.training.initial_board_fen = pooled_initial_fen_cfg
+
+    progress.print(f"Initial FEN pooling completed in {time.perf_counter() - fen_pool_start:.2f}s")
 
     dataset_entries, _weights, source_labels = _get_cached_dataset_entries(cfg.training.get("initial_board_fen", None))
 
@@ -2239,6 +2259,27 @@ def run_training_loop(cfg: DictConfig) -> None:
                 avg_branching = sum(s['avg_branching'] for s in tree_stats_all) / len(tree_stats_all)
                 tree_stats_info = f" | MCTS: nodes={avg_nodes:.0f}/{max_nodes:.0f}, depth={avg_depth:.1f}/{max_depth:.0f}, branch={avg_branching:.2f}"
         
+        # Breakdown avg nodes by initial dataset label (e.g., m1..m5)
+        tree_stats_by_label_info = ""
+        if game_moves_list:
+            label_stats = {}
+            for g in game_moves_list:
+                stats = g.get('tree_stats')
+                label = g.get('initial_dataset_label')
+                if not stats or not label:
+                    continue
+                if label not in label_stats:
+                    label_stats[label] = {'sum_nodes': 0.0, 'count': 0}
+                label_stats[label]['sum_nodes'] += stats.get('avg_nodes', 0.0)
+                label_stats[label]['count'] += 1
+            if label_stats:
+                label_parts = []
+                for label in sorted(label_stats.keys()):
+                    count = label_stats[label]['count']
+                    avg_nodes_label = label_stats[label]['sum_nodes'] / max(1, count)
+                    label_parts.append(f"{label}={avg_nodes_label:.0f} ({count})")
+                tree_stats_by_label_info = " | MCTS by source: " + ", ".join(label_parts)
+        
         buffer_info = f", buffer={len(replay_buffer)}"
         
         draw_rate_iter = (num_draws / games_completed_this_iter * 100.0) if games_completed_this_iter > 0 else 0.0
@@ -2247,7 +2288,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             f"steps={len(games_data_collected)}{buffer_info} | W Wins: {num_wins}, "
             f"B Wins: {num_losses}, 1st Wins: {num_first_wins}, 2nd Wins: {num_second_wins}, "
             f"Draws: {num_draws} ({draw_rate_iter:.1f}% Draw)"
-            f"{draw_info}{device_info}{tree_stats_info} | {format_time(self_play_duration)}"
+            f"{draw_info}{device_info}{tree_stats_info}{tree_stats_by_label_info} | {format_time(self_play_duration)}"
         )
         
         # --- Training Phase ---
