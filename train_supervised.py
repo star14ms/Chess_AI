@@ -238,7 +238,7 @@ def main():
         help="Paths to mate-in-one data (CSV or JSON). Pass multiple paths to mix datasets.",
     )
     parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
-    parser.add_argument("--epochs", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
@@ -424,6 +424,8 @@ def main():
         val_task = progress.add_task(
             "Val", total=val_total, loss=float("nan"), acc=float("nan"), src="-"
         )
+        last_val_loss = None
+        last_val_acc = None
 
         for epoch in range(start_epoch, args.epochs + 1):
             total_loss = 0.0
@@ -598,10 +600,18 @@ def main():
                     f"train acc by source: {per_source_train_str}"
                 )
 
+            last_val_loss = val_avg_loss if has_val else None
+            last_val_acc = val_acc if has_val else None
             save_learning_curve(train_losses, train_accs, val_losses, val_accs, checkpoint_dir)
 
             if args.save_every > 0 and epoch % args.save_every == 0:
-                ckpt_path = os.path.join(checkpoint_dir, "model.pth")
+                if has_val:
+                    ckpt_filename = (
+                        f"model_epoch_{epoch}_val_{val_avg_loss:.4f}_acc_{val_acc*100:.2f}.pth"
+                    )
+                else:
+                    ckpt_filename = f"model_epoch_{epoch}_noval.pth"
+                ckpt_path = os.path.join(checkpoint_dir, ckpt_filename)
                 save_checkpoint(
                     ckpt_path,
                     model,
@@ -617,7 +627,13 @@ def main():
                     val_accs=val_accs,
                 )
 
-    final_path = os.path.join(checkpoint_dir, "model.pth")
+    if last_val_loss is not None and last_val_acc is not None:
+        final_filename = (
+            f"model_final_epoch_{epoch}_val_{last_val_loss:.4f}_acc_{last_val_acc*100:.2f}.pth"
+        )
+    else:
+        final_filename = f"model_final_epoch_{epoch}_noval.pth"
+    final_path = os.path.join(checkpoint_dir, final_filename)
     save_checkpoint(
         final_path,
         model,
