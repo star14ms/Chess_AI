@@ -2278,7 +2278,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     count = label_stats[label]['count']
                     avg_nodes_label = label_stats[label]['sum_nodes'] / max(1, count)
                     label_parts.append(f"{label}={avg_nodes_label:.0f} ({count})")
-                tree_stats_by_label_info = " | MCTS by source: " + ", ".join(label_parts)
+                tree_stats_by_label_info = " | MCTS avg nodes by dataset (# games): " + ", ".join(label_parts)
         
         buffer_info = f", buffer={len(replay_buffer)}"
         
@@ -2501,7 +2501,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             f"Avg Value Loss: {avg_value_loss:.4f}, "
             f"Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, "
             f"Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%} | "
-            f"Acc by source: {per_source_acc_str}"
+            f"Policy top-1 by dataset: {per_source_acc_str}"
         )
         _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
         iteration_duration = int(time.time() - iteration_start_time)
