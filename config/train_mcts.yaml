@@ -78,6 +78,8 @@ training:
   inference_server_max_batch_size: null # Defaults to mcts.batch_size
   inference_server_max_wait_ms: 2
   inference_queue_maxsize: 128
+  enable_thermal_pause: true
+  manual_pause_seconds: null
   self_play_steps_per_epoch: 1024
   continual_training: true
   continual_queue_maxsize: 64

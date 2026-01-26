@@ -657,7 +657,18 @@ def run_self_play_game(
     inference_client: InferenceClient | None = None,
 ):
     """Plays one game of self-play using MCTS and returns the game data."""
-    maybe_pause_for_thermal_throttle(cfg, progress=progress, phase="self-play")
+    manual_pause_seconds = cfg.training.get("manual_pause_seconds", None)
+    if manual_pause_seconds not in (None, "", "null"):
+        try:
+            manual_pause_seconds = float(manual_pause_seconds)
+        except Exception:
+            manual_pause_seconds = None
+    if manual_pause_seconds is not None and manual_pause_seconds > 0:
+        if progress is not None:
+            progress.print(f"Manual pause: sleeping {manual_pause_seconds:.1f}s before self-play.")
+        time.sleep(manual_pause_seconds)
+    elif cfg.training.get("enable_thermal_pause", True):
+        maybe_pause_for_thermal_throttle(cfg, progress=progress, phase="self-play")
     if env is None:
         env = create_environment(cfg, render=device.type == 'cpu' and not cfg.training.get('use_multiprocessing', False))
     
