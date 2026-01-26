@@ -26,6 +26,7 @@ from mcts_algorithm import MCTS
 from utils.profile_model import get_optimal_worker_count, profile_model, format_time
 from utils.progress import NullProgress
 from utils.thermal import maybe_pause_for_thermal_throttle
+from inference_server import InferenceClient, inference_server_worker
 from utils.training_utils import (
     RewardComputer,
     iter_json_array,
@@ -311,15 +312,30 @@ def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
         raise ValueError(f"Unsupported environment type: {cfg.env.type}")
 
 # Helper function for parallel execution (module scope for pickling)
-def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: str):
+def self_play_worker(
+    game_id,
+    network_state_dict,
+    cfg: DictConfig,
+    device_str: str,
+    inference_request_queue=None,
+    inference_reply_queue=None,
+    inference_timeout_s: float = 30.0,
+):
     """Worker function to run a single self-play game."""
     # Convert plain dict back to OmegaConf if needed (for compatibility)
     if isinstance(cfg, dict) and not OmegaConf.is_config(cfg):
         cfg = OmegaConf.create(cfg)
     # Ensure factories are initialized inside spawned workers
     initialize_factories_from_cfg(cfg)
+    inference_client = None
+    if inference_request_queue is not None and inference_reply_queue is not None:
+        inference_client = InferenceClient(inference_request_queue, inference_reply_queue, timeout_s=inference_timeout_s)
+
     # Determine device for this worker
-    device = torch.device(device_str)
+    if inference_client is not None:
+        device = torch.device("cpu")
+    else:
+        device = torch.device(device_str)
     # Ensure correct CUDA device context in worker
     if device.type == 'cuda':
         try:
@@ -328,7 +344,7 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
             pass
 
     # Re-initialize Network in the worker process
-    if cfg.mcts.iterations > 0:
+    if cfg.mcts.iterations > 0 and inference_client is None:
         network = create_network(cfg, device)
         network.load_state_dict(network_state_dict)
         network.to(device).eval() # Ensure it's on the correct device and in eval mode
@@ -340,28 +356,61 @@ def self_play_worker(game_id, network_state_dict, cfg: DictConfig, device_str: s
         network,
         env=None,
         progress=None, # Pass None for progress within worker
-        device=device
+        device=device,
+        inference_client=inference_client,
     )
     return (game_data, game_info)
 
 # Wrapper for imap_unordered (module scope for pickling)
 def worker_wrapper(args):
     """Unpacks arguments for self_play_worker when using imap."""
-    game_id, network_state_dict, cfg, device_str = args
+    (
+        game_id,
+        network_state_dict,
+        cfg,
+        device_str,
+        inference_request_queue,
+        inference_reply_queue,
+        inference_timeout_s,
+    ) = args
     # Call the original worker function with unpacked args
-    return self_play_worker(game_id, network_state_dict, cfg, device_str)
+    return self_play_worker(
+        game_id,
+        network_state_dict,
+        cfg,
+        device_str,
+        inference_request_queue=inference_request_queue,
+        inference_reply_queue=inference_reply_queue,
+        inference_timeout_s=inference_timeout_s,
+    )
 
 # Persistent continual self-play actor
-def continual_self_play_worker(checkpoint_path: str, cfg: DictConfig, device_str: str, out_queue, stop_event):
+def continual_self_play_worker(
+    checkpoint_path: str,
+    cfg: DictConfig,
+    device_str: str,
+    out_queue,
+    stop_event,
+    inference_request_queue=None,
+    inference_reply_queue=None,
+    inference_timeout_s: float = 30.0,
+):
     initialize_factories_from_cfg(cfg)
-    device = torch.device(device_str)
+    inference_client = None
+    if inference_request_queue is not None and inference_reply_queue is not None:
+        inference_client = InferenceClient(inference_request_queue, inference_reply_queue, timeout_s=inference_timeout_s)
+
+    if inference_client is not None:
+        device = torch.device("cpu")
+    else:
+        device = torch.device(device_str)
     if device.type == 'cuda':
         try:
             torch.cuda.set_device(device)
         except Exception:
             pass
     network = None
-    if cfg.mcts.iterations > 0:
+    if cfg.mcts.iterations > 0 and inference_client is None:
         network = create_network(cfg, device)
         if os.path.exists(checkpoint_path):
             try:
@@ -389,7 +438,14 @@ def continual_self_play_worker(checkpoint_path: str, cfg: DictConfig, device_str
 
         # Play one game and enqueue (include device info so we know which GPU finished)
         try:
-            game_data, game_info = run_self_play_game(cfg, network if cfg.mcts.iterations > 0 else None, env=None, progress=None, device=device)
+            game_data, game_info = run_self_play_game(
+                cfg,
+                network if cfg.mcts.iterations > 0 else None,
+                env=None,
+                progress=None,
+                device=device,
+                inference_client=inference_client,
+            )
             if game_data:
                 # Include device string in game_info so we can track which GPU finished
                 game_info_with_device = game_info.copy()
@@ -592,8 +648,14 @@ class ReplayBuffer:
 
 
 # --- Self-Play Function (Update args to use config subsections) ---
-def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
-                       progress: Progress | None = None, device: torch.device | None = None):
+def run_self_play_game(
+    cfg: OmegaConf,
+    network: nn.Module | None,
+    env=None,
+    progress: Progress | None = None,
+    device: torch.device | None = None,
+    inference_client: InferenceClient | None = None,
+):
     """Plays one game of self-play using MCTS and returns the game data."""
     maybe_pause_for_thermal_throttle(cfg, progress=progress, phase="self-play")
     if env is None:
@@ -642,7 +704,7 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
         network.eval()
 
     # Initialize reward computer
-    reward_computer = RewardComputer(cfg, network, device)
+    reward_computer = RewardComputer(cfg, network, device, inference_client=inference_client)
 
     # If we don't have a hardcoded quality from config, assume side-to-move is winning.
     # Store quality from White's perspective to stay compatible with draw reward logic.
@@ -751,7 +813,8 @@ def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                 dirichlet_epsilon=dirichlet_epsilon,
                 action_space_size=action_space_size,
                 history_steps=cfg.env.history_steps,
-                draw_reward=draw_reward_for_mcts
+                draw_reward=draw_reward_for_mcts,
+                inference_client=inference_client,
             )
             mcts_start = time.perf_counter()
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
@@ -1347,6 +1410,46 @@ def _init_self_play_infra(cfg: DictConfig):
     return manager, sp_queue, stop_event, continual_enabled, actors, actor_device_map
 
 
+def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, network_state_dict: dict):
+    if not cfg.training.get("use_inference_server", False):
+        return None, None, None, None
+
+    queue_maxsize = int(cfg.training.get("inference_queue_maxsize", 128))
+    max_batch_size = cfg.training.get("inference_server_max_batch_size", None)
+    if max_batch_size in (None, "", "null", 0):
+        max_batch_size = cfg.mcts.batch_size
+    max_batch_size = int(max_batch_size)
+    max_wait_ms = int(cfg.training.get("inference_server_max_wait_ms", 2))
+    device_str = cfg.training.get("inference_server_device", None)
+    if not device_str or str(device_str).lower() in ("none", "null", "auto"):
+        if torch.cuda.is_available():
+            device_str = "cuda:0"
+        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            device_str = "mps"
+        else:
+            device_str = "cpu"
+
+    request_queue = manager.Queue(maxsize=queue_maxsize)
+    stop_event = manager.Event()
+    cfg_for_worker = OmegaConf.to_container(cfg, resolve=True) if OmegaConf.is_config(cfg) else cfg
+    p = multiprocessing.get_context("spawn").Process(
+        target=inference_server_worker,
+        args=(
+            checkpoint_path,
+            cfg_for_worker,
+            device_str,
+            request_queue,
+            stop_event,
+            max_batch_size,
+            max_wait_ms,
+            network_state_dict,
+        ),
+    )
+    p.daemon = True
+    p.start()
+    return request_queue, stop_event, p, device_str
+
+
 def _load_checkpoint(
     cfg: DictConfig,
     checkpoint_path: str,
@@ -1641,6 +1744,10 @@ def run_training_loop(cfg: DictConfig) -> None:
         actors,
         actor_device_map,
     ) = _init_self_play_infra(cfg)
+    inference_request_queue = None
+    inference_stop_event = None
+    inference_process = None
+    inference_device_str = None
 
     # --- Mode selection for self-play ---
     # Note: Actor launching for continual mode happens after checkpoint loading
@@ -1700,6 +1807,22 @@ def run_training_loop(cfg: DictConfig) -> None:
         history=history,
     )
 
+    # Optional inference server for batched GPU inference
+    if cfg.training.get("use_inference_server", False):
+        checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
+        inference_request_queue, inference_stop_event, inference_process, inference_device_str = _start_inference_server(
+            cfg,
+            manager,
+            checkpoint_path_for_actors,
+            network.state_dict(),
+        )
+        if inference_process is not None:
+            progress.print(
+                f"Inference server enabled on {inference_device_str} "
+                f"(max_batch={cfg.training.get('inference_server_max_batch_size', None) or cfg.mcts.batch_size}, "
+                f"max_wait_ms={cfg.training.get('inference_server_max_wait_ms', 2)})"
+            )
+
     # --- Launch continual self-play actors (after checkpoint loading) ---
     if continual_enabled:
         # Helper function to get available accelerators (CUDA and MPS)
@@ -1717,21 +1840,32 @@ def run_training_loop(cfg: DictConfig) -> None:
         available_accelerators = get_available_accelerators()
         desired_processes = max(1, num_workers if num_workers > 0 else 1)
         device_pool = []
-        
-        # Use all available accelerators for self-play (training GPU will be assigned dynamically)
-        accelerator_slots = min(len(available_accelerators), desired_processes)
-        for i in range(accelerator_slots):
-            device_pool.append(available_accelerators[i])
-        
-        # Fill remaining slots with CPU workers
-        while len(device_pool) < desired_processes:
-            device_pool.append('cpu')
+
+        if inference_request_queue is not None:
+            device_pool = ['cpu'] * desired_processes
+        else:
+            # Use all available accelerators for self-play (training GPU will be assigned dynamically)
+            accelerator_slots = min(len(available_accelerators), desired_processes)
+            for i in range(accelerator_slots):
+                device_pool.append(available_accelerators[i])
+            # Fill remaining slots with CPU workers
+            while len(device_pool) < desired_processes:
+                device_pool.append('cpu')
         
         checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
         for dev in device_pool:
+            inference_reply_queue = manager.Queue() if inference_request_queue is not None else None
             p = multiprocessing.get_context("spawn").Process(
                 target=continual_self_play_worker,
-                args=(checkpoint_path_for_actors, cfg, dev, sp_queue, stop_event)
+                args=(
+                    checkpoint_path_for_actors,
+                    cfg,
+                    dev,
+                    sp_queue,
+                    stop_event,
+                    inference_request_queue,
+                    inference_reply_queue,
+                ),
             )
             p.daemon = True
             p.start()
@@ -1740,11 +1874,23 @@ def run_training_loop(cfg: DictConfig) -> None:
             if dev.startswith('cuda:') or dev == 'mps':
                 actor_device_map[p] = dev
         
+        if inference_request_queue is not None:
+            accelerator_slots = 0
+        else:
+            accelerator_slots = min(len(available_accelerators), desired_processes)
+
         has_enough_data = len(replay_buffer) >= cfg.training.batch_size
         if has_enough_data:
             progress.print(f"Buffer has enough data ({len(replay_buffer)} >= {cfg.training.batch_size}), training accelerator will be assigned dynamically to first available accelerator")
         else:
-            progress.print(f"Buffer too small ({len(replay_buffer)} < {cfg.training.batch_size}), using all {accelerator_slots} accelerator(s) for self-play")
+            if inference_request_queue is not None:
+                progress.print(
+                    f"Buffer too small ({len(replay_buffer)} < {cfg.training.batch_size}), using CPU workers with inference server"
+                )
+            else:
+                progress.print(
+                    f"Buffer too small ({len(replay_buffer)} < {cfg.training.batch_size}), using all {accelerator_slots} accelerator(s) for self-play"
+                )
         progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
 
     # Track iteration durations for time prediction
@@ -2061,18 +2207,21 @@ def run_training_loop(cfg: DictConfig) -> None:
         elif use_multiprocessing_flag:
             # Prepare arguments for workers
             # Pass network state_dict directly since it's clean
-            network_state_dict = network.state_dict()
+            network_state_dict = network.state_dict() if inference_request_queue is None else None
             # --- Mixed actors device assignment (GPU + CPU) ---
             available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
             desired_processes = max(1, num_workers)
             device_pool = []
-            # Prefer to keep at least one CPU actor when we have multiple processes
-            gpu_slots = min(available_gpus, max(0, desired_processes - 1)) if desired_processes > 1 else 0
-            for g in range(gpu_slots):
-                device_pool.append(f"cuda:{g}")
-            # Fill remaining slots with CPU actors
-            while len(device_pool) < desired_processes:
-                device_pool.append('cpu')
+            if inference_request_queue is not None:
+                device_pool = ['cpu'] * desired_processes
+            else:
+                # Prefer to keep at least one CPU actor when we have multiple processes
+                gpu_slots = min(available_gpus, max(0, desired_processes - 1)) if desired_processes > 1 else 0
+                for g in range(gpu_slots):
+                    device_pool.append(f"cuda:{g}")
+                # Fill remaining slots with CPU actors
+                while len(device_pool) < desired_processes:
+                    device_pool.append('cpu')
 
             if not device_pool:
                 device_pool = ['cpu']
@@ -2091,7 +2240,18 @@ def run_training_loop(cfg: DictConfig) -> None:
             estimated_games_needed = max(1, (min_steps * 2) // 30)  # Estimate ~30 moves per game, double for safety
             for _ in range(estimated_games_needed):
                 device_str = device_pool[game_num % len(device_pool)]
-                worker_args_packed.append((game_num, network_state_dict, cfg_for_workers, device_str))
+                inference_reply_queue = manager.Queue() if inference_request_queue is not None else None
+                worker_args_packed.append(
+                    (
+                        game_num,
+                        network_state_dict,
+                        cfg_for_workers,
+                        device_str,
+                        inference_request_queue,
+                        inference_reply_queue,
+                        30.0,
+                    )
+                )
                 game_num += 1
 
             pool = None # Initialize pool to None
@@ -2186,12 +2346,19 @@ def run_training_loop(cfg: DictConfig) -> None:
             while len(games_data_collected) < min_steps:
                 game_num += 1
                 # Run game in the main process using the main env instance
+                inference_client = None
+                self_play_device = device
+                if inference_request_queue is not None:
+                    inference_reply_queue = manager.Queue()
+                    inference_client = InferenceClient(inference_request_queue, inference_reply_queue, timeout_s=30.0)
+                    self_play_device = torch.device("cpu")
                 game_data, game_info = run_self_play_game(
                     cfg,
-                    network if cfg.mcts.iterations > 0 else None,
+                    (network if (cfg.mcts.iterations > 0 and inference_request_queue is None) else None),
                     env if cfg.env.render_mode == 'human' else None,  # Use the main env instance
                     progress=progress if (device.type == 'cpu' and show_progress) else None,
-                    device=device
+                    device=self_play_device,
+                    inference_client=inference_client,
                 )
                 games_data_collected.extend(game_data)
                 games_completed_this_iter += 1
@@ -2592,6 +2759,14 @@ def run_training_loop(cfg: DictConfig) -> None:
             for p in actors:
                 if p.is_alive():
                     p.join(timeout=2.0)
+        except Exception:
+            pass
+    if inference_process is not None:
+        try:
+            if inference_stop_event is not None:
+                inference_stop_event.set()
+            if inference_process.is_alive():
+                inference_process.join(timeout=2.0)
         except Exception:
             pass
     progress.print("\nTraining loop finished.")

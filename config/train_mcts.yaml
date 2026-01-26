@@ -73,6 +73,11 @@ training:
   batch_size: 64
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
+  use_inference_server: false # Use a dedicated GPU inference process
+  inference_server_device: null # Example: "cuda:0"
+  inference_server_max_batch_size: null # Defaults to mcts.batch_size
+  inference_server_max_wait_ms: 2
+  inference_queue_maxsize: 128
   self_play_steps_per_epoch: 1024
   continual_training: true
   continual_queue_maxsize: 64

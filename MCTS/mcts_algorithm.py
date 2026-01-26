@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import gymnasium as gym
 from rich.progress import Progress
 import numpy as np
-from typing import Tuple, List
+from typing import Tuple, List, Optional, TYPE_CHECKING
 import chess
 import sys
 import os
@@ -19,6 +19,9 @@ if project_root not in sys.path:
 
 from MCTS.mcts_node import MCTSNode
 from chess_gym.chess_custom import FullyTrackedBoard
+
+if TYPE_CHECKING:
+    from MCTS.inference_server import InferenceClient
 
 # --- MCTS Algorithm ---
 def _restore_chess_stack(dst: chess.Board, src: chess.Board) -> None:
@@ -49,7 +52,7 @@ def _restore_chess_stack(dst: chess.Board, src: chess.Board) -> None:
 
 class MCTS:
     def __init__(self,
-                 network: torch.nn.Module,
+                 network: Optional[torch.nn.Module],
                  device: torch.device | str,
                  env: gym.Env | None = None, # Keep main env for selection/initial state
                  C_puct: float = 1.41,
@@ -57,7 +60,8 @@ class MCTS:
                  dirichlet_epsilon: float = 0.25,
                  action_space_size: int = 1700,
                  history_steps: int = 8,  # Number of history planes to use when env is None
-                 draw_reward: float = -0.1):  # Reward value for draws
+                 draw_reward: float = -0.1,  # Reward value for draws
+                 inference_client: Optional["InferenceClient"] = None):
         self.network = network
         self.device = torch.device(device)
         self.env = env # If None, board.push() will be used for expansion
@@ -67,7 +71,11 @@ class MCTS:
         self.action_space_size = action_space_size  # Store action space size
         self.history_steps = max(1, int(history_steps))
         self.draw_reward = draw_reward
-        self.network.eval()
+        self.inference_client = inference_client
+        if self.network is None and self.inference_client is None:
+            raise ValueError("MCTS requires either a network or an inference client.")
+        if self.network is not None:
+            self.network.eval()
         
         # Reusable tensor buffer for observation preparation (Phase 3 optimization)
         self._obs_buffer = None
@@ -99,6 +107,8 @@ class MCTS:
         Returns:
             Optimal batch size (at least 1, at most max_batch_size)
         """
+        if self.inference_client is not None:
+            return max_batch_size
         if self.device.type != 'cuda':
             # For CPU/MPS, use smaller batches to avoid memory issues
             return min(max_batch_size, 4)
@@ -363,7 +373,10 @@ class MCTS:
                     steps = self.history_steps
                 obs_tensor = self._prepare_observation(leaf_node, reuse_buffer=True).unsqueeze(0)
                 with torch.no_grad():
-                    policy_logits, value_pred = self.network(obs_tensor)
+                    if self.inference_client is not None:
+                        policy_logits, value_pred = self.inference_client.predict(obs_tensor)
+                    else:
+                        policy_logits, value_pred = self.network(obs_tensor)
                 policy_logits = policy_logits.squeeze(0)
                 value = value_pred.item() # Use network's value prediction
 
@@ -476,7 +489,10 @@ class MCTS:
         if obs_tensors:
             obs_batch = torch.stack(obs_tensors, dim=0)  # (B, C, H, W)
             with torch.no_grad():
-                policy_logits_batch, value_preds_batch = self.network(obs_batch)
+                if self.inference_client is not None:
+                    policy_logits_batch, value_preds_batch = self.inference_client.predict(obs_batch)
+                else:
+                    policy_logits_batch, value_preds_batch = self.network(obs_batch)
 
         # Phase 4: EXPAND & BACKPROP - Remove virtual loss, expand, backprop
         obs_index_to_batch = {leaf_idx: batch_idx for batch_idx, leaf_idx in enumerate(obs_indices)}

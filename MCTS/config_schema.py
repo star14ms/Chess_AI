@@ -57,6 +57,11 @@ class TrainingConfig:
     batch_size: int = 128
     use_multiprocessing: bool = True # Flag to enable/disable multiprocessing for self-play
     self_play_workers: int = 0 # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
+    use_inference_server: bool = False # Use a dedicated process for batched GPU inference
+    inference_server_device: Optional[str] = None # Device for inference server (e.g., "cuda:0")
+    inference_server_max_batch_size: Optional[int] = None # Defaults to mcts.batch_size when None
+    inference_server_max_wait_ms: int = 2 # Max wait before dispatching a batch
+    inference_queue_maxsize: int = 128 # Max queued inference requests
     self_play_steps_per_epoch: int = 1024 # Number of steps to collect before moving to training phase
     continual_training: bool = True # If True, continue training from the last checkpoint
     continual_queue_maxsize: int = 64 # Maximum size of the queue for continual training

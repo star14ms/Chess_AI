@@ -364,7 +364,13 @@ def select_random_fen_from_json_list(path: str | Path) -> tuple[str | None, str 
 class RewardComputer:
     """Class to compute position-aware draw rewards based on position quality and termination type."""
     
-    def __init__(self, cfg: OmegaConf, network: Optional[nn.Module] = None, device: Optional[torch.device] = None):
+    def __init__(
+        self,
+        cfg: OmegaConf,
+        network: Optional[nn.Module] = None,
+        device: Optional[torch.device] = None,
+        inference_client=None,
+    ):
         """Initialize the reward computer.
         
         Args:
@@ -375,6 +381,7 @@ class RewardComputer:
         self.cfg = cfg
         self.network = network
         self.device = device
+        self.inference_client = inference_client
         self.draw_reward_table = cfg.training.get('draw_reward_table', None)
         self.default_draw_reward = cfg.training.get('draw_reward', -0.0)
         
@@ -451,6 +458,11 @@ class RewardComputer:
                 self.network.eval()
                 _, value_pred = self.network(obs_tensor)
                 predicted_value = value_pred.item()  # Range: -1 to +1
+        elif self.inference_client is not None:
+            obs_tensor = torch.tensor(state_obs, dtype=torch.float32).unsqueeze(0)
+            with torch.no_grad():
+                _, value_pred = self.inference_client.predict(obs_tensor)
+                predicted_value = float(value_pred.item())
         else:
             # No network available - return 'equal' as default
             return 'equal'
@@ -524,23 +536,29 @@ class RewardComputer:
         Returns:
             Optional[str]: Position quality ('winning', 'equal', 'losing') or None if network unavailable
         """
-        if self.network is None:
+        if self.network is None and self.inference_client is None:
             return None
         
         # Determine device
         device = self.device
-        if device is None:
+        if device is None and self.network is not None:
             try:
                 device = next(self.network.parameters()).device
-            except:
+            except Exception:
                 device = torch.device('cpu')
         
         # Evaluate initial position
-        obs_tensor = torch.tensor(initial_obs, dtype=torch.float32, device=device).unsqueeze(0)
-        with torch.no_grad():
-            self.network.eval()
-            _, initial_value_pred = self.network(obs_tensor)
-            initial_value = initial_value_pred.item()  # Range: -1 to +1
+        if self.network is not None:
+            obs_tensor = torch.tensor(initial_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            with torch.no_grad():
+                self.network.eval()
+                _, initial_value_pred = self.network(obs_tensor)
+                initial_value = initial_value_pred.item()  # Range: -1 to +1
+        else:
+            obs_tensor = torch.tensor(initial_obs, dtype=torch.float32).unsqueeze(0)
+            with torch.no_grad():
+                _, initial_value_pred = self.inference_client.predict(obs_tensor)
+                initial_value = float(initial_value_pred.item())
         
         # Determine initial position quality from first player's perspective
         if not is_first_player:
