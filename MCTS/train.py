@@ -25,6 +25,7 @@ from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from utils.profile_model import get_optimal_worker_count, profile_model, format_time
 from utils.progress import NullProgress
+from utils.thermal import maybe_pause_for_thermal_throttle
 from utils.training_utils import (
     RewardComputer,
     iter_json_array,
@@ -594,6 +595,7 @@ class ReplayBuffer:
 def run_self_play_game(cfg: OmegaConf, network: nn.Module | None, env=None,
                        progress: Progress | None = None, device: torch.device | None = None):
     """Plays one game of self-play using MCTS and returns the game data."""
+    maybe_pause_for_thermal_throttle(cfg, progress=progress, phase="self-play")
     if env is None:
         env = create_environment(cfg, render=device.type == 'cpu' and not cfg.training.get('use_multiprocessing', False))
     
