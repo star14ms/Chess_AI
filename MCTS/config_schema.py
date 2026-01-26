@@ -62,7 +62,7 @@ class TrainingConfig:
     inference_server_max_batch_size: Optional[int] = None # Defaults to mcts.batch_size when None
     inference_server_max_wait_ms: int = 2 # Max wait before dispatching a batch
     inference_queue_maxsize: int = 128 # Max queued inference requests
-    enable_thermal_pause: bool = True # Allow brief thermal throttling pauses during self-play
+    enable_thermal_pause: bool = False # Allow brief thermal throttling pauses during self-play
     manual_pause_seconds: Optional[float] = None # If set, sleep this many seconds before self-play
     self_play_steps_per_epoch: int = 1024 # Number of steps to collect before moving to training phase
     continual_training: bool = True # If True, continue training from the last checkpoint

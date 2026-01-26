@@ -667,7 +667,7 @@ def run_self_play_game(
         if progress is not None:
             progress.print(f"Manual pause: sleeping {manual_pause_seconds:.1f}s before self-play.")
         time.sleep(manual_pause_seconds)
-    elif cfg.training.get("enable_thermal_pause", True):
+    elif cfg.training.get("enable_thermal_pause", False):
         maybe_pause_for_thermal_throttle(cfg, progress=progress, phase="self-play")
     if env is None:
         env = create_environment(cfg, render=device.type == 'cpu' and not cfg.training.get('use_multiprocessing', False))
