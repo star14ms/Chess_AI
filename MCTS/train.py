@@ -2711,10 +2711,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
             'history': history,
         }
-        checkpoint_path = os.path.join(
-            checkpoint_dir,
-            f"model_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.pth",
-        )
+        checkpoint_path = os.path.join(checkpoint_dir, "model.pth")
         torch.save(checkpoint, checkpoint_path)
         
         checkpoint_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024)
