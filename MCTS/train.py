@@ -1491,9 +1491,9 @@ def _load_checkpoint(
                         "lr", opt_cfg.learning_rate
                     )
                     if checkpoint_lr != opt_cfg.learning_rate:
-                        actual_learning_rate = checkpoint_lr
+                        actual_learning_rate = opt_cfg.learning_rate
                         progress.print(
-                            f"Using learning rate from checkpoint: {checkpoint_lr} (config had: {opt_cfg.learning_rate})"
+                            f"Using learning rate from config: {opt_cfg.learning_rate} (checkpoint had: {checkpoint_lr})"
                         )
                     else:
                         actual_learning_rate = checkpoint_lr
@@ -1590,7 +1590,7 @@ def _load_checkpoint(
                 restored_lr = optimizer.param_groups[0]["lr"]
                 if abs(restored_lr - actual_learning_rate) > 1e-8:
                     progress.print(
-                        f"Warning: Learning rate mismatch! Checkpoint had {actual_learning_rate}, restored to {restored_lr}"
+                        f"Warning: Learning rate mismatch! Desired {actual_learning_rate}, restored to {restored_lr}"
                     )
                     for param_group in optimizer.param_groups:
                         param_group["lr"] = actual_learning_rate
