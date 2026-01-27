@@ -1986,6 +1986,10 @@ def run_training_loop(cfg: DictConfig) -> None:
             else:
                 num_second_wins += 1
 
+        def _include_in_replay_buffer(game_info) -> bool:
+            # Exclude MAX_MOVES draws from training data, but keep stats.
+            return game_info.get('termination') != "MAX_MOVES"
+
         if continual_enabled:
             # Drain queue to collect games for this iteration
             # Strategy: Drain all available games, wait if needed to reach minimum threshold
@@ -2022,7 +2026,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                             game_data, game_info = game_result
                             games_from_queue += 1
                             if game_data:
-                                games_data_collected.extend(game_data)
+                                include_in_replay = _include_in_replay_buffer(game_info)
+                                if include_in_replay:
+                                    games_data_collected.extend(game_data)
                                 collected_games += 1
                                 game_moves_list.append(game_info)
                                 if game_info.get('termination') == "CHECKMATE":
@@ -2042,7 +2048,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     draw_rate = (num_draws / collected_games * 100.0) if collected_games > 0 else 0.0
                                     progress.update(
                                         task_id_selfplay,
-                                        advance=len(game_data),
+                                        advance=len(game_data) if include_in_replay else 0,
                                         total=min_steps,
                                         games=collected_games,
                                         steps=len(games_data_collected),
@@ -2083,7 +2089,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                         game_data, game_info = game_result
                         games_waited_for += 1
                         if game_data:
-                            games_data_collected.extend(game_data)
+                            include_in_replay = _include_in_replay_buffer(game_info)
+                            if include_in_replay:
+                                games_data_collected.extend(game_data)
                             collected_games += 1
                             game_moves_list.append(game_info)
                             if game_info.get('termination') == "CHECKMATE":
@@ -2097,7 +2105,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                                     draw_rate = (num_draws / collected_games * 100.0) if collected_games > 0 else 0.0
                                     progress.update(
                                         task_id_selfplay,
-                                        advance=len(game_data),
+                                        advance=len(game_data) if include_in_replay else 0,
                                         total=min_steps,
                                         games=collected_games,
                                         steps=len(games_data_collected),
@@ -2117,7 +2125,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 draw_rate = (num_draws / collected_games * 100.0) if collected_games > 0 else 0.0
                                 progress.update(
                                     task_id_selfplay,
-                                    advance=len(game_data),
+                                    advance=len(game_data) if include_in_replay else 0,
                                     total=min_steps,
                                     games=collected_games,
                                     steps=len(games_data_collected),
@@ -2147,7 +2155,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 game_data, game_info = game_result
                                 games_from_queue += 1
                                 if game_data:
-                                    games_data_collected.extend(game_data)
+                                    include_in_replay = _include_in_replay_buffer(game_info)
+                                    if include_in_replay:
+                                        games_data_collected.extend(game_data)
                                     collected_games += 1
                                     game_moves_list.append(game_info)
                                     if game_info.get('termination') == "CHECKMATE":
@@ -2167,7 +2177,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                                         draw_rate = (num_draws / collected_games * 100.0) if collected_games > 0 else 0.0
                                         progress.update(
                                             task_id_selfplay,
-                                            advance=len(game_data),
+                                            advance=len(game_data) if include_in_replay else 0,
                                             total=min_steps,
                                             games=collected_games,
                                             steps=len(games_data_collected),
@@ -2284,9 +2294,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                 )
                 # Iterate over results as they become available
                 for game_result in results_iterator:
+                    include_in_replay = False
                     if game_result: # Check if worker returned valid data
                         game_data, game_info = game_result
-                        games_data_collected.extend(game_data)
+                        include_in_replay = _include_in_replay_buffer(game_info)
+                        if include_in_replay:
+                            games_data_collected.extend(game_data)
                         games_completed_this_iter += 1
                         game_moves_list.append(game_info)
                         if game_info.get('termination') == "CHECKMATE":
@@ -2298,7 +2311,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                             # If unexpected structure, skip counting for this game
                             pass
                     # Update progress with steps collected
-                    steps_in_game = len(game_data) if game_result and game_result[0] else 0
+                    steps_in_game = len(game_data) if game_result and game_result[0] and include_in_replay else 0
                     draw_rate = (num_draws / games_completed_this_iter * 100.0) if games_completed_this_iter > 0 else 0.0
                     progress.update(
                         task_id_selfplay,
@@ -2371,7 +2384,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                     device=self_play_device,
                     inference_client=inference_client,
                 )
-                games_data_collected.extend(game_data)
+                include_in_replay = _include_in_replay_buffer(game_info)
+                if include_in_replay:
+                    games_data_collected.extend(game_data)
                 games_completed_this_iter += 1
                 game_moves_list.append(game_info)
                 if game_info.get('termination') == "CHECKMATE":
@@ -2380,7 +2395,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 draw_rate = (num_draws / games_completed_this_iter * 100.0) if games_completed_this_iter > 0 else 0.0
                 progress.update(
                     task_id_selfplay,
-                    advance=len(game_data),
+                    advance=len(game_data) if include_in_replay else 0,
                     games=games_completed_this_iter,
                     steps=len(games_data_collected),
                     draw_rate=draw_rate,
