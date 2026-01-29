@@ -701,6 +701,7 @@ def run_self_play_game(
     initial_position_quality = None
     initial_dataset_id = None
     initial_dataset_label = None
+    initial_dataset_source = None
     max_game_moves_override = None
     initial_board_fen_cfg = cfg.training.get('initial_board_fen', None)
     
@@ -723,13 +724,28 @@ def run_self_play_game(
                 initial_dataset_id = selected_idx
                 initial_dataset_label = selected_entry["label"]
                 max_game_moves_override = selected_entry.get("max_game_moves")
+                source_value = selected_entry.get("source")
+                if isinstance(source_value, str):
+                    if source_value.endswith(".json"):
+                        initial_dataset_source = _resolve_json_path(source_value)
+                    else:
+                        initial_dataset_source = source_value
                 initial_fen, initial_position_quality = _select_fen_from_source(selected_entry["source"])
         else:
             initial_fen, initial_position_quality = _select_fen_from_source(initial_board_fen_cfg)
             if isinstance(initial_board_fen_cfg, str) and initial_board_fen_cfg.endswith(".json"):
+                initial_dataset_source = _resolve_json_path(initial_board_fen_cfg)
                 initial_dataset_label = _shorten_dataset_label(initial_board_fen_cfg)
             if isinstance(initial_board_fen_cfg, dict):
                 max_game_moves_override = initial_board_fen_cfg.get("max_game_moves")
+                for key in ("path", "file", "dataset"):
+                    source_value = initial_board_fen_cfg.get(key)
+                    if isinstance(source_value, str):
+                        if source_value.endswith(".json"):
+                            initial_dataset_source = _resolve_json_path(source_value)
+                        else:
+                            initial_dataset_source = source_value
+                        break
     
     options = {
         'fen': initial_fen
@@ -1292,6 +1308,7 @@ def run_self_play_game(
         'initial_position_quality': initial_position_quality,  # Store initial position quality
         'initial_dataset_label': initial_dataset_label,
         'initial_dataset_id': initial_dataset_id,
+        'initial_dataset_source': initial_dataset_source,
     }
 
     return (full_game_data, game_info)
@@ -1425,6 +1442,12 @@ def _save_game_history(
                 if initial_quality:
                     parts.append(f"White's perspective: {initial_quality}")
                 f.write(" | ".join(parts) + "\n")
+            initial_fen_source = game_info.get('initial_dataset_source', None)
+            initial_fen_label = game_info.get('initial_dataset_label', None)
+            if initial_fen_source:
+                f.write(f"Initial FEN Source: {initial_fen_source}\n")
+            if initial_fen_label:
+                f.write(f"Initial FEN Label: {initial_fen_label}\n")
             # Write reward value (use actual_reward if available, otherwise result)
             actual_reward = game_info.get('actual_reward', None)
             result_value = game_info.get('result', None)
