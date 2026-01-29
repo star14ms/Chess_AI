@@ -288,6 +288,30 @@ def _format_source_accuracy(labels: list[str], correct: list[int], total: list[i
             parts.append(f"{label}=N/A")
     return " | ".join(parts)
 
+
+def _ensure_mate_success_history(history: dict, mate_labels: list[str]) -> dict:
+    if "mate_success_train" not in history or not isinstance(history.get("mate_success_train"), dict):
+        history["mate_success_train"] = {}
+    if "mate_success_val" not in history or not isinstance(history.get("mate_success_val"), dict):
+        history["mate_success_val"] = {}
+    history.setdefault("mate_success_labels", list(mate_labels))
+
+    expected_len = len(history.get("policy_loss", []))
+    for label in mate_labels:
+        train_series = history["mate_success_train"].get(label)
+        if train_series is None:
+            history["mate_success_train"][label] = [0.0] * expected_len
+        elif len(train_series) < expected_len:
+            history["mate_success_train"][label].extend([0.0] * (expected_len - len(train_series)))
+
+        val_series = history["mate_success_val"].get(label)
+        if val_series is None:
+            history["mate_success_val"][label] = [0.0] * expected_len
+        elif len(val_series) < expected_len:
+            history["mate_success_val"][label].extend([0.0] * (expected_len - len(val_series)))
+
+    return history
+
 def initialize_factories_from_cfg(cfg: OmegaConf) -> None:
     global create_network, create_environment, get_game_result, is_first_player_turn, get_legal_actions, create_board_from_serialized
     if cfg.env.type == "chess":
@@ -1733,6 +1757,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     progress.print(f"Initial FEN pooling completed in {time.perf_counter() - fen_pool_start:.2f}s")
 
     dataset_entries, _weights, source_labels = _get_cached_dataset_entries(cfg.training.get("initial_board_fen", None))
+    mate_labels = [label for label in source_labels if isinstance(label, str) and re.match(r"^m\\d+$", label)]
 
     # Loss Functions
     policy_loss_fn = nn.CrossEntropyLoss()
@@ -1795,6 +1820,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         'non_draw_count': [],
         'repetition_draw_count': [],
         'other_draw_count': [],
+        'mate_success_train': {label: [] for label in mate_labels},
+        'mate_success_val': {label: [] for label in mate_labels},
+        'mate_success_labels': mate_labels,
     }
 
     # Check for existing checkpoint
@@ -1817,6 +1845,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         actual_learning_rate=actual_learning_rate,
         history=history,
     )
+
+    history = _ensure_mate_success_history(history, mate_labels)
 
     # Optional inference server for batched GPU inference
     if cfg.training.get("use_inference_server", False):
@@ -1944,6 +1974,11 @@ def run_training_loop(cfg: DictConfig) -> None:
         num_draws = 0
         num_checkmates = 0
         games_completed_this_iter = 0
+        mate_label_to_idx = {label: idx for idx, label in enumerate(mate_labels)}
+        train_mate_success = [0] * len(mate_labels)
+        train_mate_total = [0] * len(mate_labels)
+        val_mate_success = [0] * len(mate_labels)
+        val_mate_total = [0] * len(mate_labels)
         # Track draw reasons and collect game moves
         from collections import defaultdict
         draw_reasons = defaultdict(int)
@@ -1986,6 +2021,29 @@ def run_training_loop(cfg: DictConfig) -> None:
             else:
                 num_second_wins += 1
 
+        def _update_mate_success(game_info, include_in_replay):
+            if not mate_label_to_idx:
+                return
+            label = game_info.get('initial_dataset_label')
+            if label not in mate_label_to_idx:
+                return
+            idx = mate_label_to_idx[label]
+            val_mate_total[idx] += 1
+
+            winner = game_info.get('winner', None)
+            success = False
+            if winner is not None and game_info.get('termination') == "CHECKMATE":
+                winner_color = 'w' if winner == chess.WHITE else 'b' if winner == chess.BLACK else None
+                if winner_color is not None and winner_color == _first_player_from_game_info(game_info):
+                    success = True
+
+            if success:
+                val_mate_success[idx] += 1
+            if include_in_replay:
+                train_mate_total[idx] += 1
+                if success:
+                    train_mate_success[idx] += 1
+
         def _include_in_replay_buffer(game_info) -> bool:
             # Exclude MAX_MOVES draws from training data, but keep stats.
             return game_info.get('termination') != "MAX_MOVES"
@@ -2027,6 +2085,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                             games_from_queue += 1
                             if game_data:
                                 include_in_replay = _include_in_replay_buffer(game_info)
+                                _update_mate_success(game_info, include_in_replay)
                                 if include_in_replay:
                                     games_data_collected.extend(game_data)
                                 collected_games += 1
@@ -2090,6 +2149,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                         games_waited_for += 1
                         if game_data:
                             include_in_replay = _include_in_replay_buffer(game_info)
+                            _update_mate_success(game_info, include_in_replay)
                             if include_in_replay:
                                 games_data_collected.extend(game_data)
                             collected_games += 1
@@ -2156,6 +2216,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 games_from_queue += 1
                                 if game_data:
                                     include_in_replay = _include_in_replay_buffer(game_info)
+                                    _update_mate_success(game_info, include_in_replay)
                                     if include_in_replay:
                                         games_data_collected.extend(game_data)
                                     collected_games += 1
@@ -2298,6 +2359,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     if game_result: # Check if worker returned valid data
                         game_data, game_info = game_result
                         include_in_replay = _include_in_replay_buffer(game_info)
+                        _update_mate_success(game_info, include_in_replay)
                         if include_in_replay:
                             games_data_collected.extend(game_data)
                         games_completed_this_iter += 1
@@ -2385,6 +2447,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     inference_client=inference_client,
                 )
                 include_in_replay = _include_in_replay_buffer(game_info)
+                _update_mate_success(game_info, include_in_replay)
                 if include_in_replay:
                     games_data_collected.extend(game_data)
                 games_completed_this_iter += 1
@@ -2716,6 +2779,14 @@ def run_training_loop(cfg: DictConfig) -> None:
         history['non_draw_count'].append(non_draw_count)
         history['repetition_draw_count'].append(repetition_draw_count)
         history['other_draw_count'].append(other_draw_count)
+        if mate_label_to_idx:
+            for label, idx in mate_label_to_idx.items():
+                train_total = train_mate_total[idx]
+                val_total = val_mate_total[idx]
+                train_ratio = (train_mate_success[idx] / train_total) if train_total > 0 else 0.0
+                val_ratio = (val_mate_success[idx] / val_total) if val_total > 0 else 0.0
+                history.setdefault('mate_success_train', {}).setdefault(label, []).append(train_ratio)
+                history.setdefault('mate_success_val', {}).setdefault(label, []).append(val_ratio)
 
         # Save checkpoint after each iteration
         checkpoint = {
