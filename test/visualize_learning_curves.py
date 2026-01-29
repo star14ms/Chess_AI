@@ -53,21 +53,44 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle(f'Training Learning Curves (Iteration {iteration})', fontsize=16)
     
-    # Plot 1: Policy Loss
+    # Plot 1: Policy + Value Loss
     ax = axes[0, 0]
-    ax.plot(iterations, history['policy_loss'], 'b-', linewidth=2)
+    ax.plot(iterations, history['policy_loss'], 'b-', linewidth=2, label='Policy Loss')
+    ax.plot(iterations, history['value_loss'], 'r-', linewidth=2, label='Value Loss')
     ax.set_xlabel('Iteration')
-    ax.set_ylabel('Policy Loss')
-    ax.set_title('Policy Loss Over Time')
+    ax.set_ylabel('Loss')
+    ax.set_title('Policy + Value Loss Over Time')
     ax.grid(True, alpha=0.3)
+    ax.legend(loc='best')
+    ax.set_ylim(bottom=0)
     
-    # Plot 2: Value Loss
+    # Plot 2: Mate-in Success Ratios (Train vs Val)
     ax = axes[0, 1]
-    ax.plot(iterations, history['value_loss'], 'r-', linewidth=2)
+    mate_labels = history.get('mate_success_labels')
+    if not mate_labels:
+        train_mate = history.get('mate_success_train', {})
+        val_mate = history.get('mate_success_val', {})
+        mate_labels = sorted({*train_mate.keys(), *val_mate.keys()})
+    if mate_labels:
+        color_cycle = plt.cm.tab10.colors
+        for idx, label in enumerate(mate_labels):
+            train_series = history.get('mate_success_train', {}).get(label, [0.0] * len(iterations))
+            val_series = history.get('mate_success_val', {}).get(label, [0.0] * len(iterations))
+            if len(train_series) < len(iterations):
+                train_series = train_series + [0.0] * (len(iterations) - len(train_series))
+            if len(val_series) < len(iterations):
+                val_series = val_series + [0.0] * (len(iterations) - len(val_series))
+            color = color_cycle[idx % len(color_cycle)]
+            ax.plot(iterations, [v * 100 for v in train_series], color=color, linewidth=2, label=f'{label} Train')
+            ax.plot(iterations, [v * 100 for v in val_series], color=color, linewidth=2, linestyle='--', label=f'{label} Val')
+        ax.legend(loc='best', fontsize=8)
+    else:
+        ax.text(0.5, 0.5, 'Mate success ratios unavailable', ha='center', va='center', transform=ax.transAxes)
     ax.set_xlabel('Iteration')
-    ax.set_ylabel('Value Loss')
-    ax.set_title('Value Loss Over Time')
+    ax.set_ylabel('Success Ratio (%)')
+    ax.set_title('Mate-in Success Ratios Over Time')
     ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
     
     # Plot 3: Combined Illegal Move Metrics
     ax = axes[1, 0]
@@ -78,6 +101,7 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     ax.set_title('Illegal Move Metrics Over Time')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best')
+    ax.set_ylim(bottom=0)
     
     # Plot 4: Draw Statistics
     ax = axes[1, 1]
@@ -86,15 +110,20 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     repetition_draw = history.get('repetition_draw_count', [0] * len(iterations))
     other_draw = history.get('other_draw_count', [0] * len(iterations))
     
-    # Stacked area chart or grouped bar chart - using line plot for clarity
-    ax.plot(iterations, non_draw, 'g-', linewidth=2, label='Non-Draw Games', marker='o', markersize=3)
-    ax.plot(iterations, repetition_draw, 'orange', linewidth=2, label='Repetition Draws', marker='s', markersize=3)
-    ax.plot(iterations, other_draw, 'red', linewidth=2, label='Other Draws', marker='^', markersize=3)
+    # Stacked bar chart for game outcomes
+    bar_width = 0.8
+    bottom = [0] * len(iterations)
+    ax.bar(iterations, non_draw, color='green', label='Non-Draw Games', width=bar_width)
+    bottom = [b + n for b, n in zip(bottom, non_draw)]
+    ax.bar(iterations, repetition_draw, bottom=bottom, color='orange', label='Repetition Draws', width=bar_width)
+    bottom = [b + r for b, r in zip(bottom, repetition_draw)]
+    ax.bar(iterations, other_draw, bottom=bottom, color='red', label='Other Draws', width=bar_width)
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Game Count')
     ax.set_title('Game Outcomes Over Time')
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, axis='y', alpha=0.3)
     ax.legend(loc='best')
+    ax.set_ylim(bottom=0)
     
     plt.tight_layout()
     
