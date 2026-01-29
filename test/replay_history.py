@@ -4,6 +4,9 @@
 
 import re
 import io
+import os
+import os
+import sys
 import pygame
 import chess
 import chess.svg
@@ -32,6 +35,8 @@ def parse_game_file(file_path: str) -> List[Dict]:
     - move_count: int
     - initial_fen: Optional[str]
     - initial_quality: Optional[str]
+    - initial_fen_source: Optional[str]
+    - initial_fen_label: Optional[str]
     - reward: Optional[float]
     - moves: List[str] (SAN notation moves)
     """
@@ -55,6 +60,8 @@ def parse_game_file(file_path: str) -> List[Dict]:
             # Initialize optional fields
             initial_fen = None
             initial_quality = None
+            initial_fen_source = None
+            initial_fen_label = None
             reward = None
             
             # Parse optional metadata lines
@@ -103,6 +110,18 @@ def parse_game_file(file_path: str) -> List[Dict]:
                     if quality_match:
                         initial_quality = quality_match.group(1).strip()
                 
+                # Check for Initial FEN Source
+                elif meta_line.startswith('Initial FEN Source:'):
+                    source_match = re.match(r'Initial FEN Source:\s*(.+)', meta_line)
+                    if source_match:
+                        initial_fen_source = source_match.group(1).strip()
+
+                # Check for Initial FEN Label
+                elif meta_line.startswith('Initial FEN Label:'):
+                    label_match = re.match(r'Initial FEN Label:\s*(.+)', meta_line)
+                    if label_match:
+                        initial_fen_label = label_match.group(1).strip()
+
                 # Check for Reward
                 elif meta_line.startswith('Reward:'):
                     reward_match = re.match(r'Reward:\s*([\d\.\-]+)', meta_line)
@@ -144,7 +163,9 @@ def parse_game_file(file_path: str) -> List[Dict]:
                 'initial_fen': initial_fen,
                 'initial_quality': initial_quality,
                 'reward': reward,
-                'moves': moves
+                'moves': moves,
+                'initial_fen_source': initial_fen_source,
+                'initial_fen_label': initial_fen_label,
             })
         else:
             i += 1
@@ -411,13 +432,11 @@ def select_and_replay_game(
         # Calculate window size
         margin = 20
         line_height = 30
-        header_height = 60
-        games_per_page = 15
+        header_height = 100
+        rows_per_page = 15
         item_height = line_height + 5
         window_width = 1000
-        window_height = header_height + min(len(games), games_per_page) * item_height + margin * 2
-        
-        screen = pygame.display.set_mode((window_width, window_height))
+        window_height = header_height + min(len(games), rows_per_page) * item_height + margin * 2
         clock = pygame.time.Clock()
         
         # Hold-to-repeat settings for navigation keys
@@ -435,13 +454,14 @@ def select_and_replay_game(
         header_bg = (50, 50, 50)
         item_bg = (40, 40, 40)
         selected_bg = (70, 100, 150)
+        header_row_bg = (55, 55, 55)
         text_color = (230, 230, 230)
         selected_text = (255, 255, 255)
         result_win = (100, 200, 100)
         result_draw = (200, 200, 100)
         result_loss = (200, 100, 100)
         
-        selected_idx = 0
+        selected_row = 0
         scroll_offset = 0
         running = True
         
@@ -501,42 +521,144 @@ def select_and_replay_game(
             else:  # Draw (1/2-1/2)
                 return result_draw  # Draw -> yellow
         
+        def _game_fen_type(game: Dict) -> str:
+            label = game.get("initial_fen_label")
+            if label:
+                return label
+            source = game.get("initial_fen_source")
+            if source:
+                return os.path.splitext(os.path.basename(source))[0]
+            if game.get("initial_fen"):
+                return "custom"
+            return "default"
+
+        def _build_menu_rows(filtered_game_indices: List[int], layout_mode: str) -> List[Dict]:
+            rows: List[Dict] = []
+            if layout_mode == "time":
+                for idx in filtered_game_indices:
+                    rows.append({"type": "game", "game_idx": idx})
+                return rows
+            mate_groups: Dict[int, List[int]] = {}
+            other_games: List[int] = []
+            for idx in filtered_game_indices:
+                game = games[idx]
+                if game.get("reason") == "CHECKMATE":
+                    move_count = int(game.get("move_count") or 0)
+                    if move_count > 0:
+                        mate_groups.setdefault(move_count, []).append(idx)
+                        continue
+                other_games.append(idx)
+
+            for move_count in sorted(mate_groups.keys()):
+                game_indices = mate_groups[move_count]
+                rows.append({
+                    "type": "header",
+                    "label": f"Mate in {move_count} ({len(game_indices)} games)",
+                })
+                for game_idx in game_indices:
+                    rows.append({"type": "game", "game_idx": game_idx})
+
+            if other_games:
+                rows.append({
+                    "type": "header",
+                    "label": f"Other games ({len(other_games)} games)",
+                })
+                for game_idx in other_games:
+                    rows.append({"type": "game", "game_idx": game_idx})
+
+            return rows
+
+        layout_tabs = [("by Time", "time"), ("by Length", "grouped")]
+        selected_layout = 0
+
+        fen_types = sorted({_game_fen_type(game) for game in games})
+        filter_tabs = [t for t in fen_types if t not in ("custom", "default")]
+        selected_filter = 0 if filter_tabs else None
+
+        def _filter_game_indices() -> List[int]:
+            if not filter_tabs or selected_filter is None:
+                return list(range(len(games)))
+            current_label = filter_tabs[selected_filter]
+            return [idx for idx, game in enumerate(games) if _game_fen_type(game) == current_label]
+
+        def _rebuild_menu_rows():
+            nonlocal menu_rows, game_row_indices, selected_row, scroll_offset
+            layout_mode = layout_tabs[selected_layout][1]
+            menu_rows = _build_menu_rows(_filter_game_indices(), layout_mode)
+            game_row_indices = [idx for idx, row in enumerate(menu_rows) if row["type"] == "game"]
+            if not game_row_indices:
+                selected_row = 0
+                scroll_offset = 0
+                return
+            selected_row = game_row_indices[0]
+            scroll_offset = 0
+
+        menu_rows: List[Dict] = []
+        game_row_indices: List[int] = []
+        _rebuild_menu_rows()
+        if not game_row_indices:
+            print("No selectable games to display")
+            return
+
+        window_height = header_height + min(len(menu_rows), rows_per_page) * item_height + margin * 2
+        screen = pygame.display.set_mode((window_width, window_height))
+
+        def _ensure_visible():
+            nonlocal scroll_offset
+            if selected_row < scroll_offset or selected_row >= scroll_offset + rows_per_page:
+                scroll_offset = (selected_row // rows_per_page) * rows_per_page
+
+        def _find_game_row(start_row: int, direction: int) -> int:
+            if not game_row_indices:
+                return selected_row
+            if direction >= 0:
+                for row_idx in range(start_row, len(menu_rows)):
+                    if menu_rows[row_idx]["type"] == "game":
+                        return row_idx
+            else:
+                for row_idx in range(start_row, -1, -1):
+                    if menu_rows[row_idx]["type"] == "game":
+                        return row_idx
+            return selected_row
+
+        def _move_selection(step: int):
+            nonlocal selected_row
+            current_pos = game_row_indices.index(selected_row)
+            next_pos = (current_pos + step) % len(game_row_indices)
+            selected_row = game_row_indices[next_pos]
+            _ensure_visible()
+
+        def _page_selection(delta_pages: int):
+            nonlocal selected_row
+            target_row = selected_row + delta_pages * rows_per_page
+            target_row = max(0, min(target_row, len(menu_rows) - 1))
+            selected_row = _find_game_row(target_row, 1 if delta_pages >= 0 else -1)
+            _ensure_visible()
+
         def _apply_navigation(key: int):
-            nonlocal selected_idx, scroll_offset
+            nonlocal selected_row, scroll_offset
             if key in (pygame.K_UP, pygame.K_w):
-                if selected_idx <= 0:
-                    selected_idx = len(games) - 1
-                else:
-                    selected_idx -= 1
-                if selected_idx < scroll_offset or selected_idx >= scroll_offset + games_per_page:
-                    scroll_offset = (selected_idx // games_per_page) * games_per_page
+                _move_selection(-1)
             elif key in (pygame.K_DOWN, pygame.K_s):
-                if selected_idx >= len(games) - 1:
-                    selected_idx = 0
-                else:
-                    selected_idx += 1
-                if selected_idx < scroll_offset or selected_idx >= scroll_offset + games_per_page:
-                    scroll_offset = (selected_idx // games_per_page) * games_per_page
+                _move_selection(1)
             elif key == pygame.K_RIGHT:
-                last_page_start = max(0, len(games) - games_per_page)
-                if scroll_offset >= last_page_start:
-                    selected_idx = 0
+                if scroll_offset + rows_per_page >= len(menu_rows):
+                    selected_row = game_row_indices[0]
                     scroll_offset = 0
                 else:
-                    selected_idx = min(len(games) - 1, selected_idx + games_per_page)
-                    scroll_offset = (selected_idx // games_per_page) * games_per_page
+                    _page_selection(1)
             elif key == pygame.K_LEFT:
-                if selected_idx < games_per_page:
-                    selected_idx = len(games) - 1
+                if scroll_offset == 0:
+                    selected_row = game_row_indices[-1]
+                    scroll_offset = max(0, len(menu_rows) - rows_per_page)
                 else:
-                    selected_idx = max(0, selected_idx - games_per_page)
-                scroll_offset = (selected_idx // games_per_page) * games_per_page
+                    _page_selection(-1)
             elif key == pygame.K_HOME:
-                selected_idx = 0
+                selected_row = game_row_indices[0]
                 scroll_offset = 0
             elif key == pygame.K_END:
-                selected_idx = len(games) - 1
-                scroll_offset = max(0, len(games) - games_per_page)
+                selected_row = game_row_indices[-1]
+                scroll_offset = max(0, len(menu_rows) - rows_per_page)
 
         while running:
             clock.tick(fps)
@@ -548,15 +670,47 @@ def select_and_replay_game(
                     return
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mouse_x, mouse_y = event.pos
+                    tab_y = 36
+                    tab_height = 26
+                    if filter_tabs and tab_y <= mouse_y <= tab_y + tab_height:
+                        tab_x = margin
+                        for idx, label in enumerate(filter_tabs):
+                            tab_w = max(40, font.size(label)[0])
+                            tab_rect = pygame.Rect(tab_x, tab_y, tab_w, tab_height)
+                            if tab_rect.collidepoint(mouse_x, mouse_y):
+                                selected_filter = idx
+                                _rebuild_menu_rows()
+                                break
+                            tab_x += tab_w + 6
+
+                    layout_tab_y = 60
+                    layout_tab_height = 26
+                    if layout_tab_y <= mouse_y <= layout_tab_y + layout_tab_height:
+                        tab_x = margin
+                        for idx, (label, _mode) in enumerate(layout_tabs):
+                            tab_w = max(100, font.size(label)[0])
+                            tab_rect = pygame.Rect(tab_x, layout_tab_y, tab_w, layout_tab_height)
+                            if tab_rect.collidepoint(mouse_x, mouse_y):
+                                selected_layout = idx
+                                _rebuild_menu_rows()
+                                break
+                            tab_x += tab_w + 6
                     list_start_y = header_height + margin
-                    list_end_y = list_start_y + games_per_page * item_height
+                    visible_rows = min(rows_per_page, max(0, len(menu_rows) - scroll_offset))
+                    list_end_y = list_start_y + visible_rows * item_height
                     list_left_x = margin
                     list_right_x = window_width - margin
                     if list_left_x <= mouse_x <= list_right_x and list_start_y <= mouse_y <= list_end_y:
                         list_idx = (mouse_y - list_start_y) // item_height
-                        selected_idx = scroll_offset + int(list_idx)
-                        if 0 <= selected_idx < len(games):
-                            result = replay_game_pygame(games[selected_idx], board_px, fps, white_perspective)
+                        hover_row = scroll_offset + int(list_idx)
+                        if 0 <= hover_row < len(menu_rows) and menu_rows[hover_row]["type"] == "game":
+                            selected_row = hover_row
+                            result = replay_game_pygame(
+                                games[menu_rows[selected_row]["game_idx"]],
+                                board_px,
+                                fps,
+                                white_perspective,
+                            )
                             if result == 'back':
                                 pygame.init()
                                 screen = pygame.display.set_mode((window_width, window_height))
@@ -564,6 +718,18 @@ def select_and_replay_game(
                             elif result == 'quit':
                                 running = False
                                 return
+                elif event.type == pygame.MOUSEMOTION:
+                    mouse_x, mouse_y = event.pos
+                    list_start_y = header_height + margin
+                    visible_rows = min(rows_per_page, max(0, len(menu_rows) - scroll_offset))
+                    list_end_y = list_start_y + visible_rows * item_height
+                    list_left_x = margin
+                    list_right_x = window_width - margin
+                    if list_left_x <= mouse_x <= list_right_x and list_start_y <= mouse_y <= list_end_y:
+                        list_idx = (mouse_y - list_start_y) // item_height
+                        hover_row = scroll_offset + int(list_idx)
+                        if 0 <= hover_row < len(menu_rows) and menu_rows[hover_row]["type"] == "game":
+                            selected_row = hover_row
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
@@ -582,7 +748,12 @@ def select_and_replay_game(
                             }
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         # Select and replay
-                        result = replay_game_pygame(games[selected_idx], board_px, fps, white_perspective)
+                        result = replay_game_pygame(
+                            games[menu_rows[selected_row]["game_idx"]],
+                            board_px,
+                            fps,
+                            white_perspective,
+                        )
                         # If user wants to go back, continue the loop (don't return)
                         if result == 'back':
                             # Reinitialize pygame for the selection menu
@@ -613,59 +784,98 @@ def select_and_replay_game(
             screen.blit(title_text, (margin, 15))
             
             # Instructions
-            inst_text = small_font.render("↑/↓: Navigate | ←/→: Page | Enter/Space: Select | Esc: Exit | In replay: B/Tab to go back", True, (150, 150, 150))
+            inst_text = small_font.render("↑/↓: Navigate | ←/→: Page | Tabs: Layout/Filter | Hover: Select | Click/Enter: Play | Esc: Exit | In replay: B/Tab to go back", True, (150, 150, 150))
             screen.blit(inst_text, (window_width - margin - inst_text.get_width(), header_height - 25))
+
+            # Filter tabs
+            if filter_tabs:
+                tab_y = 36
+                tab_height = 26
+                tab_x = margin
+                for idx, label in enumerate(filter_tabs):
+                    tab_w = max(40, font.size(label)[0])
+                    tab_rect = pygame.Rect(tab_x, tab_y, tab_w, tab_height)
+                    is_active = idx == selected_filter
+                    tab_bg = selected_bg if is_active else header_row_bg
+                    pygame.draw.rect(screen, tab_bg, tab_rect, border_radius=4)
+                    tab_text = font.render(label, True, selected_text if is_active else text_color)
+                    text_x = tab_x + (tab_w - tab_text.get_width()) // 2
+                    text_y = tab_y + (tab_height - tab_text.get_height()) // 2
+                    screen.blit(tab_text, (text_x, text_y))
+                    tab_x += tab_w + 6
+
+            # Layout tabs
+            layout_tab_y = 60
+            layout_tab_height = 26
+            tab_x = margin
+            for idx, (label, _mode) in enumerate(layout_tabs):
+                tab_w = max(100, font.size(label)[0])
+                tab_rect = pygame.Rect(tab_x, layout_tab_y, tab_w, layout_tab_height)
+                is_active = idx == selected_layout
+                tab_bg = selected_bg if is_active else header_row_bg
+                pygame.draw.rect(screen, tab_bg, tab_rect, border_radius=4)
+                tab_text = font.render(label, True, selected_text if is_active else text_color)
+                text_x = tab_x + (tab_w - tab_text.get_width()) // 2
+                text_y = layout_tab_y + (layout_tab_height - tab_text.get_height()) // 2
+                screen.blit(tab_text, (text_x, text_y))
+                tab_x += tab_w + 6
             
             # Game list
             visible_start = scroll_offset
-            visible_end = min(scroll_offset + games_per_page, len(games))
+            visible_end = min(scroll_offset + rows_per_page, len(menu_rows))
             
             for i in range(visible_start, visible_end):
-                game = games[i]
+                row = menu_rows[i]
                 list_idx = i - scroll_offset
                 y_pos = header_height + list_idx * item_height + margin
                 
                 # Highlight selected item
-                is_selected = (i == selected_idx)
-                item_bg_color = selected_bg if is_selected else item_bg
+                is_selected = (i == selected_row)
+                is_header = row["type"] == "header"
+                item_bg_color = header_row_bg if is_header else (selected_bg if is_selected else item_bg)
                 text_color_use = selected_text if is_selected else text_color
                 
                 item_rect = pygame.Rect(margin, y_pos, window_width - margin * 2, item_height - 2)
                 pygame.draw.rect(screen, item_bg_color, item_rect)
                 
-                # Game number and result
-                game_num = game.get('game_number', i + 1)
-                result = game.get('result', '?')
-                reason = game.get('reason', '?')
-                move_count = game.get('move_count', 0)
-                
-                # Determine first player from initial FEN
-                first_player = get_first_player_from_fen(game.get('initial_fen'))
-                result_color = get_result_color(result, first_player)
-                header_text = f"Game {game_num}: {result} ({reason}, {move_count} moves)"
-                header_surface = font.render(header_text, True, result_color)
-                screen.blit(header_surface, (margin + 5, y_pos + 3))
-                
-                # Initial FEN (truncated)
-                initial_fen = game.get('initial_fen')
-                fen_display = truncate_fen(initial_fen)
-                fen_surface = small_font.render(f"FEN: {fen_display}", True, (180, 180, 180))
-                screen.blit(fen_surface, (margin + 5, y_pos + 20))
-                
-                # Additional info (quality, reward) if available
-                info_parts = []
-                if game.get('initial_quality'):
-                    info_parts.append(f"Quality: {game['initial_quality']}")
-                if game.get('reward') is not None:
-                    info_parts.append(f"Reward: {game['reward']:.4f}")
-                
-                if info_parts:
-                    info_text = " | ".join(info_parts)
-                    info_surface = small_font.render(info_text, True, (150, 150, 200))
-                    screen.blit(info_surface, (window_width - margin - info_surface.get_width() - 5, y_pos + 20))
+                if is_header:
+                    header_surface = font.render(row["label"], True, text_color)
+                    screen.blit(header_surface, (margin + 5, y_pos + 6))
+                else:
+                    game = games[row["game_idx"]]
+                    # Game number and result
+                    game_num = game.get('game_number', row["game_idx"] + 1)
+                    result = game.get('result', '?')
+                    reason = game.get('reason', '?')
+                    move_count = game.get('move_count', 0)
+                    
+                    # Determine first player from initial FEN
+                    first_player = get_first_player_from_fen(game.get('initial_fen'))
+                    result_color = get_result_color(result, first_player)
+                    header_text = f"Game {game_num}: {result} ({reason}, {move_count} moves)"
+                    header_surface = font.render(header_text, True, result_color)
+                    screen.blit(header_surface, (margin + 5, y_pos + 3))
+                    
+                    # Initial FEN (truncated)
+                    initial_fen = game.get('initial_fen')
+                    fen_display = truncate_fen(initial_fen)
+                    fen_surface = small_font.render(f"FEN: {fen_display}", True, (180, 180, 180))
+                    screen.blit(fen_surface, (margin + 5, y_pos + 20))
+                    
+                    # Additional info (quality, reward) if available
+                    info_parts = []
+                    if game.get('initial_quality'):
+                        info_parts.append(f"Quality: {game['initial_quality']}")
+                    if game.get('reward') is not None:
+                        info_parts.append(f"Reward: {game['reward']:.4f}")
+                    
+                    if info_parts:
+                        info_text = " | ".join(info_parts)
+                        info_surface = small_font.render(info_text, True, (150, 150, 200))
+                        screen.blit(info_surface, (window_width - margin - info_surface.get_width() - 5, y_pos + 20))
             
             # Scrollbar (if needed)
-            if len(games) > games_per_page:
+            if len(menu_rows) > rows_per_page:
                 scrollbar_width = 10
                 scrollbar_x = window_width - margin - scrollbar_width
                 scrollbar_height = (window_height - header_height - margin * 2)
@@ -673,8 +883,8 @@ def select_and_replay_game(
                 pygame.draw.rect(screen, (60, 60, 60), scrollbar_rect)
                 
                 # Thumb
-                thumb_height = scrollbar_height * games_per_page / len(games)
-                thumb_y = header_height + margin + (scrollbar_height - thumb_height) * scroll_offset / (len(games) - games_per_page)
+                thumb_height = scrollbar_height * rows_per_page / len(menu_rows)
+                thumb_y = header_height + margin + (scrollbar_height - thumb_height) * scroll_offset / (len(menu_rows) - rows_per_page)
                 thumb_rect = pygame.Rect(scrollbar_x, thumb_y, scrollbar_width, thumb_height)
                 pygame.draw.rect(screen, (100, 100, 100), thumb_rect)
             
@@ -696,7 +906,21 @@ def select_and_replay_game(
                 pass
 
 
-# Example usage:
-if __name__ == "__main__":
-    games = parse_game_file("./game_history/_games_iter_1.txt")
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python replay_history.py <game_history_path>")
+        print("\nExample:")
+        print("  python test/replay_history.py outputs/mcts_train/2026-01-28/01-43-43/game_history/games_iter_50_p1.5257_v0.2070.txt")
+        sys.exit(1)
+
+    game_history_path = sys.argv[1]
+    if not os.path.exists(game_history_path):
+        print(f"Error: file not found at {game_history_path}")
+        sys.exit(1)
+
+    games = parse_game_file(game_history_path)
     select_and_replay_game(games)
+
+
+if __name__ == "__main__":
+    main()
