@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.distributed as dist
+import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data._utils.collate import default_collate
@@ -230,6 +231,10 @@ def save_learning_curve(
     theme_metrics_path: str | None = None,
     ignored_themes: set[str] | None = None,
     theme_plot_include_missing: bool = False,
+    per_source_train_loss: dict[str, list[float]] | None = None,
+    per_source_train_acc: dict[str, list[float]] | None = None,
+    per_source_val_loss: dict[str, list[float]] | None = None,
+    per_source_val_acc: dict[str, list[float]] | None = None,
 ) -> None:
     if not train_losses or not val_losses:
         return
@@ -239,7 +244,6 @@ def save_learning_curve(
         theme_curves = _load_theme_curves(
             theme_metrics_path,
             epochs,
-            split="val",
             ignored_themes=ignored_themes,
             include_missing=theme_plot_include_missing,
         )
@@ -251,16 +255,20 @@ def save_learning_curve(
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         axes = list(axes)
 
-    axes[0].plot(epochs, train_losses, label="train")
-    axes[0].plot(epochs, val_losses, label="val")
+    axes[0].plot(epochs, train_losses, label="train", color="C0", linestyle="-")
+    axes[0].plot(epochs, val_losses, label="val", color="C0", linestyle="--")
     axes[0].set_title("Loss")
     axes[0].set_xlabel("Epoch")
     axes[0].set_ylabel("Loss")
     axes[0].set_ylim(0, None)
     axes[0].legend()
 
-    axes[1].plot(epochs, [a * 100 for a in train_accs], label="train")
-    axes[1].plot(epochs, [a * 100 for a in val_accs], label="val")
+    axes[1].plot(
+        epochs, [a * 100 for a in train_accs], label="train", color="C1", linestyle="-"
+    )
+    axes[1].plot(
+        epochs, [a * 100 for a in val_accs], label="val", color="C1", linestyle="--"
+    )
     axes[1].set_title("Accuracy")
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Accuracy (%)")
@@ -273,13 +281,13 @@ def save_learning_curve(
             axes[2],
             theme_epochs,
             top1_5,
-            "Theme accuracy (val, top 1-5 by frequency)",
+            "Theme accuracy (top 1-5 by frequency)",
         )
         _plot_theme_group(
             axes[3],
             theme_epochs,
             top6_10,
-            "Theme accuracy (val, top 6-10 by frequency)",
+            "Theme accuracy (top 6-10 by frequency)",
         )
 
     fig.tight_layout()
@@ -287,23 +295,33 @@ def save_learning_curve(
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
 
+    if per_source_train_loss and per_source_train_acc:
+        _save_per_source_curves(
+            epochs,
+            per_source_train_loss,
+            per_source_train_acc,
+            per_source_val_loss or {},
+            per_source_val_acc or {},
+            checkpoint_dir,
+        )
+
 
 def _load_theme_curves(
     theme_metrics_path: str,
     epochs: list[int],
-    split: str = "train",
     ignored_themes: set[str] | None = None,
     include_missing: bool = False,
-) -> tuple[list[int], list[tuple[str, list[float]]], list[tuple[str, list[float]]]] | None:
+) -> tuple[list[int], list[tuple[str, list[float], list[float]]], list[tuple[str, list[float], list[float]]]] | None:
     theme_totals: dict[str, int] = {}
-    theme_by_epoch: dict[int, dict[str, float]] = {}
+    theme_by_split: dict[str, dict[int, dict[str, float]]] = {"train": {}, "val": {}}
     with open(theme_metrics_path, "r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
                 continue
             payload = json.loads(line)
-            if payload.get("split") != split:
+            split = payload.get("split")
+            if split not in theme_by_split:
                 continue
             epoch = int(payload.get("epoch", 0))
             themes = payload.get("themes") or []
@@ -318,20 +336,29 @@ def _load_theme_curves(
                     continue
                 epoch_map[theme] = acc
                 theme_totals[theme] = max(theme_totals.get(theme, 0), total)
-            theme_by_epoch[epoch] = epoch_map
+            theme_by_split[split][epoch] = epoch_map
 
     if not theme_totals:
         return None
 
     sorted_themes = sorted(theme_totals.items(), key=lambda item: (-item[1], item[0]))
     top_themes = [name for name, _ in sorted_themes[:10]]
-    theme_epochs = epochs if include_missing else sorted(theme_by_epoch.keys())
-    theme_series: list[tuple[str, list[float]]] = []
+    all_epochs = set()
+    for split_map in theme_by_split.values():
+        all_epochs.update(split_map.keys())
+    theme_epochs = epochs if include_missing else sorted(all_epochs)
+    theme_series: list[tuple[str, list[float], list[float]]] = []
     for theme in top_themes:
-        series = []
+        train_series = []
+        val_series = []
         for epoch in theme_epochs:
-            series.append(theme_by_epoch.get(epoch, {}).get(theme, float("nan")))
-        theme_series.append((theme, series))
+            train_series.append(
+                theme_by_split["train"].get(epoch, {}).get(theme, float("nan"))
+            )
+            val_series.append(
+                theme_by_split["val"].get(epoch, {}).get(theme, float("nan"))
+            )
+        theme_series.append((theme, train_series, val_series))
 
     return theme_epochs, theme_series[:5], theme_series[5:10]
 
@@ -339,17 +366,97 @@ def _load_theme_curves(
 def _plot_theme_group(
     axis: plt.Axes,
     epochs: list[int],
-    theme_series: list[tuple[str, list[float]]],
+    theme_series: list[tuple[str, list[float], list[float]]],
     title: str,
 ) -> None:
-    for theme, series in theme_series:
-        axis.plot(epochs, series, label=theme)
+    for idx, (theme, train_series, val_series) in enumerate(theme_series):
+        color = f"C{idx % 10}"
+        axis.plot(
+            epochs,
+            train_series,
+            label=f"{theme} (train)",
+            color=color,
+            linestyle="-",
+        )
+        axis.plot(
+            epochs,
+            val_series,
+            label=f"{theme} (val)",
+            color=color,
+            linestyle="--",
+        )
     axis.set_title(title)
     axis.set_xlabel("Epoch")
     axis.set_ylabel("Accuracy (%)")
     axis.set_ylim(0, 100)
     if theme_series:
         axis.legend(fontsize=8)
+
+
+def _save_per_source_curves(
+    epochs: list[int],
+    train_loss: dict[str, list[float]],
+    train_acc: dict[str, list[float]],
+    val_loss: dict[str, list[float]],
+    val_acc: dict[str, list[float]],
+    checkpoint_dir: str,
+) -> None:
+    if not train_loss or not train_acc:
+        return
+    labels = list(train_loss.keys())
+    if not labels:
+        return
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+    for idx, label in enumerate(labels):
+        color = f"C{idx % 10}"
+        axes[0].plot(
+            epochs,
+            train_loss.get(label, []),
+            label=f"{label} (train)",
+            color=color,
+            linestyle="-",
+        )
+        if val_loss.get(label):
+            axes[0].plot(
+                epochs,
+                val_loss.get(label, []),
+                label=f"{label} (val)",
+                color=color,
+                linestyle="--",
+            )
+        axes[1].plot(
+            epochs,
+            train_acc.get(label, []),
+            label=f"{label} (train)",
+            color=color,
+            linestyle="-",
+        )
+        if val_acc.get(label):
+            axes[1].plot(
+                epochs,
+                val_acc.get(label, []),
+                label=f"{label} (val)",
+                color=color,
+                linestyle="--",
+            )
+
+    axes[0].set_title("Loss by dataset")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_ylim(0, None)
+    axes[0].legend(fontsize=8)
+
+    axes[1].set_title("Accuracy by dataset")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Accuracy (%)")
+    axes[1].set_ylim(0, 100)
+    axes[1].legend(fontsize=8)
+
+    fig.tight_layout()
+    plot_path = os.path.join(checkpoint_dir, "learning_curve_by_dataset.png")
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
 
 
 def _update_theme_stats(
@@ -407,6 +514,12 @@ def _ddp_all_reduce_list(values: list[int], device: torch.device) -> list[int]:
     return tensor.tolist()
 
 
+def _ddp_all_reduce_float_list(values: list[float], device: torch.device) -> list[float]:
+    tensor = torch.tensor(values, device=device, dtype=torch.float64)
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    return tensor.tolist()
+
+
 def _train_worker(rank: int, world_size: int, args) -> None:
     ddp_enabled = world_size > 1
     is_main = rank == 0
@@ -435,6 +548,10 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         else:
             source_labels.append(label)
     num_sources = len(source_labels)
+    per_source_train_loss_history = {label: [] for label in source_labels}
+    per_source_train_acc_history = {label: [] for label in source_labels}
+    per_source_val_loss_history = {label: [] for label in source_labels}
+    per_source_val_acc_history = {label: [] for label in source_labels}
 
     total_rows = None
     json_only = True
@@ -637,6 +754,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             train_theme_stats: dict[str, dict[str, int]] = {}
             per_source_correct = [0 for _ in range(num_sources)]
             per_source_total = [0 for _ in range(num_sources)]
+            per_source_loss_sum = [0.0 for _ in range(num_sources)]
             progress.reset(
                 train_task,
                 total=train_total,
@@ -663,6 +781,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 optimizer.zero_grad()
                 logits, _ = model(obs, policy_only=True)
                 loss = criterion(logits, target)
+                per_sample_loss = F.cross_entropy(logits, target, reduction="none")
                 loss.backward()
                 optimizer.step()
 
@@ -676,6 +795,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     if count:
                         per_source_total[source_idx] += count
                         per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
+                        per_source_loss_sum[source_idx] += per_sample_loss[mask].sum().item()
                 if collect_theme_stats:
                     correct_batch = (preds == target).detach().cpu().tolist()
                     _update_theme_stats(train_theme_stats, themes, correct_batch)
@@ -704,6 +824,9 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 epoch_total = _ddp_all_reduce(epoch_total, device)
                 per_source_correct = _ddp_all_reduce_list(per_source_correct, device)
                 per_source_total = _ddp_all_reduce_list(per_source_total, device)
+                per_source_loss_sum = _ddp_all_reduce_float_list(
+                    per_source_loss_sum, device
+                )
 
             avg_loss = epoch_loss_sum / max(epoch_total, 1)
             acc = epoch_correct / max(epoch_total, 1)
@@ -716,6 +839,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             val_theme_stats: dict[str, dict[str, int]] = {}
             val_per_source_correct = [0 for _ in range(num_sources)]
             val_per_source_total = [0 for _ in range(num_sources)]
+            val_per_source_loss_sum = [0.0 for _ in range(num_sources)]
             with torch.no_grad():
                 for obs, target, source_ids, themes in val_loader:
                     obs = obs.to(device)
@@ -723,6 +847,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     source_ids = source_ids.to(device)
                     logits, _ = model(obs, policy_only=True)
                     loss = criterion(logits, target)
+                    per_sample_loss = F.cross_entropy(logits, target, reduction="none")
                     val_loss += loss.item() * obs.size(0)
                     preds = torch.argmax(logits, dim=1)
                     val_correct += (preds == target).sum().item()
@@ -733,6 +858,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         if count:
                             val_per_source_total[source_idx] += count
                             val_per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
+                            val_per_source_loss_sum[source_idx] += per_sample_loss[mask].sum().item()
                     if collect_theme_stats:
                         correct_batch = (preds == target).detach().cpu().tolist()
                         _update_theme_stats(val_theme_stats, themes, correct_batch)
@@ -763,6 +889,9 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 val_samples = _ddp_all_reduce(val_samples, device)
                 val_per_source_correct = _ddp_all_reduce_list(val_per_source_correct, device)
                 val_per_source_total = _ddp_all_reduce_list(val_per_source_total, device)
+                val_per_source_loss_sum = _ddp_all_reduce_float_list(
+                    val_per_source_loss_sum, device
+                )
             if has_val:
                 val_avg_loss = val_loss / max(val_samples, 1)
                 val_acc = val_correct / max(val_samples, 1)
@@ -830,20 +959,28 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         f"train acc by source: {per_source_train_str}"
                     )
 
+            for i, label in enumerate(source_labels):
+                if per_source_total[i] > 0:
+                    train_loss_value = per_source_loss_sum[i] / per_source_total[i]
+                    train_acc_value = per_source_correct[i] / per_source_total[i] * 100
+                else:
+                    train_loss_value = float("nan")
+                    train_acc_value = float("nan")
+                per_source_train_loss_history[label].append(train_loss_value)
+                per_source_train_acc_history[label].append(train_acc_value)
+
+                if has_val and val_per_source_total[i] > 0:
+                    val_loss_value = val_per_source_loss_sum[i] / val_per_source_total[i]
+                    val_acc_value = val_per_source_correct[i] / val_per_source_total[i] * 100
+                else:
+                    val_loss_value = float("nan")
+                    val_acc_value = float("nan")
+                per_source_val_loss_history[label].append(val_loss_value)
+                per_source_val_acc_history[label].append(val_acc_value)
+
             last_val_loss = val_avg_loss if has_val else None
             last_val_acc = val_acc if has_val else None
             if is_main and collect_theme_stats:
-                save_learning_curve(
-                    train_losses,
-                    train_accs,
-                    val_losses,
-                    val_accs,
-                    checkpoint_dir,
-                    theme_metrics_path=theme_metrics_path,
-                    ignored_themes=ignored_themes,
-                    theme_plot_include_missing=args.theme_plot_include_missing,
-                )
-
                 with open(theme_metrics_path, "a", encoding="utf-8") as theme_out:
                     train_rows = _format_theme_stats(train_theme_stats)
                     train_payload = {
@@ -886,6 +1023,22 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
             elif is_main and ddp_enabled and epoch == start_epoch:
                 print("DDP enabled: theme stats/plots are disabled to avoid partial metrics.")
+
+            if is_main:
+                save_learning_curve(
+                    train_losses,
+                    train_accs,
+                    val_losses,
+                    val_accs,
+                    checkpoint_dir,
+                    theme_metrics_path=theme_metrics_path if collect_theme_stats else None,
+                    ignored_themes=ignored_themes,
+                    theme_plot_include_missing=args.theme_plot_include_missing,
+                    per_source_train_loss=per_source_train_loss_history,
+                    per_source_train_acc=per_source_train_acc_history,
+                    per_source_val_loss=per_source_val_loss_history if has_val else None,
+                    per_source_val_acc=per_source_val_acc_history if has_val else None,
+                )
 
             if args.save_every > 0 and epoch % args.save_every == 0 and is_main:
                 if has_val:
@@ -943,6 +1096,10 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 theme_metrics_path=theme_metrics_path,
                 ignored_themes=ignored_themes,
                 theme_plot_include_missing=args.theme_plot_include_missing,
+                per_source_train_loss=per_source_train_loss_history,
+                per_source_train_acc=per_source_train_acc_history,
+                per_source_val_loss=per_source_val_loss_history if has_val else None,
+                per_source_val_acc=per_source_val_acc_history if has_val else None,
             )
 
     if ddp_enabled:
@@ -993,8 +1150,8 @@ def main():
     parser.add_argument(
         "--theme-ignore",
         nargs="*",
-        default=["mate", "veryLong", "long", "short"],
-        help="Themes to exclude from theme logging/plots (default: mate, veryLong, long, short).",
+        default=["mate", "veryLong", "long", "short", "opening", "middlegame", "endgame"],
+        help="Themes to exclude from theme logging/plots (default: mate, veryLong, long, short, opening, middlegame, endgame).",
     )
     parser.add_argument(
         "--theme-plot-include-missing",
