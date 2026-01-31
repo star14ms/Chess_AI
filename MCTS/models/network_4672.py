@@ -10,14 +10,14 @@ from omegaconf import DictConfig
 from chess_gym.chess_custom import LegacyChessBoard
 
 # Default values based on common AlphaZero implementations for chess
-DEFAULT_INPUT_CHANNELS = 10  # 10 features (Color, Piece Type, EnPassant, Castling, Current Player)
+DEFAULT_INPUT_CHANNELS = 119  # 8-step AlphaZero history (112) + 7 meta planes for Legacy board
 DEFAULT_BOARD_SIZE = 8
-DEFAULT_NUM_RESIDUAL_LAYERS = 8
-DEFAULT_INITIAL_CONV_BLOCK_OUT_CHANNELS = [32] * 8
-DEFAULT_RESIDUAL_BLOCKS_OUT_CHANNELS = [[32]] * DEFAULT_NUM_RESIDUAL_LAYERS
+DEFAULT_NUM_RESIDUAL_LAYERS = 40
+DEFAULT_INITIAL_CONV_BLOCK_OUT_CHANNELS = [128]
+DEFAULT_RESIDUAL_BLOCKS_OUT_CHANNELS = [[128]] * DEFAULT_NUM_RESIDUAL_LAYERS
 DEFAULT_ACTION_SPACE = 4672 # User-specified action space size
 DEFAULT_NUM_PIECES = 32
-DEFAULT_VALUE_HIDDEN_SIZE = 4
+DEFAULT_VALUE_HIDDEN_SIZE = 512
 DEFAULT_POLICY_LINEAR_OUT_FEATURES = [4672]
 
 
@@ -29,24 +29,19 @@ class ConvBlock(nn.Module):
         self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x, policy_only: bool = False):
-        return F.relu(self.bn(self.conv(x)))
+        return F.relu(self.bn(self.conv(x)), inplace=True)
 
 class ConvBlockInitial(nn.Module):
     """A multi-scale convolutional block that captures both local and long-range patterns."""
-    def __init__(self, in_channels, initial_conv_block_out_channels=[32, 32, 32, 32, 32, 32, 32, 32], conv_bias=False):
+    def __init__(self, in_channels, initial_conv_block_out_channels=[128], conv_bias=False):
         super().__init__()
-        self.conv_paths = nn.ModuleList()
-        self.bn_paths = nn.ModuleList()
-
         initial_conv_block_out_channels = [in_channels] + initial_conv_block_out_channels
         self.conv_blocks = nn.Sequential()
         for i in range(len(initial_conv_block_out_channels)-1):
             self.conv_blocks.append(ConvBlock(initial_conv_block_out_channels[i], initial_conv_block_out_channels[i+1], kernel_size=3, padding=1, conv_bias=conv_bias))
-            
-        self.bn = nn.BatchNorm2d(initial_conv_block_out_channels[-1])
 
     def forward(self, x):
-        return F.relu(self.bn(self.conv_blocks(x)))
+        return self.conv_blocks(x)
 
 class ResidualConvBlock(nn.Module):
     def __init__(self, channel_list, kernel_size=3, padding=1, conv_bias=False):
@@ -61,7 +56,7 @@ class ResidualConvBlock(nn.Module):
         )
 
     def forward(self, x):
-        return F.relu(self.last_block(self.conv_blocks(x)) + x)
+        return F.relu(self.last_block(self.conv_blocks(x)) + x, inplace=True)
 
 # --- Convolutional Body Module ---
 class ConvBody(nn.Module):
@@ -175,7 +170,7 @@ class ValueHead(nn.Module):
         # Apply 1x1 ConvBlock (returns 3D: N, H*W, 1)
         x = self.conv(x)
         x = x.view(x.size(0), -1) # Shape: (N, H*W * 1)
-        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc1(x), inplace=True)
         x = torch.tanh(self.fc2(x)) # Shape: (N, 1)
         return x
 
