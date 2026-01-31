@@ -19,7 +19,7 @@ import json
 import chess
 import random
 import re
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 
 # Assuming files are in the MCTS directory relative to the project root
 from mcts_node import MCTSNode
@@ -2665,8 +2665,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                     param_group['lr'] = current_lr
                 import traceback
                 traceback.print_exc()
-        amp_enabled = bool(cfg.training.get("amp", False) and training_device.type == "cuda")
-        scaler = GradScaler(enabled=amp_enabled)
+        amp_enabled = bool(
+            cfg.training.get("amp", False) and training_device.type in {"cuda", "mps"}
+        )
+        amp_device = "cuda" if training_device.type == "cuda" else "mps"
+        scaler = GradScaler(amp_device, enabled=cfg.training.get("amp", False) and training_device.type == "cuda")
         if amp_enabled:
             progress.print("AMP enabled for training phase.")
 
@@ -2697,7 +2700,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             policy_targets_tensor = torch.from_numpy(policy_targets_np).to(device)
             value_targets_tensor = torch.from_numpy(value_targets_np).to(device)
 
-            with autocast(enabled=amp_enabled):
+            with autocast(amp_device, enabled=amp_enabled):
                 policy_logits, value_preds = network(states_tensor)
 
                 # AlphaZero-style: policy targets are already legal-only, no masking needed.
@@ -2708,9 +2711,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                 total_loss = policy_loss + value_loss
 
             optimizer.zero_grad()
-            scaler.scale(total_loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            if scaler.is_enabled():
+                scaler.scale(total_loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                total_loss.backward()
+                optimizer.step()
 
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()

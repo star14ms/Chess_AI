@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.distributed as dist
 import torch.nn.functional as F
 import torch.multiprocessing as mp
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data._utils.collate import default_collate
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
@@ -687,11 +687,14 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         if ddp_enabled:
             print(f"DDP enabled | world_size={world_size}")
         if args.amp:
-            amp_status = "enabled" if device.type == "cuda" else "disabled (non-CUDA)"
+            amp_status = (
+                "enabled" if device.type in {"cuda", "mps"} else "disabled (non-CUDA)"
+            )
             print(f"AMP: {amp_status}")
 
-    amp_enabled = bool(args.amp and device.type == "cuda")
-    scaler = GradScaler(enabled=amp_enabled)
+    amp_enabled = bool(args.amp and device.type in {"cuda", "mps"})
+    amp_device = "cuda" if device.type == "cuda" else "mps"
+    scaler = GradScaler(amp_device, enabled=args.amp and device.type == "cuda")
 
     train_total = None
     val_total = None
@@ -786,13 +789,17 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 target = target.to(device)
                 source_ids = source_ids.to(device)
                 optimizer.zero_grad()
-                with autocast(enabled=amp_enabled):
+                with autocast(amp_device, enabled=amp_enabled):
                     logits, _ = model(obs, policy_only=True)
                     loss = criterion(logits, target)
                     per_sample_loss = F.cross_entropy(logits, target, reduction="none")
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                if scaler.is_enabled():
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
                 total_loss += loss.item() * obs.size(0)
                 preds = torch.argmax(logits, dim=1)
@@ -854,7 +861,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     obs = obs.to(device)
                     target = target.to(device)
                     source_ids = source_ids.to(device)
-                    with autocast(enabled=amp_enabled):
+                    with autocast(amp_device, enabled=amp_enabled):
                         logits, _ = model(obs, policy_only=True)
                         loss = criterion(logits, target)
                         per_sample_loss = F.cross_entropy(logits, target, reduction="none")
