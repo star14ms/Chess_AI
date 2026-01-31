@@ -1,9 +1,10 @@
-"""Normalize mate-in datasets by fixing move alignment and filtering multi-mates."""
+"""Normalize puzzle datasets by fixing move alignment and filtering multi-mates."""
 
 import argparse
 import concurrent.futures
 import json
 import os
+import multiprocessing as mp
 from pathlib import Path
 from typing import Callable
 
@@ -105,6 +106,15 @@ def normalize_entry(entry: dict, stats: dict) -> dict | None:
         stats["invalid_moves"] += 1
         return None
 
+    if len(move_list) % 2 == 1:
+        puzzle_id = entry.get("PuzzleId") or entry.get("puzzle_id") or "unknown"
+        print(
+            f"Skipping odd-length moves: puzzle_id={puzzle_id} "
+            f"len={len(move_list)}"
+        )
+        stats["odd_moves"] += 1
+        return None
+
     if len(move_list) % 2 == 0 and move_list:
         board = chess.Board(fen)
         first_move = move_list[0]
@@ -149,6 +159,7 @@ def normalize_file(
         "input_rows": 0,
         "written_rows": 0,
         "adjusted_rows": 0,
+        "odd_moves": 0,
         "multiple_mates": 0,
         "missing_fen": 0,
         "missing_moves": 0,
@@ -195,19 +206,24 @@ def normalize_file_worker(path_str: str, output_dir_str: str | None, progress_ma
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Normalize mate_in_#.json files so even-length move lists "
+            "Normalize puzzle JSON files so even-length move lists "
             "apply the opponent's first move and drop it from Moves."
         )
     )
     parser.add_argument(
         "--input-dir",
         default="data",
-        help="Directory with mate_in_#.json files.",
+        help="Directory with JSON files (default: mate_in_*.json).",
     )
     parser.add_argument(
         "--output-dir",
         default=None,
         help="Optional output directory (default: overwrite input files).",
+    )
+    parser.add_argument(
+        "files",
+        nargs="*",
+        help="Optional JSON files to normalize (overrides --input-dir glob).",
     )
     args = parser.parse_args()
 
@@ -224,14 +240,16 @@ def main() -> None:
             "Missing dependency: rich. Install with: python -m pip install rich"
         ) from exc
 
-    input_dir = Path(args.input_dir)
-    if not input_dir.exists():
-        raise SystemExit(f"Input directory not found: {input_dir}")
-
     output_dir = Path(args.output_dir) if args.output_dir else None
-    json_files = sorted(input_dir.glob("mate_in_[0-9].json"))
-    if not json_files:
-        raise SystemExit(f"No mate_in_*.json files found in {input_dir}")
+    if args.files:
+        json_files = [Path(path) for path in args.files]
+    else:
+        input_dir = Path(args.input_dir)
+        if not input_dir.exists():
+            raise SystemExit(f"Input directory not found: {input_dir}")
+        json_files = sorted(input_dir.glob("mate_in_[0-9].json"))
+        if not json_files:
+            raise SystemExit(f"No mate_in_*.json files found in {input_dir}")
 
     with Progress(
         "[progress.description]{task.description}",
@@ -241,7 +259,7 @@ def main() -> None:
         TimeElapsedColumn(),
         transient=True,
     ) as progress:
-        manager = concurrent.futures.process.multiprocessing.Manager()
+        manager = mp.Manager()
         progress_map = manager.dict()
         tasks: dict[str, int] = {}
         totals: dict[str, int] = {}
@@ -256,7 +274,10 @@ def main() -> None:
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(
-                    normalize_file_worker, str(path), str(output_dir) if output_dir else None, progress_map
+                    normalize_file_worker,
+                    str(path),
+                    str(output_dir) if output_dir else None,
+                    progress_map,
                 ): str(path)
                 for path in json_files
             }
@@ -275,9 +296,9 @@ def main() -> None:
                     print(
                         "rows: "
                         f"in={stats['input_rows']} out={stats['written_rows']} "
-                        f"adjusted={stats['adjusted_rows']} multiple_mates={stats['multiple_mates']} "
-                        f"missing_fen={stats['missing_fen']} missing_moves={stats['missing_moves']} "
-                        f"invalid_moves={stats['invalid_moves']}"
+                        f"adjusted={stats['adjusted_rows']} odd_moves={stats['odd_moves']} "
+                        f"multiple_mates={stats['multiple_mates']} missing_fen={stats['missing_fen']} "
+                        f"missing_moves={stats['missing_moves']} invalid_moves={stats['invalid_moves']}"
                     )
 
 

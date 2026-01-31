@@ -1,24 +1,36 @@
-"""Export Lichess mate-in puzzles into mate_in_#.json files."""
+"""Export Lichess puzzles by themes into JSON files."""
 
 import argparse
 import json
 from pathlib import Path
 
 
-def iter_mate_in_themes(themes):
+def iter_requested_themes(themes, requested):
     if not themes:
         return []
-    return [t for t in themes if t.startswith("mateIn")]
+    return [t for t in themes if t in requested]
+
+
+def theme_to_filename(theme: str) -> str:
+    normalized = []
+    for idx, char in enumerate(theme):
+        if idx > 0 and (char.isupper() or char.isdigit()):
+            normalized.append("_")
+        normalized.append(char.lower())
+    return "".join(normalized)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Export Lichess mateIn positions into JSON files."
-    )
+    parser = argparse.ArgumentParser(description="Export Lichess puzzles by theme.")
     parser.add_argument(
         "--output-dir",
         default="data",
         help="Directory to write mate_in_#.json files (default: ./data)",
+    )
+    parser.add_argument(
+        "themes",
+        nargs="+",
+        help="Themes to export (exact match, e.g. mateIn1 fork endgame).",
     )
     args = parser.parse_args()
 
@@ -48,6 +60,7 @@ def main() -> None:
     ds = load_dataset("Lichess/chess-puzzles", split="train")
     total_rows = getattr(ds, "num_rows", None)
 
+    requested_themes = set(args.themes)
     file_handles = {}
     item_counts = {}
 
@@ -63,16 +76,14 @@ def main() -> None:
             task = progress.add_task("Processing puzzles", total=total_rows)
             for row in ds:
                 themes = row.get("Themes") or []
-                mate_in_themes = iter_mate_in_themes(themes)
-                if not mate_in_themes:
+                matched_themes = iter_requested_themes(themes, requested_themes)
+                if not matched_themes:
                     progress.advance(task)
                     continue
 
-                for theme in mate_in_themes:
+                for theme in matched_themes:
                     if theme not in file_handles:
-                        file_path = (
-                            output_dir / f"mate_in_{theme.replace('mateIn', '')}.json"
-                        )
+                        file_path = output_dir / f"{theme_to_filename(theme)}.json"
                         handle = file_path.open("w", encoding="utf-8")
                         handle.write("[\n")
                         file_handles[theme] = handle
@@ -91,10 +102,8 @@ def main() -> None:
             handle.write("]\n")
             handle.close()
 
-    for theme, count in sorted(
-        item_counts.items(), key=lambda x: int(x[0].replace("mateIn", ""))
-    ):
-        print(f"{theme}: {count}")
+    for theme in args.themes:
+        print(f"{theme}: {item_counts.get(theme, 0)}")
 
 
 if __name__ == "__main__":

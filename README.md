@@ -36,9 +36,9 @@ Run the training pipeline in this order:
 
 1. **Prepare puzzle data (mate-in datasets)**  
    Export, normalize, and augment puzzle positions:
-   - `python download/_1_export_lichess_mate_in.py`
-   - `python download/_2_normalize_mate_in_moves.py`
-   - `python download/_3_augment_mate_in_json.py`
+   - `python download/_1_export_lichess_themes.py`
+   - `python download/_2_normalize_puzzle_moves.py`
+   - `python download/_3_augment_puzzle_json.py`
 
 2. **Supervised pretraining (policy/value initialization)**  
    Train on the prepared puzzle data to bootstrap the network:

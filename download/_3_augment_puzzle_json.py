@@ -1,9 +1,10 @@
-"""Augment mate-in datasets by flipping board and colors."""
+"""Augment puzzle datasets by flipping board and colors."""
 
 import argparse
 import concurrent.futures
 import json
 import os
+import multiprocessing as mp
 from pathlib import Path
 from typing import Callable
 
@@ -216,12 +217,12 @@ def augment_file_worker(path_str: str, suffix: str, puzzle_id_suffix: str, progr
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Augment mate_in_#.json files by flipping board and color."
+        description="Augment puzzle JSON files by flipping board and color."
     )
     parser.add_argument(
         "--input-dir",
         default="data",
-        help="Directory with mate_in_#.json files.",
+        help="Directory with JSON files (default: mate_in_*.json).",
     )
     parser.add_argument(
         "--suffix",
@@ -233,15 +234,22 @@ def main() -> None:
         default="_aug",
         help="Suffix to append to PuzzleId for augmented rows.",
     )
+    parser.add_argument(
+        "files",
+        nargs="*",
+        help="Optional JSON files to augment (overrides --input-dir glob).",
+    )
     args = parser.parse_args()
 
-    input_dir = Path(args.input_dir)
-    if not input_dir.exists():
-        raise SystemExit(f"Input directory not found: {input_dir}")
-
-    json_files = sorted(input_dir.glob("mate_in_[0-9].json"))
-    if not json_files:
-        raise SystemExit(f"No mate_in_*.json files found in {input_dir}")
+    if args.files:
+        json_files = [Path(path) for path in args.files]
+    else:
+        input_dir = Path(args.input_dir)
+        if not input_dir.exists():
+            raise SystemExit(f"Input directory not found: {input_dir}")
+        json_files = sorted(input_dir.glob("mate_in_[0-9].json"))
+        if not json_files:
+            raise SystemExit(f"No mate_in_*.json files found in {input_dir}")
 
     try:
         from rich.progress import (
@@ -264,7 +272,7 @@ def main() -> None:
         TimeElapsedColumn(),
         transient=True,
     ) as progress:
-        manager = concurrent.futures.process.multiprocessing.Manager()
+        manager = mp.Manager()
         progress_map = manager.dict()
         tasks: dict[str, int] = {}
         totals: dict[str, int] = {}
@@ -279,7 +287,11 @@ def main() -> None:
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(
-                    augment_file_worker, str(path), args.suffix, args.puzzle_id_suffix, progress_map
+                    augment_file_worker,
+                    str(path),
+                    args.suffix,
+                    args.puzzle_id_suffix,
+                    progress_map,
                 ): str(path)
                 for path in json_files
             }
