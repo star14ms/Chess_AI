@@ -11,6 +11,7 @@ import chess
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.data._utils.collate import default_collate
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 from omegaconf import OmegaConf
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
@@ -126,6 +127,7 @@ class MateInOneIterableDataset(IterableDataset):
             fen, best_uci = _extract_fen_and_move(entry, source_type)
             if not fen or not best_uci:
                 continue
+            themes = _extract_themes(entry, source_type)
 
             board = create_board_from_fen(fen, action_space_size)
             try:
@@ -148,6 +150,7 @@ class MateInOneIterableDataset(IterableDataset):
                 torch.from_numpy(obs.astype(np.float32, copy=False)).float(),
                 torch.tensor(action_index, dtype=torch.long),
                 torch.tensor(source_id, dtype=torch.long),
+                themes,
             )
             yielded += 1
             if max_rows is not None and yielded >= max_rows:
@@ -187,6 +190,19 @@ def _extract_best_move(moves_field):
     return tokens[0] if tokens else None
 
 
+def _extract_themes(entry: dict, source_type: str) -> list[str]:
+    if source_type == "csv":
+        return []
+    themes_field = entry.get("Themes") or entry.get("themes")
+    if not themes_field:
+        return []
+    if isinstance(themes_field, list):
+        return [str(t).strip() for t in themes_field if str(t).strip()]
+    if isinstance(themes_field, str):
+        return [t for t in themes_field.split() if t.strip()]
+    return []
+
+
 def _extract_fen_and_move(entry: dict, source_type: str):
     if source_type == "csv":
         return entry.get("fen"), entry.get("best")
@@ -202,16 +218,34 @@ def save_learning_curve(
     val_losses: list[float],
     val_accs: list[float],
     checkpoint_dir: str,
+    theme_metrics_path: str | None = None,
+    ignored_themes: set[str] | None = None,
 ) -> None:
     if not train_losses or not val_losses:
         return
     epochs = list(range(1, len(train_losses) + 1))
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    theme_curves = None
+    if theme_metrics_path and os.path.exists(theme_metrics_path):
+        theme_curves = _load_theme_curves(
+            theme_metrics_path,
+            epochs,
+            split="val",
+            ignored_themes=ignored_themes,
+        )
+
+    if theme_curves:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        axes = axes.flatten()
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        axes = list(axes)
+
     axes[0].plot(epochs, train_losses, label="train")
     axes[0].plot(epochs, val_losses, label="val")
     axes[0].set_title("Loss")
     axes[0].set_xlabel("Epoch")
     axes[0].set_ylabel("Loss")
+    axes[0].set_ylim(0, None)
     axes[0].legend()
 
     axes[1].plot(epochs, [a * 100 for a in train_accs], label="train")
@@ -219,12 +253,120 @@ def save_learning_curve(
     axes[1].set_title("Accuracy")
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Accuracy (%)")
+    axes[1].set_ylim(0, 100)
     axes[1].legend()
+
+    if theme_curves:
+        top1_5, top6_10 = theme_curves
+        _plot_theme_group(
+            axes[2],
+            epochs,
+            top1_5,
+            "Theme accuracy (val, top 1-5 by frequency)",
+        )
+        _plot_theme_group(
+            axes[3],
+            epochs,
+            top6_10,
+            "Theme accuracy (val, top 6-10 by frequency)",
+        )
 
     fig.tight_layout()
     plot_path = os.path.join(checkpoint_dir, "learning_curve.png")
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
+
+
+def _load_theme_curves(
+    theme_metrics_path: str,
+    epochs: list[int],
+    split: str = "train",
+    ignored_themes: set[str] | None = None,
+) -> tuple[list[tuple[str, list[float]]], list[tuple[str, list[float]]]] | None:
+    theme_totals: dict[str, int] = {}
+    theme_by_epoch: dict[int, dict[str, float]] = {}
+    with open(theme_metrics_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            if payload.get("split") != split:
+                continue
+            epoch = int(payload.get("epoch", 0))
+            themes = payload.get("themes") or []
+            epoch_map: dict[str, float] = {}
+            for entry in themes:
+                theme = entry.get("theme")
+                total = int(entry.get("total", 0))
+                acc = float(entry.get("acc", 0.0))
+                if not theme:
+                    continue
+                if ignored_themes and theme in ignored_themes:
+                    continue
+                epoch_map[theme] = acc
+                theme_totals[theme] = max(theme_totals.get(theme, 0), total)
+            theme_by_epoch[epoch] = epoch_map
+
+    if not theme_totals:
+        return None
+
+    sorted_themes = sorted(theme_totals.items(), key=lambda item: (-item[1], item[0]))
+    top_themes = [name for name, _ in sorted_themes[:10]]
+    theme_series: list[tuple[str, list[float]]] = []
+    for theme in top_themes:
+        series = []
+        for epoch in epochs:
+            series.append(theme_by_epoch.get(epoch, {}).get(theme, float("nan")))
+        theme_series.append((theme, series))
+
+    return theme_series[:5], theme_series[5:10]
+
+
+def _plot_theme_group(
+    axis: plt.Axes,
+    epochs: list[int],
+    theme_series: list[tuple[str, list[float]]],
+    title: str,
+) -> None:
+    for theme, series in theme_series:
+        axis.plot(epochs, series, label=theme)
+    axis.set_title(title)
+    axis.set_xlabel("Epoch")
+    axis.set_ylabel("Accuracy (%)")
+    axis.set_ylim(0, 100)
+    if theme_series:
+        axis.legend(fontsize=8)
+
+
+def _update_theme_stats(
+    theme_stats: dict, themes_batch: list[list[str]], correct_batch: list[bool]
+) -> None:
+    for themes, is_correct in zip(themes_batch, correct_batch):
+        if not themes:
+            continue
+        for theme in set(themes):
+            stats = theme_stats.setdefault(theme, {"total": 0, "correct": 0})
+            stats["total"] += 1
+            if is_correct:
+                stats["correct"] += 1
+
+
+def _format_theme_stats(theme_stats: dict) -> list[tuple[str, int, int, float]]:
+    rows = []
+    for theme, stats in theme_stats.items():
+        total = stats["total"]
+        correct = stats["correct"]
+        acc = (correct / total * 100) if total else 0.0
+        rows.append((theme, total, correct, acc))
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    return rows
+
+
+def _collate_with_themes(batch):
+    obs, target, source_id, themes = zip(*batch)
+    collated = default_collate(list(zip(obs, target, source_id)))
+    return collated[0], collated[1], collated[2], list(themes)
 
 
 def main():
@@ -256,6 +398,18 @@ def main():
     parser.add_argument("--lr-factor", type=float, default=0.5)
     parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from.")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bars.")
+    parser.add_argument(
+        "--theme-log-min-total",
+        type=int,
+        default=100,
+        help="Minimum theme count to log to console (default: 100).",
+    )
+    parser.add_argument(
+        "--theme-ignore",
+        nargs="*",
+        default=["mate", "veryLong", "long", "short"],
+        help="Themes to exclude from theme logging/plots (default: mate, veryLong, long, short).",
+    )
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
@@ -281,7 +435,7 @@ def main():
         shortened_labels.append(shortened)
     label_counts: dict[str, int] = {}
     source_labels: list[str] = []
-    for idx, label in enumerate(shortened_labels):
+    for label in shortened_labels:
         count = label_counts.get(label, 0)
         label_counts[label] = count + 1
         if count > 0:
@@ -319,8 +473,20 @@ def main():
         seed=args.seed,
         max_rows=args.max_rows,
     )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=args.num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=args.num_workers)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=_collate_with_themes,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=_collate_with_themes,
+    )
 
     model = create_chess_network(cfg, device)
     freeze_value_head(model)
@@ -346,6 +512,9 @@ def main():
 
     run_id = time.strftime("%Y-%m-%d/%H-%M-%S")
     checkpoint_dir = os.path.join(args.checkpoint_dir, run_id)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    theme_metrics_path = os.path.join(checkpoint_dir, "theme_metrics.jsonl")
+    ignored_themes = {t.strip() for t in args.theme_ignore if t and t.strip()}
 
     start_epoch = 1
     best_val_loss = float("inf")
@@ -437,6 +606,7 @@ def main():
             total_loss = 0.0
             correct = 0
             total = 0
+            train_theme_stats: dict[str, dict[str, int]] = {}
             per_source_correct = [0 for _ in range(num_sources)]
             per_source_total = [0 for _ in range(num_sources)]
             progress.reset(
@@ -458,7 +628,7 @@ def main():
             )
             progress.update(val_task, description="Val")
 
-            for obs, target, source_ids in train_loader:
+            for obs, target, source_ids, themes in train_loader:
                 obs = obs.to(device)
                 target = target.to(device)
                 source_ids = source_ids.to(device)
@@ -478,7 +648,8 @@ def main():
                     if count:
                         per_source_total[source_idx] += count
                         per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
-
+                correct_batch = (preds == target).detach().cpu().tolist()
+                _update_theme_stats(train_theme_stats, themes, correct_batch)
                 avg_loss = total_loss / max(total, 1)
                 acc = correct / max(total, 1)
                 per_source_train = [
@@ -503,10 +674,11 @@ def main():
             val_loss = 0.0
             val_correct = 0
             val_samples = 0
+            val_theme_stats: dict[str, dict[str, int]] = {}
             val_per_source_correct = [0 for _ in range(num_sources)]
             val_per_source_total = [0 for _ in range(num_sources)]
             with torch.no_grad():
-                for obs, target, source_ids in val_loader:
+                for obs, target, source_ids, themes in val_loader:
                     obs = obs.to(device)
                     target = target.to(device)
                     source_ids = source_ids.to(device)
@@ -522,6 +694,8 @@ def main():
                         if count:
                             val_per_source_total[source_idx] += count
                             val_per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
+                    correct_batch = (preds == target).detach().cpu().tolist()
+                    _update_theme_stats(val_theme_stats, themes, correct_batch)
                     val_avg_loss = val_loss / max(val_samples, 1)
                     val_acc = val_correct / max(val_samples, 1)
                     per_source_val = [
@@ -608,7 +782,56 @@ def main():
 
             last_val_loss = val_avg_loss if has_val else None
             last_val_acc = val_acc if has_val else None
-            save_learning_curve(train_losses, train_accs, val_losses, val_accs, checkpoint_dir)
+            save_learning_curve(
+                train_losses,
+                train_accs,
+                val_losses,
+                val_accs,
+                checkpoint_dir,
+                theme_metrics_path=theme_metrics_path,
+                ignored_themes=ignored_themes,
+            )
+
+            with open(theme_metrics_path, "a", encoding="utf-8") as theme_out:
+                train_rows = _format_theme_stats(train_theme_stats)
+                train_payload = {
+                    "epoch": epoch,
+                    "split": "train",
+                    "themes": [
+                        {"theme": t, "total": total, "correct": correct, "acc": acc}
+                        for t, total, correct, acc in train_rows
+                    ],
+                }
+                theme_out.write(json.dumps(train_payload, ensure_ascii=True) + "\n")
+                if has_val:
+                    val_rows = _format_theme_stats(val_theme_stats)
+                    val_payload = {
+                        "epoch": epoch,
+                        "split": "val",
+                        "themes": [
+                            {"theme": t, "total": total, "correct": correct, "acc": acc}
+                            for t, total, correct, acc in val_rows
+                        ],
+                    }
+                    theme_out.write(json.dumps(val_payload, ensure_ascii=True) + "\n")
+
+            min_theme_total = max(0, int(args.theme_log_min_total))
+            if train_theme_stats:
+                print(f"Theme accuracy (train, total>={min_theme_total}):")
+                for theme, total, correct, acc in _format_theme_stats(train_theme_stats):
+                    if theme in ignored_themes:
+                        continue
+                    if total < min_theme_total:
+                        break
+                    print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
+            if has_val and val_theme_stats:
+                print(f"Theme accuracy (val, total>={min_theme_total}):")
+                for theme, total, correct, acc in _format_theme_stats(val_theme_stats):
+                    if theme in ignored_themes:
+                        continue
+                    if total < min_theme_total:
+                        break
+                    print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
 
             if args.save_every > 0 and epoch % args.save_every == 0:
                 if has_val:
@@ -655,7 +878,15 @@ def main():
         val_accs=val_accs,
     )
     print(f"Saved final checkpoint to {final_path}")
-    save_learning_curve(train_losses, train_accs, val_losses, val_accs, checkpoint_dir)
+    save_learning_curve(
+        train_losses,
+        train_accs,
+        val_losses,
+        val_accs,
+        checkpoint_dir,
+        theme_metrics_path=theme_metrics_path,
+        ignored_themes=ignored_themes,
+    )
 
 
 if __name__ == "__main__":
