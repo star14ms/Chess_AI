@@ -256,24 +256,103 @@ def save_learning_curve(
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         axes = list(axes)
 
-    axes[0].plot(epochs, train_losses, label="train", color="C0", linestyle="-")
-    axes[0].plot(epochs, val_losses, label="val", color="C0", linestyle="--")
-    axes[0].set_title("Loss")
+    if per_source_train_loss and per_source_train_acc:
+        labels = list(per_source_train_loss.keys())
+        for idx, label in enumerate(labels):
+            color = f"C{idx % 10}"
+            axes[0].plot(
+                epochs,
+                per_source_train_loss.get(label, []),
+                label=f"{label} (train)",
+                color=color,
+                linestyle="-",
+            )
+            if per_source_val_loss and per_source_val_loss.get(label):
+                axes[0].plot(
+                    epochs,
+                    per_source_val_loss.get(label, []),
+                    label=f"{label} (val)",
+                    color=color,
+                    linestyle="--",
+                )
+            axes[1].plot(
+                epochs,
+                per_source_train_acc.get(label, []),
+                label=f"{label} (train)",
+                color=color,
+                linestyle="-",
+            )
+            if per_source_val_acc and per_source_val_acc.get(label):
+                axes[1].plot(
+                    epochs,
+                    per_source_val_acc.get(label, []),
+                    label=f"{label} (val)",
+                    color=color,
+                    linestyle="--",
+                )
+
+        axes[0].plot(
+            epochs,
+            train_losses,
+            label="train (overall)",
+            color="C0",
+            linestyle="-",
+            linewidth=2,
+        )
+        axes[0].plot(
+            epochs,
+            val_losses,
+            label="val (overall)",
+            color="C0",
+            linestyle="--",
+            linewidth=2,
+        )
+        axes[1].plot(
+            epochs,
+            [a * 100 for a in train_accs],
+            label="train (overall)",
+            color="C1",
+            linestyle="-",
+            linewidth=2,
+        )
+        axes[1].plot(
+            epochs,
+            [a * 100 for a in val_accs],
+            label="val (overall)",
+            color="C1",
+            linestyle="--",
+            linewidth=2,
+        )
+        axes[0].set_title("Loss by dataset")
+        axes[1].set_title("Accuracy by dataset")
+    else:
+        axes[0].plot(epochs, train_losses, label="train", color="C0", linestyle="-")
+        axes[0].plot(epochs, val_losses, label="val", color="C0", linestyle="--")
+        axes[0].set_title("Loss")
+        axes[1].plot(
+            epochs,
+            [a * 100 for a in train_accs],
+            label="train",
+            color="C1",
+            linestyle="-",
+        )
+        axes[1].plot(
+            epochs,
+            [a * 100 for a in val_accs],
+            label="val",
+            color="C1",
+            linestyle="--",
+        )
+        axes[1].set_title("Accuracy")
+
     axes[0].set_xlabel("Epoch")
     axes[0].set_ylabel("Loss")
     axes[0].set_ylim(0, None)
     axes[0].legend()
 
-    axes[1].plot(
-        epochs, [a * 100 for a in train_accs], label="train", color="C1", linestyle="-"
-    )
-    axes[1].plot(
-        epochs, [a * 100 for a in val_accs], label="val", color="C1", linestyle="--"
-    )
-    axes[1].set_title("Accuracy")
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Accuracy (%)")
-    axes[1].set_ylim(0, 100)
+    axes[1].set_ylim(None, 100)
     axes[1].legend()
 
     if theme_curves:
@@ -296,15 +375,7 @@ def save_learning_curve(
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
 
-    if per_source_train_loss and per_source_train_acc:
-        _save_per_source_curves(
-            epochs,
-            per_source_train_loss,
-            per_source_train_acc,
-            per_source_val_loss or {},
-            per_source_val_acc or {},
-            checkpoint_dir,
-        )
+    # per-source curves are rendered in the main learning_curve plot
 
 
 def _load_theme_curves(
@@ -389,7 +460,7 @@ def _plot_theme_group(
     axis.set_title(title)
     axis.set_xlabel("Epoch")
     axis.set_ylabel("Accuracy (%)")
-    axis.set_ylim(0, 100)
+    axis.set_ylim(None, 100)
     if theme_series:
         axis.legend(fontsize=8)
 
@@ -451,7 +522,7 @@ def _save_per_source_curves(
     axes[1].set_title("Accuracy by dataset")
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Accuracy (%)")
-    axes[1].set_ylim(0, 100)
+    axes[1].set_ylim(None, 100)
     axes[1].legend(fontsize=8)
 
     fig.tight_layout()
@@ -1149,7 +1220,7 @@ def main():
     parser.add_argument("--val-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--early-stop-patience", type=int, default=10)
-    parser.add_argument("--lr-patience", type=int, default=5)
+    parser.add_argument("--lr-patience", type=int, default=3)
     parser.add_argument("--lr-factor", type=float, default=0.5)
     parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from.")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bars.")
