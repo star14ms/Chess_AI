@@ -34,6 +34,7 @@ from utils.training_utils import (
     select_random_fen_from_entries,
     select_random_fen_from_json_list,
 )
+from utils.dataset_labels import format_dataset_label, truncate_label
 
 create_network = None
 create_environment = None
@@ -236,11 +237,8 @@ def _parse_dataset_entry(entry):
 def _shorten_dataset_label(source) -> str:
     if isinstance(source, str):
         base = os.path.splitext(os.path.basename(source))[0]
-        lower = base.lower()
-        mate_match = re.search(r"mate[_-]?in[_-]?(\d+)", lower)
-        if mate_match:
-            return f"m{mate_match.group(1)}"
-        return base[:6] or "data"
+        formatted = format_dataset_label(base)
+        return truncate_label(formatted or "data", 24)
     return "data"
 
 

@@ -5,7 +5,6 @@ import math
 import os
 import time
 import random
-import re
 
 import chess
 import numpy as np
@@ -33,6 +32,7 @@ from utils.training_utils import (
     select_device,
     validate_json_lines,
 )
+from utils.dataset_labels import format_dataset_label, truncate_label
 
 
 class NullProgress:
@@ -422,18 +422,8 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     shortened_labels: list[str] = []
     for label in raw_labels:
         base = os.path.splitext(label)[0]
-        for suffix in ("_flipped", "_aug"):
-            if base.endswith(suffix):
-                base = base[: -len(suffix)]
-                break
-        lower = base.lower()
-        mate_match = re.search(r"mate[_-]?in[_-]?(\d+)", lower)
-        if mate_match:
-            shortened = f"m{mate_match.group(1)}"
-        else:
-            shortened = base or "data"
-            if len(shortened) > 12:
-                shortened = shortened[:12]
+        formatted = format_dataset_label(base)
+        shortened = truncate_label(formatted or "data", 24)
         shortened_labels.append(shortened)
     label_counts: dict[str, int] = {}
     source_labels: list[str] = []
