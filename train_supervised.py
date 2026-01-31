@@ -629,13 +629,6 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             profile_model(model_ref, inputs=(dummy_input,))
         except Exception as exc:
             print(f"Warning: Model profiling failed: {exc}")
-        cpu_cores = os.cpu_count() or 1
-        total_workers = args.num_workers * max(1, world_size)
-        print(
-            f"Resources | cpu_cores={cpu_cores} gpus={world_size} "
-            f"num_workers={args.num_workers} total_workers={total_workers}"
-        )
-
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -683,6 +676,14 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         joined_paths = ", ".join(args.data_paths)
         print(f"Streaming data from {joined_paths} (max_rows={max_rows_label}).")
         print(f"Split: val={args.val_split:.2f} | seed={args.seed}")
+        cpu_cores = os.cpu_count() or 0
+        gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        total_workers = args.num_workers * world_size if ddp_enabled else args.num_workers
+        print(
+            "Resources | "
+            f"cpu_cores={cpu_cores} gpus={gpus} "
+            f"num_workers={args.num_workers} total_workers={total_workers}"
+        )
         print(f"Training on {device} | batch_size={batch_size} | epochs={args.epochs}")
         if ddp_enabled:
             print(f"DDP enabled | world_size={world_size}")
@@ -698,8 +699,6 @@ def _train_worker(rank: int, world_size: int, args) -> None:
 
     train_total = None
     val_total = None
-    if is_main:
-        print("Counting dataset for progress totals...")
     if total_rows is not None:
         effective_rows = total_rows
         if args.max_rows is not None:
@@ -711,8 +710,6 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         else:
             val_count = int(effective_rows * args.val_split)
         train_count = max(effective_rows - val_count, 0)
-        if is_main:
-            print("Using line-count totals (skips/filters not applied).")
     else:
         train_count = count_dataset_entries(train_dataset)
         val_count = count_dataset_entries(val_dataset)
@@ -721,8 +718,6 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     if is_main:
         print(f"Total data entries | train={train_count} | val={val_count}")
         print(f"Total batches      | train={train_total} | val={val_total}")
-        if args.num_workers > 0:
-            print("Note: totals are computed without worker partitioning.")
 
     progress_columns = (
         TextColumn("[progress.description]{task.description}"),
