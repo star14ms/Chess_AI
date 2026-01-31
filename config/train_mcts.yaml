@@ -68,6 +68,7 @@ training:
   _target_: MCTS.config_schema.TrainingConfig
   replay_buffer_size: 8192
   device: auto # If device is cpu and multiprocessing is false and render_mode is not null, you can see the pygame window
+  amp: false # Enable CUDA AMP (mixed precision) during training
   num_training_iterations: 20
   num_training_steps: 20
   batch_size: 64

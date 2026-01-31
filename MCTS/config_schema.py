@@ -51,6 +51,7 @@ class EnvConfig:
 @dataclass
 class TrainingConfig:
     device: str = "auto" # auto, cuda, mps, cpu
+    amp: bool = False # Enable CUDA AMP (mixed precision) during training
     replay_buffer_size: int = 50000
     num_training_iterations: int = 1000
     num_training_steps: int = 10 # Renamed from training_steps_per_iteration for clarity
