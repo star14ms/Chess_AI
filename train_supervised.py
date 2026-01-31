@@ -228,14 +228,14 @@ def save_learning_curve(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Supervised training on mate-in-one positions.")
+    parser = argparse.ArgumentParser(description="Supervised training on puzzle positions.")
     parser.add_argument(
         "--data",
         "--csv",
         dest="data_paths",
         nargs="+",
-        default=["data/mate_in_1_flipped.json", "data/mate_in_2_flipped.json"],
-        help="Paths to mate-in-one data (CSV or JSON). Pass multiple paths to mix datasets.",
+        default=["data/mate_in_1_flipped.json", "data/mate_in_2_flipped.json", "data/mate_in_3_flipped.json", "data/mate_in_4_flipped.json", "data/mate_in_5_flipped.json"],
+        help="Paths to puzzle data (CSV or JSON). Pass multiple paths to mix datasets.",
     )
     parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
     parser.add_argument("--epochs", type=int, default=10)
@@ -266,12 +266,18 @@ def main():
     shortened_labels: list[str] = []
     for label in raw_labels:
         base = os.path.splitext(label)[0]
+        for suffix in ("_flipped", "_aug"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
         lower = base.lower()
         mate_match = re.search(r"mate[_-]?in[_-]?(\d+)", lower)
         if mate_match:
             shortened = f"m{mate_match.group(1)}"
         else:
-            shortened = base[:6] or "data"
+            shortened = base or "data"
+            if len(shortened) > 12:
+                shortened = shortened[:12]
         shortened_labels.append(shortened)
     label_counts: dict[str, int] = {}
     source_labels: list[str] = []
