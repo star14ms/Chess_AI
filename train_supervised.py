@@ -220,6 +220,7 @@ def save_learning_curve(
     checkpoint_dir: str,
     theme_metrics_path: str | None = None,
     ignored_themes: set[str] | None = None,
+    theme_plot_include_missing: bool = False,
 ) -> None:
     if not train_losses or not val_losses:
         return
@@ -231,6 +232,7 @@ def save_learning_curve(
             epochs,
             split="val",
             ignored_themes=ignored_themes,
+            include_missing=theme_plot_include_missing,
         )
 
     if theme_curves:
@@ -257,16 +259,16 @@ def save_learning_curve(
     axes[1].legend()
 
     if theme_curves:
-        top1_5, top6_10 = theme_curves
+        theme_epochs, top1_5, top6_10 = theme_curves
         _plot_theme_group(
             axes[2],
-            epochs,
+            theme_epochs,
             top1_5,
             "Theme accuracy (val, top 1-5 by frequency)",
         )
         _plot_theme_group(
             axes[3],
-            epochs,
+            theme_epochs,
             top6_10,
             "Theme accuracy (val, top 6-10 by frequency)",
         )
@@ -282,7 +284,8 @@ def _load_theme_curves(
     epochs: list[int],
     split: str = "train",
     ignored_themes: set[str] | None = None,
-) -> tuple[list[tuple[str, list[float]]], list[tuple[str, list[float]]]] | None:
+    include_missing: bool = False,
+) -> tuple[list[int], list[tuple[str, list[float]]], list[tuple[str, list[float]]]] | None:
     theme_totals: dict[str, int] = {}
     theme_by_epoch: dict[int, dict[str, float]] = {}
     with open(theme_metrics_path, "r", encoding="utf-8") as handle:
@@ -313,14 +316,15 @@ def _load_theme_curves(
 
     sorted_themes = sorted(theme_totals.items(), key=lambda item: (-item[1], item[0]))
     top_themes = [name for name, _ in sorted_themes[:10]]
+    theme_epochs = epochs if include_missing else sorted(theme_by_epoch.keys())
     theme_series: list[tuple[str, list[float]]] = []
     for theme in top_themes:
         series = []
-        for epoch in epochs:
+        for epoch in theme_epochs:
             series.append(theme_by_epoch.get(epoch, {}).get(theme, float("nan")))
         theme_series.append((theme, series))
 
-    return theme_series[:5], theme_series[5:10]
+    return theme_epochs, theme_series[:5], theme_series[5:10]
 
 
 def _plot_theme_group(
@@ -409,6 +413,12 @@ def main():
         nargs="*",
         default=["mate", "veryLong", "long", "short"],
         help="Themes to exclude from theme logging/plots (default: mate, veryLong, long, short).",
+    )
+    parser.add_argument(
+        "--theme-plot-include-missing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If true, keep missing epochs as gaps in theme plots (default: False).",
     )
     args = parser.parse_args()
 
@@ -790,6 +800,7 @@ def main():
                 checkpoint_dir,
                 theme_metrics_path=theme_metrics_path,
                 ignored_themes=ignored_themes,
+                theme_plot_include_missing=args.theme_plot_include_missing,
             )
 
             with open(theme_metrics_path, "a", encoding="utf-8") as theme_out:
@@ -886,6 +897,7 @@ def main():
         checkpoint_dir,
         theme_metrics_path=theme_metrics_path,
         ignored_themes=ignored_themes,
+        theme_plot_include_missing=args.theme_plot_include_missing,
     )
 
 
