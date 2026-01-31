@@ -11,6 +11,9 @@ import chess
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data._utils.collate import default_collate
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 from omegaconf import OmegaConf
@@ -71,6 +74,8 @@ class MateInOneIterableDataset(IterableDataset):
         val_split: float,
         seed: int,
         max_rows: int | None = None,
+        rank: int = 0,
+        world_size: int = 1,
     ):
         if split not in {"train", "val"}:
             raise ValueError("split must be 'train' or 'val'.")
@@ -80,14 +85,18 @@ class MateInOneIterableDataset(IterableDataset):
         self.val_split = val_split
         self.seed = seed
         self.max_rows = max_rows
+        self.rank = rank
+        self.world_size = world_size
 
     def __iter__(self):
         worker_info = get_worker_info()
         worker_id = worker_info.id if worker_info else 0
         num_workers = worker_info.num_workers if worker_info else 1
+        global_worker_id = worker_id + self.rank * num_workers
+        global_num_workers = num_workers * self.world_size
         max_rows = self.max_rows
-        if max_rows is not None and num_workers > 1:
-            max_rows = math.ceil(max_rows / num_workers)
+        if max_rows is not None and global_num_workers > 1:
+            max_rows = math.ceil(max_rows / global_num_workers)
 
         sources = []
         for data_path in self.data_paths:
@@ -105,7 +114,7 @@ class MateInOneIterableDataset(IterableDataset):
 
         raw_index = 0
         yielded = 0
-        rng = random.Random(self.seed + worker_id)
+        rng = random.Random(self.seed + global_worker_id)
         active = list(range(len(sources)))
         while active:
             active_idx = rng.randrange(len(active))
@@ -116,7 +125,7 @@ class MateInOneIterableDataset(IterableDataset):
             except StopIteration:
                 active.pop(active_idx)
                 continue
-            if raw_index % num_workers != worker_id:
+            if raw_index % global_num_workers != global_worker_id:
                 raw_index += 1
                 continue
             raw_index += 1
@@ -373,58 +382,41 @@ def _collate_with_themes(batch):
     return collated[0], collated[1], collated[2], list(themes)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Supervised training on puzzle positions.")
-    parser.add_argument(
-        "--data",
-        "--csv",
-        dest="data_paths",
-        nargs="+",
-        default=["data/mate_in_1_flipped.json", "data/mate_in_2_flipped.json", "data/mate_in_3_flipped.json", "data/mate_in_4_flipped.json", "data/mate_in_5_flipped.json"],
-        help="Paths to puzzle data (CSV or JSON). Pass multiple paths to mix datasets.",
-    )
-    parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--checkpoint-dir", default="outputs/supervised_train")
-    parser.add_argument("--save-every", type=int, default=1)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--max-rows", type=int, default=None)
-    parser.add_argument("--device", default=None, help="auto, cuda, mps, or cpu")
-    parser.add_argument("--val-split", type=float, default=0.1)
-    parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--conv-dropout", type=float, default=0.1)
-    parser.add_argument("--policy-dropout", type=float, default=0.25)
-    parser.add_argument("--early-stop-patience", type=int, default=10)
-    parser.add_argument("--lr-patience", type=int, default=5)
-    parser.add_argument("--lr-factor", type=float, default=0.5)
-    parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from.")
-    parser.add_argument("--no-progress", action="store_true", help="Disable progress bars.")
-    parser.add_argument(
-        "--theme-log-min-total",
-        type=int,
-        default=100,
-        help="Minimum theme count to log to console (default: 100).",
-    )
-    parser.add_argument(
-        "--theme-ignore",
-        nargs="*",
-        default=["mate", "veryLong", "long", "short"],
-        help="Themes to exclude from theme logging/plots (default: mate, veryLong, long, short).",
-    )
-    parser.add_argument(
-        "--theme-plot-include-missing",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="If true, keep missing epochs as gaps in theme plots (default: False).",
-    )
-    args = parser.parse_args()
+def _setup_ddp(rank: int, world_size: int) -> None:
+    if "MASTER_ADDR" not in os.environ:
+        os.environ["MASTER_ADDR"] = "127.0.0.1"
+    if "MASTER_PORT" not in os.environ:
+        os.environ["MASTER_PORT"] = "29500"
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
 
+
+def _cleanup_ddp() -> None:
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def _ddp_all_reduce(value: float, device: torch.device) -> float:
+    tensor = torch.tensor(value, device=device, dtype=torch.float64)
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    return tensor.item()
+
+
+def _ddp_all_reduce_list(values: list[int], device: torch.device) -> list[int]:
+    tensor = torch.tensor(values, device=device, dtype=torch.long)
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    return tensor.tolist()
+
+
+def _train_worker(rank: int, world_size: int, args) -> None:
+    ddp_enabled = world_size > 1
+    is_main = rank == 0
     cfg = OmegaConf.load(args.config)
-    cfg.network.policy_dropout = args.policy_dropout
-    device = select_device(args.device or cfg.training.get("device", "auto"))
+    if ddp_enabled:
+        torch.cuda.set_device(rank)
+        _setup_ddp(rank, world_size)
+        device = torch.device(f"cuda:{rank}")
+    else:
+        device = select_device(args.device or cfg.training.get("device", "auto"))
 
     raw_labels = [os.path.basename(p) or p for p in args.data_paths]
     shortened_labels: list[str] = []
@@ -454,15 +446,23 @@ def main():
             source_labels.append(label)
     num_sources = len(source_labels)
 
-    total_rows = 0
+    total_rows = None
     json_only = True
-    for data_path in args.data_paths:
-        if data_path.lower().endswith(".json"):
-            total_rows += validate_json_lines(data_path)
-        else:
-            json_only = False
-    if not json_only:
-        total_rows = None
+    if is_main:
+        total_rows = 0
+        for data_path in args.data_paths:
+            if data_path.lower().endswith(".json"):
+                total_rows += validate_json_lines(data_path)
+            else:
+                json_only = False
+        if not json_only:
+            total_rows = None
+    if ddp_enabled:
+        total_rows_tensor = torch.tensor(
+            -1 if total_rows is None else total_rows, device=device, dtype=torch.long
+        )
+        dist.broadcast(total_rows_tensor, src=0)
+        total_rows = None if total_rows_tensor.item() < 0 else int(total_rows_tensor.item())
 
     batch_size = args.batch_size or cfg.training.batch_size
     learning_rate = args.learning_rate or cfg.optimizer.learning_rate
@@ -474,6 +474,8 @@ def main():
         val_split=args.val_split,
         seed=args.seed,
         max_rows=args.max_rows,
+        rank=rank,
+        world_size=world_size,
     )
     val_dataset = MateInOneIterableDataset(
         cfg,
@@ -482,6 +484,8 @@ def main():
         val_split=args.val_split,
         seed=args.seed,
         max_rows=args.max_rows,
+        rank=rank,
+        world_size=world_size,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -500,18 +504,29 @@ def main():
 
     model = create_chess_network(cfg, device)
     freeze_value_head(model)
+    if ddp_enabled:
+        model = DDP(model, device_ids=[rank])
     model.train()
-    try:
-        dummy_input = torch.zeros(
-            1,
-            cfg.network.input_channels,
-            cfg.network.board_size,
-            cfg.network.board_size,
-            device=device,
+    model_ref = model.module if ddp_enabled else model
+
+    if is_main:
+        try:
+            dummy_input = torch.zeros(
+                1,
+                cfg.network.input_channels,
+                cfg.network.board_size,
+                cfg.network.board_size,
+                device=device,
+            )
+            profile_model(model_ref, inputs=(dummy_input,))
+        except Exception as exc:
+            print(f"Warning: Model profiling failed: {exc}")
+        cpu_cores = os.cpu_count() or 1
+        total_workers = args.num_workers * max(1, world_size)
+        print(
+            f"Resources | cpu_cores={cpu_cores} gpus={world_size} "
+            f"num_workers={args.num_workers} total_workers={total_workers}"
         )
-        profile_model(model, inputs=(dummy_input,))
-    except Exception as exc:
-        print(f"Warning: Model profiling failed: {exc}")
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
@@ -522,7 +537,8 @@ def main():
 
     run_id = time.strftime("%Y-%m-%d/%H-%M-%S")
     checkpoint_dir = os.path.join(args.checkpoint_dir, run_id)
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    if is_main:
+        os.makedirs(checkpoint_dir, exist_ok=True)
     theme_metrics_path = os.path.join(checkpoint_dir, "theme_metrics.jsonl")
     ignored_themes = {t.strip() for t in args.theme_ignore if t and t.strip()}
 
@@ -534,7 +550,7 @@ def main():
     val_losses: list[float] = []
     val_accs: list[float] = []
     if args.resume:
-        resume_data = load_checkpoint(args.resume, model, optimizer, scheduler, device)
+        resume_data = load_checkpoint(args.resume, model_ref, optimizer, scheduler, device)
         start_epoch = resume_data.get("epoch", 0) + 1
         best_val_loss = resume_data.get("best_val_loss", best_val_loss)
         patience_counter = resume_data.get("patience_counter", patience_counter)
@@ -542,23 +558,31 @@ def main():
         train_accs = list(resume_data.get("train_accs", train_accs))
         val_losses = list(resume_data.get("val_losses", val_losses))
         val_accs = list(resume_data.get("val_accs", val_accs))
-        print(f"Resumed from {args.resume} (next epoch={start_epoch}).")
+        if is_main:
+            print(f"Resumed from {args.resume} (next epoch={start_epoch}).")
         if start_epoch > args.epochs:
-            print(
-                f"Checkpoint epoch={start_epoch - 1} exceeds requested epochs={args.epochs}. "
-                "Nothing to train."
-            )
+            if is_main:
+                print(
+                    f"Checkpoint epoch={start_epoch - 1} exceeds requested epochs={args.epochs}. "
+                    "Nothing to train."
+                )
+            if ddp_enabled:
+                _cleanup_ddp()
             return
 
-    max_rows_label = args.max_rows if args.max_rows is not None else "all"
-    joined_paths = ", ".join(args.data_paths)
-    print(f"Streaming data from {joined_paths} (max_rows={max_rows_label}).")
-    print(f"Split: val={args.val_split:.2f} | seed={args.seed}")
-    print(f"Training on {device} | batch_size={batch_size} | epochs={args.epochs}")
+    if is_main:
+        max_rows_label = args.max_rows if args.max_rows is not None else "all"
+        joined_paths = ", ".join(args.data_paths)
+        print(f"Streaming data from {joined_paths} (max_rows={max_rows_label}).")
+        print(f"Split: val={args.val_split:.2f} | seed={args.seed}")
+        print(f"Training on {device} | batch_size={batch_size} | epochs={args.epochs}")
+        if ddp_enabled:
+            print(f"DDP enabled | world_size={world_size}")
 
     train_total = None
     val_total = None
-    print("Counting dataset for progress totals...")
+    if is_main:
+        print("Counting dataset for progress totals...")
     if total_rows is not None:
         effective_rows = total_rows
         if args.max_rows is not None:
@@ -570,16 +594,18 @@ def main():
         else:
             val_count = int(effective_rows * args.val_split)
         train_count = max(effective_rows - val_count, 0)
-        print("Using line-count totals (skips/filters not applied).")
+        if is_main:
+            print("Using line-count totals (skips/filters not applied).")
     else:
         train_count = count_dataset_entries(train_dataset)
         val_count = count_dataset_entries(val_dataset)
     train_total = math.ceil(train_count / batch_size) if train_count else 0
     val_total = math.ceil(val_count / batch_size) if val_count else 0
-    print(f"Total data entries | train={train_count} | val={val_count}")
-    print(f"Total batches      | train={train_total} | val={val_total}")
-    if args.num_workers > 0:
-        print("Note: totals are computed without worker partitioning.")
+    if is_main:
+        print(f"Total data entries | train={train_count} | val={val_count}")
+        print(f"Total batches      | train={train_total} | val={val_total}")
+        if args.num_workers > 0:
+            print("Note: totals are computed without worker partitioning.")
 
     progress_columns = (
         TextColumn("[progress.description]{task.description}"),
@@ -592,7 +618,7 @@ def main():
     )
 
     progress_manager = (
-        NullProgress() if args.no_progress else Progress(*progress_columns, transient=False)
+        NullProgress() if args.no_progress or not is_main else Progress(*progress_columns, transient=False)
     )
     with progress_manager as progress:
         epoch_task = progress.add_task(
@@ -611,6 +637,8 @@ def main():
         )
         last_val_loss = None
         last_val_acc = None
+
+        collect_theme_stats = is_main and not ddp_enabled
 
         for epoch in range(start_epoch, args.epochs + 1):
             total_loss = 0.0
@@ -658,8 +686,9 @@ def main():
                     if count:
                         per_source_total[source_idx] += count
                         per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
-                correct_batch = (preds == target).detach().cpu().tolist()
-                _update_theme_stats(train_theme_stats, themes, correct_batch)
+                if collect_theme_stats:
+                    correct_batch = (preds == target).detach().cpu().tolist()
+                    _update_theme_stats(train_theme_stats, themes, correct_batch)
                 avg_loss = total_loss / max(total, 1)
                 acc = correct / max(total, 1)
                 per_source_train = [
@@ -676,8 +705,18 @@ def main():
                     src=per_source_train_str,
                 )
 
-            avg_loss = total_loss / max(total, 1)
-            acc = correct / max(total, 1)
+            epoch_loss_sum = total_loss
+            epoch_correct = correct
+            epoch_total = total
+            if ddp_enabled:
+                epoch_loss_sum = _ddp_all_reduce(epoch_loss_sum, device)
+                epoch_correct = _ddp_all_reduce(epoch_correct, device)
+                epoch_total = _ddp_all_reduce(epoch_total, device)
+                per_source_correct = _ddp_all_reduce_list(per_source_correct, device)
+                per_source_total = _ddp_all_reduce_list(per_source_total, device)
+
+            avg_loss = epoch_loss_sum / max(epoch_total, 1)
+            acc = epoch_correct / max(epoch_total, 1)
             progress.update(epoch_task, advance=1, loss=avg_loss, acc=acc * 100)
 
             model.eval()
@@ -704,8 +743,9 @@ def main():
                         if count:
                             val_per_source_total[source_idx] += count
                             val_per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
-                    correct_batch = (preds == target).detach().cpu().tolist()
-                    _update_theme_stats(val_theme_stats, themes, correct_batch)
+                    if collect_theme_stats:
+                        correct_batch = (preds == target).detach().cpu().tolist()
+                        _update_theme_stats(val_theme_stats, themes, correct_batch)
                     val_avg_loss = val_loss / max(val_samples, 1)
                     val_acc = val_correct / max(val_samples, 1)
                     per_source_val = [
@@ -727,124 +767,137 @@ def main():
             train_accs.append(acc)
 
             has_val = val_samples > 0
+            if ddp_enabled:
+                val_loss = _ddp_all_reduce(val_loss, device)
+                val_correct = _ddp_all_reduce(val_correct, device)
+                val_samples = _ddp_all_reduce(val_samples, device)
+                val_per_source_correct = _ddp_all_reduce_list(val_per_source_correct, device)
+                val_per_source_total = _ddp_all_reduce_list(val_per_source_total, device)
             if has_val:
                 val_avg_loss = val_loss / max(val_samples, 1)
                 val_acc = val_correct / max(val_samples, 1)
                 val_losses.append(val_avg_loss)
                 val_accs.append(val_acc)
-                per_source_train = [
-                    f"{label}={per_source_correct[i] / per_source_total[i] * 100:.2f}%"
-                    for i, label in enumerate(source_labels)
-                    if per_source_total[i] > 0
-                ]
-                per_source_val = [
-                    f"{label}={val_per_source_correct[i] / val_per_source_total[i] * 100:.2f}%"
-                    for i, label in enumerate(source_labels)
-                    if val_per_source_total[i] > 0
-                ]
-                per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
-                per_source_val_str = " | ".join(per_source_val) if per_source_val else "N/A"
-                print(
-                    f"Epoch {epoch}/{args.epochs} | "
-                    f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
-                    f"val loss={val_avg_loss:.4f} acc={val_acc*100:.2f}% | "
-                    f"train acc by source: {per_source_train_str} | "
-                    f"val acc by source: {per_source_val_str}"
-                )
+                if is_main:
+                    per_source_train = [
+                        f"{label}={per_source_correct[i] / per_source_total[i] * 100:.2f}%"
+                        for i, label in enumerate(source_labels)
+                        if per_source_total[i] > 0
+                    ]
+                    per_source_val = [
+                        f"{label}={val_per_source_correct[i] / val_per_source_total[i] * 100:.2f}%"
+                        for i, label in enumerate(source_labels)
+                        if val_per_source_total[i] > 0
+                    ]
+                    per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
+                    per_source_val_str = " | ".join(per_source_val) if per_source_val else "N/A"
+                    print(
+                        f"Epoch {epoch}/{args.epochs} | "
+                        f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
+                        f"val loss={val_avg_loss:.4f} acc={val_acc*100:.2f}% | "
+                        f"train acc by source: {per_source_train_str} | "
+                        f"val acc by source: {per_source_val_str}"
+                    )
                 scheduler.step(val_avg_loss)
 
                 if val_avg_loss < best_val_loss:
                     best_val_loss = val_avg_loss
                     patience_counter = 0
-                    best_path = os.path.join(checkpoint_dir, "model_best.pth")
-                    save_checkpoint(
-                        best_path,
-                        model,
-                        optimizer,
-                        epoch,
-                        cfg,
-                        scheduler=scheduler,
-                        best_val_loss=best_val_loss,
-                        patience_counter=patience_counter,
-                        train_losses=train_losses,
-                        train_accs=train_accs,
-                        val_losses=val_losses,
-                        val_accs=val_accs,
-                    )
+                    if is_main:
+                        best_path = os.path.join(checkpoint_dir, "model_best.pth")
+                        save_checkpoint(
+                            best_path,
+                            model_ref,
+                            optimizer,
+                            epoch,
+                            cfg,
+                            scheduler=scheduler,
+                            best_val_loss=best_val_loss,
+                            patience_counter=patience_counter,
+                            train_losses=train_losses,
+                            train_accs=train_accs,
+                            val_losses=val_losses,
+                            val_accs=val_accs,
+                        )
                 else:
                     patience_counter += 1
                     if patience_counter >= args.early_stop_patience:
-                        print(f"Early stopping at epoch {epoch}.")
+                        if is_main:
+                            print(f"Early stopping at epoch {epoch}.")
                         break
             else:
-                per_source_train = [
-                    f"{label}={per_source_correct[i] / per_source_total[i] * 100:.2f}%"
-                    for i, label in enumerate(source_labels)
-                    if per_source_total[i] > 0
-                ]
-                per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
-                print(
-                    f"Epoch {epoch}/{args.epochs} | "
-                    f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
-                    f"val loss=N/A acc=N/A (no validation batches) | "
-                    f"train acc by source: {per_source_train_str}"
-                )
+                if is_main:
+                    per_source_train = [
+                        f"{label}={per_source_correct[i] / per_source_total[i] * 100:.2f}%"
+                        for i, label in enumerate(source_labels)
+                        if per_source_total[i] > 0
+                    ]
+                    per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
+                    print(
+                        f"Epoch {epoch}/{args.epochs} | "
+                        f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
+                        f"val loss=N/A acc=N/A (no validation batches) | "
+                        f"train acc by source: {per_source_train_str}"
+                    )
 
             last_val_loss = val_avg_loss if has_val else None
             last_val_acc = val_acc if has_val else None
-            save_learning_curve(
-                train_losses,
-                train_accs,
-                val_losses,
-                val_accs,
-                checkpoint_dir,
-                theme_metrics_path=theme_metrics_path,
-                ignored_themes=ignored_themes,
-                theme_plot_include_missing=args.theme_plot_include_missing,
-            )
+            if is_main and collect_theme_stats:
+                save_learning_curve(
+                    train_losses,
+                    train_accs,
+                    val_losses,
+                    val_accs,
+                    checkpoint_dir,
+                    theme_metrics_path=theme_metrics_path,
+                    ignored_themes=ignored_themes,
+                    theme_plot_include_missing=args.theme_plot_include_missing,
+                )
 
-            with open(theme_metrics_path, "a", encoding="utf-8") as theme_out:
-                train_rows = _format_theme_stats(train_theme_stats)
-                train_payload = {
-                    "epoch": epoch,
-                    "split": "train",
-                    "themes": [
-                        {"theme": t, "total": total, "correct": correct, "acc": acc}
-                        for t, total, correct, acc in train_rows
-                    ],
-                }
-                theme_out.write(json.dumps(train_payload, ensure_ascii=True) + "\n")
-                if has_val:
-                    val_rows = _format_theme_stats(val_theme_stats)
-                    val_payload = {
+                with open(theme_metrics_path, "a", encoding="utf-8") as theme_out:
+                    train_rows = _format_theme_stats(train_theme_stats)
+                    train_payload = {
                         "epoch": epoch,
-                        "split": "val",
+                        "split": "train",
                         "themes": [
                             {"theme": t, "total": total, "correct": correct, "acc": acc}
-                            for t, total, correct, acc in val_rows
+                            for t, total, correct, acc in train_rows
                         ],
                     }
-                    theme_out.write(json.dumps(val_payload, ensure_ascii=True) + "\n")
+                    theme_out.write(json.dumps(train_payload, ensure_ascii=True) + "\n")
+                    if has_val:
+                        val_rows = _format_theme_stats(val_theme_stats)
+                        val_payload = {
+                            "epoch": epoch,
+                            "split": "val",
+                            "themes": [
+                                {"theme": t, "total": total, "correct": correct, "acc": acc}
+                                for t, total, correct, acc in val_rows
+                            ],
+                        }
+                        theme_out.write(json.dumps(val_payload, ensure_ascii=True) + "\n")
 
-            min_theme_total = max(0, int(args.theme_log_min_total))
-            if train_theme_stats:
-                print(f"Theme accuracy (train, total>={min_theme_total}):")
-                for theme, total, correct, acc in _format_theme_stats(train_theme_stats):
-                    if theme in ignored_themes:
-                        continue
-                    if total < min_theme_total:
-                        break
-                    print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
-            if has_val and val_theme_stats:
-                print(f"Theme accuracy (val, total>={min_theme_total}):")
-                for theme, total, correct, acc in _format_theme_stats(val_theme_stats):
-                    if theme in ignored_themes:
-                        continue
-                    if total < min_theme_total:
-                        break
-                    print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
+                min_theme_total = max(0, int(args.theme_log_min_total))
+                if train_theme_stats:
+                    print(f"Theme accuracy (train, total>={min_theme_total}):")
+                    for theme, total, correct, acc in _format_theme_stats(train_theme_stats):
+                        if theme in ignored_themes:
+                            continue
+                        if total < min_theme_total:
+                            break
+                        print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
+                if has_val and val_theme_stats:
+                    print(f"Theme accuracy (val, total>={min_theme_total}):")
+                    for theme, total, correct, acc in _format_theme_stats(val_theme_stats):
+                        if theme in ignored_themes:
+                            continue
+                        if total < min_theme_total:
+                            break
+                        print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
+            elif is_main and ddp_enabled and epoch == start_epoch:
+                print("DDP enabled: theme stats/plots are disabled to avoid partial metrics.")
 
-            if args.save_every > 0 and epoch % args.save_every == 0:
+            if args.save_every > 0 and epoch % args.save_every == 0 and is_main:
                 if has_val:
                     ckpt_filename = (
                         f"model_epoch_{epoch}_val_{val_avg_loss:.4f}_acc_{val_acc*100:.2f}.pth"
@@ -854,7 +907,7 @@ def main():
                 ckpt_path = os.path.join(checkpoint_dir, ckpt_filename)
                 save_checkpoint(
                     ckpt_path,
-                    model,
+                    model_ref,
                     optimizer,
                     epoch,
                     cfg,
@@ -867,38 +920,120 @@ def main():
                     val_accs=val_accs,
                 )
 
-    if last_val_loss is not None and last_val_acc is not None:
-        final_filename = (
-            f"model_final_epoch_{epoch}_val_{last_val_loss:.4f}_acc_{last_val_acc*100:.2f}.pth"
+    if is_main:
+        if last_val_loss is not None and last_val_acc is not None:
+            final_filename = (
+                f"model_final_epoch_{epoch}_val_{last_val_loss:.4f}_acc_{last_val_acc*100:.2f}.pth"
+            )
+        else:
+            final_filename = f"model_final_epoch_{epoch}_noval.pth"
+        final_path = os.path.join(checkpoint_dir, final_filename)
+        save_checkpoint(
+            final_path,
+            model_ref,
+            optimizer,
+            args.epochs,
+            cfg,
+            scheduler=scheduler,
+            best_val_loss=best_val_loss,
+            patience_counter=patience_counter,
+            train_losses=train_losses,
+            train_accs=train_accs,
+            val_losses=val_losses,
+            val_accs=val_accs,
         )
+        print(f"Saved final checkpoint to {final_path}")
+        if collect_theme_stats:
+            save_learning_curve(
+                train_losses,
+                train_accs,
+                val_losses,
+                val_accs,
+                checkpoint_dir,
+                theme_metrics_path=theme_metrics_path,
+                ignored_themes=ignored_themes,
+                theme_plot_include_missing=args.theme_plot_include_missing,
+            )
+
+    if ddp_enabled:
+        _cleanup_ddp()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Supervised training on puzzle positions.")
+    parser.add_argument(
+        "--data",
+        "--csv",
+        dest="data_paths",
+        nargs="+",
+        default=["data/mate_in_1_flipped.json", "data/mate_in_2_flipped.json", "data/mate_in_3_flipped.json", "data/mate_in_4_flipped.json", "data/mate_in_5_flipped.json"],
+        help="Paths to puzzle data (CSV or JSON). Pass multiple paths to mix datasets.",
+    )
+    parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-2)
+    parser.add_argument("--checkpoint-dir", default="outputs/supervised_train")
+    parser.add_argument("--save-every", type=int, default=1)
+    parser.add_argument(
+        "--num-workers",
+        type=str,
+        default="auto",
+        help=(
+            "DataLoader workers per GPU process (DDP). Use an int or 'auto'. "
+            "Auto caps at 2: total workers = num_workers * num_gpus; keep total near CPU cores."
+        ),
+    )
+    parser.add_argument("--max-rows", type=int, default=None)
+    parser.add_argument("--device", default="auto", help="auto, cuda, mps, or cpu")
+    parser.add_argument("--val-split", type=float, default=0.1)
+    parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--early-stop-patience", type=int, default=10)
+    parser.add_argument("--lr-patience", type=int, default=5)
+    parser.add_argument("--lr-factor", type=float, default=0.5)
+    parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable progress bars.")
+    parser.add_argument(
+        "--theme-log-min-total",
+        type=int,
+        default=100,
+        help="Minimum theme count to log to console (default: 100).",
+    )
+    parser.add_argument(
+        "--theme-ignore",
+        nargs="*",
+        default=["mate", "veryLong", "long", "short"],
+        help="Themes to exclude from theme logging/plots (default: mate, veryLong, long, short).",
+    )
+    parser.add_argument(
+        "--theme-plot-include-missing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If true, keep missing epochs as gaps in theme plots (default: False).",
+    )
+    args = parser.parse_args()
+    if args.num_workers == "auto":
+        cpu_cores = os.cpu_count() or 1
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+        args.num_workers = min(2, max(1, cpu_cores // max(1, num_gpus)))
     else:
-        final_filename = f"model_final_epoch_{epoch}_noval.pth"
-    final_path = os.path.join(checkpoint_dir, final_filename)
-    save_checkpoint(
-        final_path,
-        model,
-        optimizer,
-        args.epochs,
-        cfg,
-        scheduler=scheduler,
-        best_val_loss=best_val_loss,
-        patience_counter=patience_counter,
-        train_losses=train_losses,
-        train_accs=train_accs,
-        val_losses=val_losses,
-        val_accs=val_accs,
+        try:
+            args.num_workers = int(args.num_workers)
+        except ValueError as exc:
+            raise ValueError("--num-workers must be an int or 'auto'.") from exc
+    device_str = args.device or "auto"
+    use_ddp = (
+        device_str in {"auto", "cuda"}
+        and torch.cuda.is_available()
+        and torch.cuda.device_count() > 1
+        and args.num_workers > 1
     )
-    print(f"Saved final checkpoint to {final_path}")
-    save_learning_curve(
-        train_losses,
-        train_accs,
-        val_losses,
-        val_accs,
-        checkpoint_dir,
-        theme_metrics_path=theme_metrics_path,
-        ignored_themes=ignored_themes,
-        theme_plot_include_missing=args.theme_plot_include_missing,
-    )
+    if use_ddp:
+        world_size = torch.cuda.device_count()
+        mp.spawn(_train_worker, args=(world_size, args), nprocs=world_size, join=True)
+    else:
+        _train_worker(0, 1, args)
 
 
 if __name__ == "__main__":
