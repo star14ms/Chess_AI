@@ -295,7 +295,7 @@ def save_learning_curve(
             epochs,
             train_losses,
             label="train (overall)",
-            color="C0",
+            color="black",
             linestyle="-",
             linewidth=2,
         )
@@ -303,7 +303,7 @@ def save_learning_curve(
             epochs,
             val_losses,
             label="val (overall)",
-            color="C0",
+            color="black",
             linestyle="--",
             linewidth=2,
         )
@@ -311,7 +311,7 @@ def save_learning_curve(
             epochs,
             [a * 100 for a in train_accs],
             label="train (overall)",
-            color="C1",
+            color="black",
             linestyle="-",
             linewidth=2,
         )
@@ -319,7 +319,7 @@ def save_learning_curve(
             epochs,
             [a * 100 for a in val_accs],
             label="val (overall)",
-            color="C1",
+            color="black",
             linestyle="--",
             linewidth=2,
         )
@@ -646,6 +646,8 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     batch_size = args.batch_size or cfg.training.batch_size
     learning_rate = args.learning_rate or cfg.optimizer.learning_rate
     weight_decay = args.weight_decay if args.weight_decay is not None else cfg.optimizer.weight_decay
+    if args.policy_dropout is not None:
+        cfg.network.policy_dropout = float(args.policy_dropout)
     train_dataset = MateInOneIterableDataset(
         cfg,
         args.data_paths,
@@ -1203,6 +1205,12 @@ def main():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--policy-dropout",
+        type=float,
+        default=None,
+        help="Override cfg.network.policy_dropout when set.",
+    )
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--checkpoint-dir", default="outputs/supervised_train")
     parser.add_argument("--save-every", type=int, default=1)
