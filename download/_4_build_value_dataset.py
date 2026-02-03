@@ -55,29 +55,30 @@ def build_value_dataset(
     workers=None,
 ):
     output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_map = _build_output_map(inputs, output_path)
+    for path in output_map.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
     source_labels = [Path(path).stem for path in inputs]
     if workers is None:
         workers = min(os.cpu_count() or 1, len(inputs))
     if len(inputs) > 1 and workers > 1:
         written = _build_value_dataset_mp(
             inputs,
-            output_path,
+            output_map,
             max_rows=max_rows,
             include_themes=include_themes,
             workers=workers,
         )
-        _write_source_labels(output_path, source_labels)
         return written
     return _build_value_dataset_single(
         inputs,
-        output_path,
+        output_map,
         max_rows=max_rows,
         include_themes=include_themes,
     )
 
 
-def _build_value_dataset_single(inputs, output_path, max_rows=None, include_themes=True):
+def _build_value_dataset_single(inputs, output_map, max_rows=None, include_themes=True):
     written = 0
     progress_columns = (
         TextColumn("[progress.description]{task.description}"),
@@ -87,68 +88,63 @@ def _build_value_dataset_single(inputs, output_path, max_rows=None, include_them
         TimeElapsedColumn(),
     )
 
-    with output_path.open("w", encoding="utf-8") as out_handle, Progress(
-        *progress_columns, transient=False
-    ) as progress:
+    with Progress(*progress_columns, transient=False) as progress:
         for source_id, input_path in enumerate(inputs):
             total = _count_json_array_lines(input_path)
             if max_rows is not None:
                 total = min(total, max_rows)
             task_id = progress.add_task(f"Processing {Path(input_path).name}", total=total)
-            for idx, entry in enumerate(iter_json_array(input_path), start=1):
-                if max_rows is not None and idx > max_rows:
-                    break
-                fen, moves, puzzle_id, themes = _extract_entry(entry)
-                if not fen or not moves:
-                    progress.update(task_id, advance=1)
-                    continue
-                board = chess.Board(fen)
-                parsed_moves = []
-                valid = True
-                for uci in moves:
-                    try:
-                        move = chess.Move.from_uci(uci)
-                    except ValueError:
-                        valid = False
+            output_file = output_map[input_path]
+            with output_file.open("w", encoding="utf-8") as out_handle:
+                for idx, entry in enumerate(iter_json_array(input_path), start=1):
+                    if max_rows is not None and idx > max_rows:
                         break
-                    if not board.is_legal(move):
-                        valid = False
-                        break
-                    parsed_moves.append(move)
-                    board.push(move)
-                if not valid:
+                    fen, moves, puzzle_id, themes = _extract_entry(entry)
+                    if not fen or not moves:
+                        progress.update(task_id, advance=1)
+                        continue
+                    board = chess.Board(fen)
+                    parsed_moves = []
+                    valid = True
+                    for uci in moves:
+                        try:
+                            move = chess.Move.from_uci(uci)
+                        except ValueError:
+                            valid = False
+                            break
+                        if not board.is_legal(move):
+                            valid = False
+                            break
+                        parsed_moves.append(move)
+                        board.push(move)
+                    if not valid:
+                        progress.update(task_id, advance=1)
+                        continue
+
+                    board = chess.Board(fen)
+                    total_plies = len(parsed_moves)
+                    for ply_index, move in enumerate(parsed_moves):
+                        policy_mask = True
+                        value_target = 1.0 if ply_index % 2 == 0 else -1.0
+                        moves_to_mate = total_plies - ply_index
+                        payload = {
+                            "fen": board.fen(),
+                            "value_target": value_target,
+                            "policy_uci": move.uci(),
+                            "moves_to_mate": moves_to_mate,
+                        }
+                        if puzzle_id:
+                            payload["puzzle_id"] = puzzle_id
+                        if include_themes and themes:
+                            payload["themes"] = themes
+                        out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                        written += 1
+                        board.push(move)
                     progress.update(task_id, advance=1)
-                    continue
-
-                board = chess.Board(fen)
-                total_plies = len(parsed_moves)
-                for ply_index, move in enumerate(parsed_moves):
-                    policy_mask = ply_index == 0
-                    value_target = 1.0 if ply_index % 2 == 0 else -1.0
-                    moves_to_mate = total_plies - ply_index
-                    payload = {
-                        "fen": board.fen(),
-                        "value_target": value_target,
-                        "policy_mask": policy_mask,
-                        "policy_uci": move.uci() if policy_mask else None,
-                        "moves_to_mate": moves_to_mate,
-                        "source_id": source_id,
-                        "source_label": Path(input_path).stem,
-                    }
-                    if puzzle_id:
-                        payload["puzzle_id"] = puzzle_id
-                    if include_themes and themes:
-                        payload["themes"] = themes
-                    out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
-                    written += 1
-                    board.push(move)
-                progress.update(task_id, advance=1)
-
-    _write_source_labels(output_path, [Path(path).stem for path in inputs])
     return written
 
 
-def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=True, workers=1):
+def _build_value_dataset_mp(inputs, output_map, max_rows=None, include_themes=True, workers=1):
     per_file_total = {}
     total_all = 0
     for input_path in inputs:
@@ -166,11 +162,11 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
         TimeElapsedColumn(),
     )
 
-    temp_dir = output_path.parent / ".tmp_value_build"
+    temp_dir = next(iter(output_map.values())).parent / ".tmp_value_build"
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_paths = {}
     chunk_tasks = []
-    for source_id, input_path in enumerate(inputs):
+    for input_path in inputs:
         count = per_file_total.get(input_path, 0)
         if count == 0:
             continue
@@ -192,8 +188,6 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
                     end_idx,
                     max_rows,
                     include_themes,
-                    source_id,
-                    Path(input_path).stem,
                 )
             )
 
@@ -207,8 +201,6 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
         end_idx,
         max_rows_value,
         include_themes_value,
-        source_id,
-        source_label,
     ) in chunk_tasks:
         proc = ctx.Process(
             target=_process_input_chunk,
@@ -221,8 +213,6 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
                 include_themes_value,
                 progress_queue,
                 1000,
-                source_id,
-                source_label,
             ),
         )
         proc.start()
@@ -256,15 +246,15 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
     for proc in processes:
         proc.join()
 
-    with output_path.open("w", encoding="utf-8") as out_handle:
-        for input_path in inputs:
+    for input_path in inputs:
+        output_file = output_map[input_path]
+        with output_file.open("w", encoding="utf-8") as out_handle:
             for temp_path in temp_paths.get(input_path, []):
                 if not temp_path.exists():
                     continue
                 with temp_path.open("r", encoding="utf-8") as in_handle:
                     for line in in_handle:
                         out_handle.write(line)
-
     for temp_list in temp_paths.values():
         for temp_path in temp_list:
             if temp_path.exists():
@@ -287,8 +277,6 @@ def _process_input_chunk(
     include_themes,
     progress_queue,
     progress_batch,
-    source_id,
-    source_label,
 ):
     written = 0
     processed = 0
@@ -320,17 +308,14 @@ def _process_input_chunk(
             board = chess.Board(fen)
             total_plies = len(parsed_moves)
             for ply_index, move in enumerate(parsed_moves):
-                policy_mask = ply_index == 0
+                policy_mask = True
                 value_target = 1.0 if ply_index % 2 == 0 else -1.0
                 moves_to_mate = total_plies - ply_index
                 payload = {
                     "fen": board.fen(),
                     "value_target": value_target,
-                    "policy_mask": policy_mask,
-                    "policy_uci": move.uci() if policy_mask else None,
+                    "policy_uci": move.uci(),
                     "moves_to_mate": moves_to_mate,
-                    "source_id": source_id,
-                    "source_label": source_label,
                 }
                 if puzzle_id:
                     payload["puzzle_id"] = puzzle_id
@@ -374,10 +359,12 @@ def _count_json_array_lines(path: str | Path) -> int:
     return max(total_lines - 2, 0)
 
 
-def _write_source_labels(output_path: Path, source_labels: list[str]) -> None:
-    sidecar_path = Path(str(output_path) + ".sources.json")
-    with sidecar_path.open("w", encoding="utf-8") as handle:
-        json.dump(source_labels, handle, ensure_ascii=True)
+def _build_output_map(inputs: list[str], output_path: Path) -> dict[str, Path]:
+    output_dir = output_path if output_path.suffix != ".jsonl" else output_path.parent
+    return {
+        input_path: output_dir / f"{Path(input_path).stem}_expanded.jsonl"
+        for input_path in inputs
+    }
 
 
 def main():
@@ -396,8 +383,11 @@ def main():
     )
     parser.add_argument(
         "--output",
-        default="data/value_mate_processed.jsonl",
-        help="Output JSONL path (e.g., data/value_mate_processed.jsonl).",
+        default="data",
+        help=(
+            "Output directory or JSONL path. "
+            "If a directory (default), writes one *_processed.jsonl per input."
+        ),
     )
     parser.add_argument("--max-rows", type=int, default=None)
     parser.add_argument("--workers", type=int, default=None)
@@ -416,7 +406,8 @@ def main():
         include_themes=args.include_themes,
         workers=args.workers,
     )
-    print(f"Wrote {written} rows to {args.output}")
+    output_path = Path(args.output)
+    print(f"Wrote {written} rows across files in {output_path}/")
 
 
 if __name__ == "__main__":

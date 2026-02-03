@@ -31,7 +31,8 @@ from utils.training_utils import (
     load_checkpoint,
     save_checkpoint,
     select_device,
-    validate_json_lines,
+    fast_count_json_lines,
+    fast_count_jsonl_lines,
 )
 from utils.dataset_labels import format_dataset_label, truncate_label
 
@@ -111,7 +112,8 @@ class MateInOneIterableDataset(IterableDataset):
             else:
                 entry_iter = iter_csv_rows(data_path)
                 source_type = "csv"
-            sources.append((entry_iter, source_type))
+            source_is_endgame = "endgame" in os.path.basename(lower_path)
+            sources.append((entry_iter, source_type, source_is_endgame))
 
         action_space_size = self.cfg.network.action_space_size
         input_channels = self.cfg.network.input_channels
@@ -124,7 +126,7 @@ class MateInOneIterableDataset(IterableDataset):
         while active:
             active_idx = rng.randrange(len(active))
             source_id = active[active_idx]
-            iterator, source_type = sources[source_id]
+            iterator, source_type, source_is_endgame = sources[source_id]
             try:
                 entry = next(iterator)
             except StopIteration:
@@ -162,12 +164,15 @@ class MateInOneIterableDataset(IterableDataset):
                         f"Observation channels {obs.shape[0]} != expected {input_channels}. "
                         "Check action_space_size vs input_channels and board type."
                     )
+                resolved_source_id = _source_id_from_moves_to_mate(
+                    moves_to_mate, is_endgame=source_is_endgame
+                )
                 yield (
                     torch.from_numpy(obs.astype(np.float32, copy=False)).float(),
                     torch.tensor(action_index, dtype=torch.long),
                     torch.tensor(value_target, dtype=torch.float32),
                     torch.tensor(policy_mask, dtype=torch.bool),
-                    _resolve_source_id(source_override, source_id),
+                    resolved_source_id,
                     themes,
                 )
                 yielded += 1
@@ -200,7 +205,7 @@ class MateInOneIterableDataset(IterableDataset):
 
             total_plies = len(parsed_moves)
             for ply_index, move in enumerate(parsed_moves):
-                policy_mask = ply_index == 0
+                policy_mask = True
                 action_index = 0
                 if policy_mask:
                     action_id = board.move_to_action_id(move)
@@ -221,7 +226,9 @@ class MateInOneIterableDataset(IterableDataset):
                     torch.tensor(action_index, dtype=torch.long),
                     torch.tensor(value_target, dtype=torch.float32),
                     torch.tensor(policy_mask, dtype=torch.bool),
-                    torch.tensor(source_id, dtype=torch.long),
+                    _source_id_from_moves_to_mate(
+                        moves_to_mate, is_endgame=source_is_endgame
+                    ),
                     themes,
                 )
                 yielded += 1
@@ -301,7 +308,10 @@ def _extract_processed_entry(entry: dict, source_type: str):
         value_target = entry.get("value")
     if value_target is None:
         return None
-    policy_mask = bool(entry.get("policy_mask", False))
+    if "policy_mask" in entry:
+        policy_mask = bool(entry.get("policy_mask", False))
+    else:
+        policy_mask = True
     policy_uci = entry.get("policy_uci") or entry.get("policy_move") or entry.get("best") or entry.get("move")
     if policy_mask and not policy_uci:
         return None
@@ -338,21 +348,33 @@ def _extract_fen_and_moves(entry: dict, source_type: str):
     return fen, moves
 
 
-def _count_jsonl_lines(path: str) -> int:
-    total_lines = 0
-    with open(path, "r", encoding="utf-8") as handle:
-        for _ in handle:
-            total_lines += 1
-    return total_lines
-
-
-def _resolve_source_id(source_override, default_source_id: int) -> torch.Tensor:
-    if source_override is None:
-        return torch.tensor(default_source_id, dtype=torch.long)
+def _source_id_from_moves_to_mate(
+    moves_to_mate: int | None, is_endgame: bool = False
+) -> torch.Tensor:
+    if is_endgame:
+        return torch.tensor(6, dtype=torch.long)
+    if moves_to_mate is None:
+        return torch.tensor(6, dtype=torch.long)
     try:
-        return torch.tensor(int(source_override), dtype=torch.long)
+        moves_to_mate = int(moves_to_mate)
     except (TypeError, ValueError):
-        return torch.tensor(default_source_id, dtype=torch.long)
+        return torch.tensor(6, dtype=torch.long)
+    if moves_to_mate <= 0:
+        return torch.tensor(6, dtype=torch.long)
+    mate_in = (moves_to_mate + 1) // 2
+    if mate_in <= 1:
+        return torch.tensor(0, dtype=torch.long)
+    if mate_in == 2:
+        return torch.tensor(1, dtype=torch.long)
+    if mate_in == 3:
+        return torch.tensor(2, dtype=torch.long)
+    if mate_in == 4:
+        return torch.tensor(3, dtype=torch.long)
+    if mate_in == 5:
+        return torch.tensor(4, dtype=torch.long)
+    if mate_in <= 5:
+        return torch.tensor(mate_in - 1, dtype=torch.long)
+    return torch.tensor(5, dtype=torch.long)
 
 
 def save_learning_curve(
@@ -479,12 +501,12 @@ def save_learning_curve(
 
     axes[0].set_xlabel("Epoch")
     axes[0].set_ylabel("Loss")
-    axes[0].set_ylim(0, None)
+    axes[0].set_ylim(0, 3)
     axes[0].legend()
 
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Accuracy (%)")
-    axes[1].set_ylim(None, 100)
+    axes[1].set_ylim(50, 100)
     axes[1].legend()
 
     if theme_curves:
@@ -597,72 +619,6 @@ def _plot_theme_group(
         axis.legend(fontsize=8)
 
 
-def _save_per_source_curves(
-    epochs: list[int],
-    train_loss: dict[str, list[float]],
-    train_acc: dict[str, list[float]],
-    val_loss: dict[str, list[float]],
-    val_acc: dict[str, list[float]],
-    checkpoint_dir: str,
-) -> None:
-    if not train_loss or not train_acc:
-        return
-    labels = list(train_loss.keys())
-    if not labels:
-        return
-
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-    for idx, label in enumerate(labels):
-        color = f"C{idx % 10}"
-        axes[0].plot(
-            epochs,
-            train_loss.get(label, []),
-            label=f"{label} (train)",
-            color=color,
-            linestyle="-",
-        )
-        if val_loss.get(label):
-            axes[0].plot(
-                epochs,
-                val_loss.get(label, []),
-                label=f"{label} (val)",
-                color=color,
-                linestyle="--",
-            )
-        axes[1].plot(
-            epochs,
-            train_acc.get(label, []),
-            label=f"{label} (train)",
-            color=color,
-            linestyle="-",
-        )
-        if val_acc.get(label):
-            axes[1].plot(
-                epochs,
-                val_acc.get(label, []),
-                label=f"{label} (val)",
-                color=color,
-                linestyle="--",
-            )
-
-    axes[0].set_title("Loss by dataset")
-    axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Loss")
-    axes[0].set_ylim(0, None)
-    axes[0].legend(fontsize=8)
-
-    axes[1].set_title("Accuracy by dataset")
-    axes[1].set_xlabel("Epoch")
-    axes[1].set_ylabel("Accuracy (%)")
-    axes[1].set_ylim(None, 100)
-    axes[1].legend(fontsize=8)
-
-    fig.tight_layout()
-    plot_path = os.path.join(checkpoint_dir, "learning_curve_by_dataset.png")
-    fig.savefig(plot_path, dpi=150)
-    plt.close(fig)
-
-
 def _update_theme_stats(
     theme_stats: dict, themes_batch: list[list[str]], correct_batch: list[bool]
 ) -> None:
@@ -735,33 +691,19 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     else:
         device = select_device(args.device or cfg.training.get("device", "auto"))
 
-    raw_labels = [os.path.basename(p) or p for p in args.data_paths]
-    if len(args.data_paths) == 1 and args.data_paths[0].lower().endswith(".jsonl"):
-        source_labels_path = args.data_paths[0] + ".sources.json"
-        if os.path.exists(source_labels_path):
-            try:
-                with open(source_labels_path, "r", encoding="utf-8") as handle:
-                    loaded_labels = json.load(handle)
-                if isinstance(loaded_labels, list) and loaded_labels:
-                    raw_labels = [str(label) for label in loaded_labels]
-            except (OSError, json.JSONDecodeError, ValueError):
-                pass
-    shortened_labels: list[str] = []
-    for label in raw_labels:
-        base = os.path.splitext(label)[0]
-        formatted = format_dataset_label(base)
-        shortened = truncate_label(formatted or "data", 24)
-        shortened_labels.append(shortened)
-    label_counts: dict[str, int] = {}
-    source_labels: list[str] = []
-    for label in shortened_labels:
-        count = label_counts.get(label, 0)
-        label_counts[label] = count + 1
-        if count > 0:
-            source_labels.append(f"{label}#{count + 1}")
-        else:
-            source_labels.append(label)
+    source_labels = ["m1", "m2", "m3", "m4", "m5", "m6plus", "endgame"]
     num_sources = len(source_labels)
+    skip_value_sources = {s for s in args.skip_value_sources if s}
+    skip_value_source_ids = {
+        idx
+        for idx, label in enumerate(source_labels)
+        if label in skip_value_sources
+    }
+    skip_value_ids_tensor = None
+    if skip_value_source_ids:
+        skip_value_ids_tensor = torch.tensor(
+            sorted(skip_value_source_ids), device=device, dtype=torch.long
+        )
     per_source_train_loss_history = {label: [] for label in source_labels}
     per_source_train_acc_history = {label: [] for label in source_labels}
     per_source_val_loss_history = {label: [] for label in source_labels}
@@ -774,9 +716,17 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         for data_path in args.data_paths:
             lower_path = data_path.lower()
             if lower_path.endswith(".json"):
-                total_rows += validate_json_lines(data_path)
+                data_lines = fast_count_json_lines(data_path)
+                print(
+                    f"Total lines: {data_lines + 2} | Data lines: {data_lines} | Invalid: 0 (fast count)"
+                )
+                total_rows += data_lines
             elif lower_path.endswith(".jsonl"):
-                total_rows += _count_jsonl_lines(data_path)
+                data_lines = fast_count_jsonl_lines(data_path)
+                print(
+                    f"Total lines: {data_lines} | Data lines: {data_lines} | Invalid: 0 (fast count)"
+                )
+                total_rows += data_lines
             else:
                 json_only = False
         if not json_only:
@@ -1022,8 +972,9 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 src="-",
             )
             progress.update(val_task, description="Val")
-
+            batch_idx = 0
             for obs, target, value_target, policy_mask, source_ids, themes in train_loader:
+                batch_idx += 1
                 obs = obs.to(device)
                 target = target.to(device)
                 value_target = value_target.to(device)
@@ -1033,7 +984,15 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 with autocast(amp_device, enabled=amp_enabled):
                     logits, value = model(obs)
                     value = value.view(-1)
-                    value_loss = F.mse_loss(value, value_target)
+                    if skip_value_ids_tensor is not None:
+                        value_mask = ~torch.isin(source_ids, skip_value_ids_tensor)
+                        if value_mask.any():
+                            value_loss = F.mse_loss(value[value_mask], value_target[value_mask])
+                        else:
+                            value_loss = torch.tensor(0.0, device=device)
+                    else:
+                        value_mask = None
+                        value_loss = F.mse_loss(value, value_target)
                     if policy_mask.any():
                         policy_logits = logits[policy_mask]
                         policy_target = target[policy_mask]
@@ -1056,8 +1015,13 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 batch_size = obs.size(0)
                 total_loss += loss.item() * batch_size
                 total_samples += batch_size
-                value_loss_sum += value_loss.item() * batch_size
-                value_samples += batch_size
+                if value_mask is None:
+                    value_loss_sum += value_loss.item() * batch_size
+                    value_samples += batch_size
+                else:
+                    masked_count = value_mask.sum().item()
+                    value_loss_sum += value_loss.item() * masked_count
+                    value_samples += masked_count
                 preds = torch.argmax(logits, dim=1)
                 if policy_mask.any():
                     policy_preds = preds[policy_mask]
@@ -1163,7 +1127,17 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     with autocast(amp_device, enabled=amp_enabled):
                         logits, value = model(obs)
                         value = value.view(-1)
-                        value_loss = F.mse_loss(value, value_target)
+                        if skip_value_ids_tensor is not None:
+                            value_mask = ~torch.isin(source_ids, skip_value_ids_tensor)
+                            if value_mask.any():
+                                value_loss = F.mse_loss(
+                                    value[value_mask], value_target[value_mask]
+                                )
+                            else:
+                                value_loss = torch.tensor(0.0, device=device)
+                        else:
+                            value_mask = None
+                            value_loss = F.mse_loss(value, value_target)
                         if policy_mask.any():
                             policy_logits = logits[policy_mask]
                             policy_target = target[policy_mask]
@@ -1178,8 +1152,13 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     batch_size = obs.size(0)
                     val_loss += loss.item() * batch_size
                     val_loss_samples += batch_size
-                    val_value_loss_sum += value_loss.item() * batch_size
-                    val_value_samples += batch_size
+                    if value_mask is None:
+                        val_value_loss_sum += value_loss.item() * batch_size
+                        val_value_samples += batch_size
+                    else:
+                        masked_count = value_mask.sum().item()
+                        val_value_loss_sum += value_loss.item() * masked_count
+                        val_value_samples += masked_count
                     preds = torch.argmax(logits, dim=1)
                     if policy_mask.any():
                         policy_preds = preds[policy_mask]
@@ -1470,7 +1449,7 @@ def main():
         "--csv",
         dest="data_paths",
         nargs="+",
-        default=["data/mate_in_1_flipped.json", "data/mate_in_2_flipped.json", "data/mate_in_3_flipped.json", "data/mate_in_4_flipped.json", "data/mate_in_5_flipped.json"],
+        default=["data/mate_in_1_flipped_expanded.jsonl", "data/mate_in_2_flipped_expanded.jsonl", "data/mate_in_3_flipped_expanded.jsonl", "data/mate_in_4_flipped_expanded.jsonl", "data/mate_in_5_flipped_expanded.jsonl", "data/endgame_without_mate_flipped.json"],
         help="Paths to puzzle data (CSV or JSON). Pass multiple paths to mix datasets.",
     )
     parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
@@ -1497,6 +1476,12 @@ def main():
     )
     parser.add_argument("--max-rows", type=int, default=None)
     parser.add_argument("--device", default="auto", help="auto, cuda, mps, or cpu")
+    parser.add_argument(
+        "--skip-value-sources",
+        nargs="*",
+        default=["endgame_without_mate_flipped"],
+        help="Source labels to exclude from value loss (e.g., endgame_without_mate_flipped).",
+    )
     parser.add_argument("--val-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--early-stop-patience", type=int, default=10)

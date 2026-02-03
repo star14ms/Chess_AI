@@ -144,6 +144,47 @@ def validate_json_lines(path: str | Path) -> int:
     return data_lines
 
 
+def fast_count_json_lines(path: str | Path) -> int:
+    path = Path(path)
+    total_lines = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for _ in handle:
+            total_lines += 1
+    return max(total_lines - 2, 0)
+
+
+def validate_jsonl_lines(path: str | Path) -> int:
+    path = Path(path)
+    invalid_lines = 0
+    total_lines = 0
+    data_lines = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            total_lines += 1
+            stripped = line.strip()
+            if not stripped:
+                continue
+            data_lines += 1
+            try:
+                json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                invalid_lines += 1
+                print(f"Invalid JSON line {line_number}: {exc}")
+                print(f"Invalid line content (head): {stripped[:240]}")
+                raise SystemExit("Invalid JSON line detected.")
+    print(f"Total lines: {total_lines} | Data lines: {data_lines} | Invalid: {invalid_lines}")
+    return data_lines
+
+
+def fast_count_jsonl_lines(path: str | Path) -> int:
+    path = Path(path)
+    total_lines = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for _ in handle:
+            total_lines += 1
+    return total_lines
+
+
 def count_dataset_entries(dataset: IterableDataset) -> int:
     return sum(1 for _ in dataset)
 
