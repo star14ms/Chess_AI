@@ -26,7 +26,6 @@ from MCTS.training_modules.chess import create_chess_network
 from utils.profile_model import profile_model
 from utils.training_utils import (
     count_dataset_entries,
-    freeze_value_head,
     iter_csv_rows,
     iter_json_array,
     load_checkpoint,
@@ -102,7 +101,11 @@ class MateInOneIterableDataset(IterableDataset):
 
         sources = []
         for data_path in self.data_paths:
-            if data_path.lower().endswith(".json"):
+            lower_path = data_path.lower()
+            if lower_path.endswith(".jsonl"):
+                entry_iter = _iter_json_lines(data_path)
+                source_type = "jsonl"
+            elif lower_path.endswith(".json"):
                 entry_iter = iter_json_array(data_path)
                 source_type = "json"
             else:
@@ -135,35 +138,96 @@ class MateInOneIterableDataset(IterableDataset):
             if not self._entry_matches_split(entry):
                 continue
 
-            fen, best_uci = _extract_fen_and_move(entry, source_type)
-            if not fen or not best_uci:
+            if _is_processed_entry(entry, source_type):
+                processed = _extract_processed_entry(entry, source_type)
+                if processed is None:
+                    continue
+                fen, value_target, policy_mask, policy_uci, themes, source_override, moves_to_mate = processed
+                board = create_board_from_fen(fen, action_space_size)
+                action_index = 0
+                if policy_mask:
+                    try:
+                        move = chess.Move.from_uci(policy_uci)
+                    except ValueError:
+                        continue
+                    if not board.is_legal(move):
+                        continue
+                    action_id = board.move_to_action_id(move)
+                    if action_id is None or action_id < 1 or action_id > action_space_size:
+                        continue
+                    action_index = action_id - 1
+                obs = board.get_board_vector(history_steps=history_steps)
+                if obs.shape[0] != input_channels:
+                    raise ValueError(
+                        f"Observation channels {obs.shape[0]} != expected {input_channels}. "
+                        "Check action_space_size vs input_channels and board type."
+                    )
+                yield (
+                    torch.from_numpy(obs.astype(np.float32, copy=False)).float(),
+                    torch.tensor(action_index, dtype=torch.long),
+                    torch.tensor(value_target, dtype=torch.float32),
+                    torch.tensor(policy_mask, dtype=torch.bool),
+                    _resolve_source_id(source_override, source_id),
+                    themes,
+                )
+                yielded += 1
+                if max_rows is not None and yielded >= max_rows:
+                    break
+                continue
+
+            fen, moves = _extract_fen_and_moves(entry, source_type)
+            if not fen or not moves:
                 continue
             themes = _extract_themes(entry, source_type)
 
             board = create_board_from_fen(fen, action_space_size)
-            try:
-                move = chess.Move.from_uci(best_uci)
-            except ValueError:
+            parsed_moves: list[chess.Move] = []
+            temp_board = board.copy(stack=False)
+            valid = True
+            for uci in moves:
+                try:
+                    move = chess.Move.from_uci(uci)
+                except ValueError:
+                    valid = False
+                    break
+                if not temp_board.is_legal(move):
+                    valid = False
+                    break
+                parsed_moves.append(move)
+                temp_board.push(move)
+            if not valid:
                 continue
-            if not board.is_legal(move):
-                continue
-            action_id = board.move_to_action_id(move)
-            if action_id is None or action_id < 1 or action_id > action_space_size:
-                continue
-            obs = board.get_board_vector(history_steps=history_steps)
-            if obs.shape[0] != input_channels:
-                raise ValueError(
-                    f"Observation channels {obs.shape[0]} != expected {input_channels}. "
-                    "Check action_space_size vs input_channels and board type."
+
+            total_plies = len(parsed_moves)
+            for ply_index, move in enumerate(parsed_moves):
+                policy_mask = ply_index == 0
+                action_index = 0
+                if policy_mask:
+                    action_id = board.move_to_action_id(move)
+                    if action_id is None or action_id < 1 or action_id > action_space_size:
+                        valid = False
+                        break
+                    action_index = action_id - 1
+                obs = board.get_board_vector(history_steps=history_steps)
+                if obs.shape[0] != input_channels:
+                    raise ValueError(
+                        f"Observation channels {obs.shape[0]} != expected {input_channels}. "
+                        "Check action_space_size vs input_channels and board type."
+                    )
+                value_target = 1.0 if ply_index % 2 == 0 else -1.0
+                moves_to_mate = total_plies - ply_index
+                yield (
+                    torch.from_numpy(obs.astype(np.float32, copy=False)).float(),
+                    torch.tensor(action_index, dtype=torch.long),
+                    torch.tensor(value_target, dtype=torch.float32),
+                    torch.tensor(policy_mask, dtype=torch.bool),
+                    torch.tensor(source_id, dtype=torch.long),
+                    themes,
                 )
-            action_index = action_id - 1
-            yield (
-                torch.from_numpy(obs.astype(np.float32, copy=False)).float(),
-                torch.tensor(action_index, dtype=torch.long),
-                torch.tensor(source_id, dtype=torch.long),
-                themes,
-            )
-            yielded += 1
+                yielded += 1
+                if max_rows is not None and yielded >= max_rows:
+                    break
+                board.push(move)
             if max_rows is not None and yielded >= max_rows:
                 break
 
@@ -189,22 +253,28 @@ def create_board_from_fen(fen: str, action_space_size: int):
     return board
 
 
-def _extract_best_move(moves_field):
+def _extract_moves_list(moves_field):
     if not moves_field:
-        return None
+        return []
     if isinstance(moves_field, str):
         tokens = moves_field.split()
     elif isinstance(moves_field, list):
         tokens = [str(t).strip() for t in moves_field if str(t).strip()]
     else:
-        return None
-    return tokens[0] if tokens else None
-
-
-def _extract_themes(entry: dict, source_type: str) -> list[str]:
-    if source_type == "csv":
         return []
-    themes_field = entry.get("Themes") or entry.get("themes")
+    return [token for token in tokens if token]
+
+
+def _iter_json_lines(path: str):
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
+
+
+def _normalize_themes(themes_field) -> list[str]:
     if not themes_field:
         return []
     if isinstance(themes_field, list):
@@ -214,13 +284,75 @@ def _extract_themes(entry: dict, source_type: str) -> list[str]:
     return []
 
 
-def _extract_fen_and_move(entry: dict, source_type: str):
+def _is_processed_entry(entry: dict, source_type: str) -> bool:
+    if source_type == "jsonl":
+        return True
+    if not isinstance(entry, dict):
+        return False
+    return "value_target" in entry or "value" in entry
+
+
+def _extract_processed_entry(entry: dict, source_type: str):
+    fen = entry.get("fen") or entry.get("FEN")
+    if not fen:
+        return None
+    value_target = entry.get("value_target")
+    if value_target is None:
+        value_target = entry.get("value")
+    if value_target is None:
+        return None
+    policy_mask = bool(entry.get("policy_mask", False))
+    policy_uci = entry.get("policy_uci") or entry.get("policy_move") or entry.get("best") or entry.get("move")
+    if policy_mask and not policy_uci:
+        return None
+    if not policy_mask:
+        policy_uci = ""
+    themes_field = entry.get("themes") or entry.get("Themes")
+    themes = _normalize_themes(themes_field)
+    moves_to_mate = entry.get("moves_to_mate")
+    if moves_to_mate is not None:
+        try:
+            moves_to_mate = int(moves_to_mate)
+        except (TypeError, ValueError):
+            moves_to_mate = None
+    source_override = entry.get("source_id")
+    if source_override is None:
+        source_override = entry.get("source_label")
+    return fen, float(value_target), policy_mask, policy_uci, themes, source_override, moves_to_mate
+
+
+def _extract_themes(entry: dict, source_type: str) -> list[str]:
     if source_type == "csv":
-        return entry.get("fen"), entry.get("best")
+        return []
+    themes_field = entry.get("Themes") or entry.get("themes")
+    return _normalize_themes(themes_field)
+
+
+def _extract_fen_and_moves(entry: dict, source_type: str):
+    if source_type == "csv":
+        moves_field = entry.get("moves") or entry.get("best")
+        return entry.get("fen"), _extract_moves_list(moves_field)
     fen = entry.get("FEN") or entry.get("fen")
     moves_field = entry.get("Moves") or entry.get("moves")
-    best_uci = _extract_best_move(moves_field)
-    return fen, best_uci
+    moves = _extract_moves_list(moves_field)
+    return fen, moves
+
+
+def _count_jsonl_lines(path: str) -> int:
+    total_lines = 0
+    with open(path, "r", encoding="utf-8") as handle:
+        for _ in handle:
+            total_lines += 1
+    return total_lines
+
+
+def _resolve_source_id(source_override, default_source_id: int) -> torch.Tensor:
+    if source_override is None:
+        return torch.tensor(default_source_id, dtype=torch.long)
+    try:
+        return torch.tensor(int(source_override), dtype=torch.long)
+    except (TypeError, ValueError):
+        return torch.tensor(default_source_id, dtype=torch.long)
 
 
 def save_learning_curve(
@@ -556,9 +688,9 @@ def _format_theme_stats(theme_stats: dict) -> list[tuple[str, int, int, float]]:
 
 
 def _collate_with_themes(batch):
-    obs, target, source_id, themes = zip(*batch)
-    collated = default_collate(list(zip(obs, target, source_id)))
-    return collated[0], collated[1], collated[2], list(themes)
+    obs, target, value_target, policy_mask, source_id, themes = zip(*batch)
+    collated = default_collate(list(zip(obs, target, value_target, policy_mask, source_id)))
+    return collated[0], collated[1], collated[2], collated[3], collated[4], list(themes)
 
 
 def _setup_ddp(rank: int, world_size: int) -> None:
@@ -604,6 +736,16 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         device = select_device(args.device or cfg.training.get("device", "auto"))
 
     raw_labels = [os.path.basename(p) or p for p in args.data_paths]
+    if len(args.data_paths) == 1 and args.data_paths[0].lower().endswith(".jsonl"):
+        source_labels_path = args.data_paths[0] + ".sources.json"
+        if os.path.exists(source_labels_path):
+            try:
+                with open(source_labels_path, "r", encoding="utf-8") as handle:
+                    loaded_labels = json.load(handle)
+                if isinstance(loaded_labels, list) and loaded_labels:
+                    raw_labels = [str(label) for label in loaded_labels]
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
     shortened_labels: list[str] = []
     for label in raw_labels:
         base = os.path.splitext(label)[0]
@@ -630,8 +772,11 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     if is_main:
         total_rows = 0
         for data_path in args.data_paths:
-            if data_path.lower().endswith(".json"):
+            lower_path = data_path.lower()
+            if lower_path.endswith(".json"):
                 total_rows += validate_json_lines(data_path)
+            elif lower_path.endswith(".jsonl"):
+                total_rows += _count_jsonl_lines(data_path)
             else:
                 json_only = False
         if not json_only:
@@ -684,7 +829,6 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     )
 
     model = create_chess_network(cfg, device)
-    freeze_value_head(model)
     if ddp_enabled:
         model = DDP(model, device_ids=[rank])
     model.train()
@@ -798,7 +942,11 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         TaskProgressColumn(),
         TimeRemainingColumn(),
         TimeElapsedColumn(),
-        TextColumn("loss={task.fields[loss]:.4f} acc={task.fields[acc]:.2f}%"),
+        TextColumn(
+            "loss={task.fields[loss]:.4f} "
+            "pol={task.fields[pol]:.4f} val={task.fields[val]:.4f} "
+            "acc={task.fields[acc]:.2f}%"
+        ),
         TextColumn("src={task.fields[src]}"),
     )
 
@@ -811,14 +959,28 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             total=args.epochs,
             completed=start_epoch - 1,
             loss=float("nan"),
+            pol=float("nan"),
+            val=float("nan"),
             acc=float("nan"),
             src="-",
         )
         train_task = progress.add_task(
-            "Train", total=train_total, loss=float("nan"), acc=float("nan"), src="-"
+            "Train",
+            total=train_total,
+            loss=float("nan"),
+            pol=float("nan"),
+            val=float("nan"),
+            acc=float("nan"),
+            src="-",
         )
         val_task = progress.add_task(
-            "Val", total=val_total, loss=float("nan"), acc=float("nan"), src="-"
+            "Val",
+            total=val_total,
+            loss=float("nan"),
+            pol=float("nan"),
+            val=float("nan"),
+            acc=float("nan"),
+            src="-",
         )
         last_val_loss = None
         last_val_acc = None
@@ -827,6 +989,11 @@ def _train_worker(rank: int, world_size: int, args) -> None:
 
         for epoch in range(start_epoch, args.epochs + 1):
             total_loss = 0.0
+            total_samples = 0
+            policy_loss_sum = 0.0
+            policy_samples = 0
+            value_loss_sum = 0.0
+            value_samples = 0
             correct = 0
             total = 0
             train_theme_stats: dict[str, dict[str, int]] = {}
@@ -838,6 +1005,8 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 total=train_total,
                 completed=0,
                 loss=float("nan"),
+                pol=float("nan"),
+                val=float("nan"),
                 acc=float("nan"),
                 src="-",
             )
@@ -847,20 +1016,35 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 total=val_total,
                 completed=0,
                 loss=float("nan"),
+                pol=float("nan"),
+                val=float("nan"),
                 acc=float("nan"),
                 src="-",
             )
             progress.update(val_task, description="Val")
 
-            for obs, target, source_ids, themes in train_loader:
+            for obs, target, value_target, policy_mask, source_ids, themes in train_loader:
                 obs = obs.to(device)
                 target = target.to(device)
+                value_target = value_target.to(device)
+                policy_mask = policy_mask.to(device)
                 source_ids = source_ids.to(device)
                 optimizer.zero_grad()
                 with autocast(amp_device, enabled=amp_enabled):
-                    logits, _ = model(obs, policy_only=True)
-                    loss = criterion(logits, target)
-                    per_sample_loss = F.cross_entropy(logits, target, reduction="none")
+                    logits, value = model(obs)
+                    value = value.view(-1)
+                    value_loss = F.mse_loss(value, value_target)
+                    if policy_mask.any():
+                        policy_logits = logits[policy_mask]
+                        policy_target = target[policy_mask]
+                        policy_loss = criterion(policy_logits, policy_target)
+                        per_sample_loss = F.cross_entropy(
+                            policy_logits, policy_target, reduction="none"
+                        )
+                    else:
+                        policy_loss = torch.tensor(0.0, device=device)
+                        per_sample_loss = None
+                    loss = policy_loss + value_loss
                 if scaler.is_enabled():
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
@@ -869,21 +1053,40 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     loss.backward()
                     optimizer.step()
 
-                total_loss += loss.item() * obs.size(0)
+                batch_size = obs.size(0)
+                total_loss += loss.item() * batch_size
+                total_samples += batch_size
+                value_loss_sum += value_loss.item() * batch_size
+                value_samples += batch_size
                 preds = torch.argmax(logits, dim=1)
-                correct += (preds == target).sum().item()
-                total += obs.size(0)
-                for source_idx in range(num_sources):
-                    mask = source_ids == source_idx
-                    count = mask.sum().item()
-                    if count:
-                        per_source_total[source_idx] += count
-                        per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
-                        per_source_loss_sum[source_idx] += per_sample_loss[mask].sum().item()
-                if collect_theme_stats:
-                    correct_batch = (preds == target).detach().cpu().tolist()
-                    _update_theme_stats(train_theme_stats, themes, correct_batch)
-                avg_loss = total_loss / max(total, 1)
+                if policy_mask.any():
+                    policy_preds = preds[policy_mask]
+                    policy_target = target[policy_mask]
+                    policy_source_ids = source_ids[policy_mask]
+                    correct += (policy_preds == policy_target).sum().item()
+                    total += policy_target.numel()
+                    policy_loss_sum += policy_loss.item() * policy_target.numel()
+                    policy_samples += policy_target.numel()
+                    for source_idx in range(num_sources):
+                        mask = policy_source_ids == source_idx
+                        count = mask.sum().item()
+                        if count:
+                            per_source_total[source_idx] += count
+                            per_source_correct[source_idx] += (
+                                policy_preds[mask] == policy_target[mask]
+                            ).sum().item()
+                            if per_sample_loss is not None:
+                                per_source_loss_sum[source_idx] += per_sample_loss[
+                                    mask
+                                ].sum().item()
+                if collect_theme_stats and policy_mask.any():
+                    policy_mask_cpu = policy_mask.detach().cpu().tolist()
+                    policy_themes = [t for t, keep in zip(themes, policy_mask_cpu) if keep]
+                    correct_batch = (preds[policy_mask] == target[policy_mask]).detach().cpu().tolist()
+                    _update_theme_stats(train_theme_stats, policy_themes, correct_batch)
+                avg_loss = total_loss / max(total_samples, 1)
+                avg_policy_loss = policy_loss_sum / max(policy_samples, 1)
+                avg_value_loss = value_loss_sum / max(value_samples, 1)
                 acc = correct / max(total, 1)
                 per_source_train = [
                     f"{label}={per_source_correct[i] / per_source_total[i] * 100:.1f}%"
@@ -895,15 +1098,27 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     train_task,
                     advance=1,
                     loss=avg_loss,
+                    pol=avg_policy_loss,
+                    val=avg_value_loss,
                     acc=acc * 100,
                     src=per_source_train_str,
                 )
 
             epoch_loss_sum = total_loss
+            epoch_loss_samples = total_samples
+            epoch_policy_loss_sum = policy_loss_sum
+            epoch_policy_samples = policy_samples
+            epoch_value_loss_sum = value_loss_sum
+            epoch_value_samples = value_samples
             epoch_correct = correct
             epoch_total = total
             if ddp_enabled:
                 epoch_loss_sum = _ddp_all_reduce(epoch_loss_sum, device)
+                epoch_loss_samples = _ddp_all_reduce(epoch_loss_samples, device)
+                epoch_policy_loss_sum = _ddp_all_reduce(epoch_policy_loss_sum, device)
+                epoch_policy_samples = _ddp_all_reduce(epoch_policy_samples, device)
+                epoch_value_loss_sum = _ddp_all_reduce(epoch_value_loss_sum, device)
+                epoch_value_samples = _ddp_all_reduce(epoch_value_samples, device)
                 epoch_correct = _ddp_all_reduce(epoch_correct, device)
                 epoch_total = _ddp_all_reduce(epoch_total, device)
                 per_source_correct = _ddp_all_reduce_list(per_source_correct, device)
@@ -912,12 +1127,26 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     per_source_loss_sum, device
                 )
 
-            avg_loss = epoch_loss_sum / max(epoch_total, 1)
+            avg_loss = epoch_loss_sum / max(epoch_loss_samples, 1)
+            avg_policy_loss = epoch_policy_loss_sum / max(epoch_policy_samples, 1)
+            avg_value_loss = epoch_value_loss_sum / max(epoch_value_samples, 1)
             acc = epoch_correct / max(epoch_total, 1)
-            progress.update(epoch_task, advance=1, loss=avg_loss, acc=acc * 100)
+            progress.update(
+                epoch_task,
+                advance=1,
+                loss=avg_loss,
+                pol=avg_policy_loss,
+                val=avg_value_loss,
+                acc=acc * 100,
+            )
 
             model.eval()
             val_loss = 0.0
+            val_loss_samples = 0
+            val_policy_loss_sum = 0.0
+            val_policy_samples = 0
+            val_value_loss_sum = 0.0
+            val_value_samples = 0
             val_correct = 0
             val_samples = 0
             val_theme_stats: dict[str, dict[str, int]] = {}
@@ -925,29 +1154,61 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             val_per_source_total = [0 for _ in range(num_sources)]
             val_per_source_loss_sum = [0.0 for _ in range(num_sources)]
             with torch.no_grad():
-                for obs, target, source_ids, themes in val_loader:
+                for obs, target, value_target, policy_mask, source_ids, themes in val_loader:
                     obs = obs.to(device)
                     target = target.to(device)
+                    value_target = value_target.to(device)
+                    policy_mask = policy_mask.to(device)
                     source_ids = source_ids.to(device)
                     with autocast(amp_device, enabled=amp_enabled):
-                        logits, _ = model(obs, policy_only=True)
-                        loss = criterion(logits, target)
-                        per_sample_loss = F.cross_entropy(logits, target, reduction="none")
-                    val_loss += loss.item() * obs.size(0)
+                        logits, value = model(obs)
+                        value = value.view(-1)
+                        value_loss = F.mse_loss(value, value_target)
+                        if policy_mask.any():
+                            policy_logits = logits[policy_mask]
+                            policy_target = target[policy_mask]
+                            policy_loss = criterion(policy_logits, policy_target)
+                            per_sample_loss = F.cross_entropy(
+                                policy_logits, policy_target, reduction="none"
+                            )
+                        else:
+                            policy_loss = torch.tensor(0.0, device=device)
+                            per_sample_loss = None
+                        loss = policy_loss + value_loss
+                    batch_size = obs.size(0)
+                    val_loss += loss.item() * batch_size
+                    val_loss_samples += batch_size
+                    val_value_loss_sum += value_loss.item() * batch_size
+                    val_value_samples += batch_size
                     preds = torch.argmax(logits, dim=1)
-                    val_correct += (preds == target).sum().item()
-                    val_samples += obs.size(0)
-                    for source_idx in range(num_sources):
-                        mask = source_ids == source_idx
-                        count = mask.sum().item()
-                        if count:
-                            val_per_source_total[source_idx] += count
-                            val_per_source_correct[source_idx] += (preds[mask] == target[mask]).sum().item()
-                            val_per_source_loss_sum[source_idx] += per_sample_loss[mask].sum().item()
-                    if collect_theme_stats:
-                        correct_batch = (preds == target).detach().cpu().tolist()
-                        _update_theme_stats(val_theme_stats, themes, correct_batch)
-                    val_avg_loss = val_loss / max(val_samples, 1)
+                    if policy_mask.any():
+                        policy_preds = preds[policy_mask]
+                        policy_target = target[policy_mask]
+                        policy_source_ids = source_ids[policy_mask]
+                        val_correct += (policy_preds == policy_target).sum().item()
+                        val_samples += policy_target.numel()
+                        val_policy_loss_sum += policy_loss.item() * policy_target.numel()
+                        val_policy_samples += policy_target.numel()
+                        for source_idx in range(num_sources):
+                            mask = policy_source_ids == source_idx
+                            count = mask.sum().item()
+                            if count:
+                                val_per_source_total[source_idx] += count
+                                val_per_source_correct[source_idx] += (
+                                    policy_preds[mask] == policy_target[mask]
+                                ).sum().item()
+                                if per_sample_loss is not None:
+                                    val_per_source_loss_sum[source_idx] += per_sample_loss[
+                                        mask
+                                    ].sum().item()
+                    if collect_theme_stats and policy_mask.any():
+                        policy_mask_cpu = policy_mask.detach().cpu().tolist()
+                        policy_themes = [t for t, keep in zip(themes, policy_mask_cpu) if keep]
+                        correct_batch = (preds[policy_mask] == target[policy_mask]).detach().cpu().tolist()
+                        _update_theme_stats(val_theme_stats, policy_themes, correct_batch)
+                    val_avg_loss = val_loss / max(val_loss_samples, 1)
+                    val_avg_policy_loss = val_policy_loss_sum / max(val_policy_samples, 1)
+                    val_avg_value_loss = val_value_loss_sum / max(val_value_samples, 1)
                     val_acc = val_correct / max(val_samples, 1)
                     per_source_val = [
                         f"{label}={val_per_source_correct[i] / val_per_source_total[i] * 100:.1f}%"
@@ -959,6 +1220,8 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         val_task,
                         advance=1,
                         loss=val_avg_loss,
+                        pol=val_avg_policy_loss,
+                        val=val_avg_value_loss,
                         acc=val_acc * 100,
                         src=per_source_val_str,
                     )
@@ -970,6 +1233,11 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             has_val = val_samples > 0
             if ddp_enabled:
                 val_loss = _ddp_all_reduce(val_loss, device)
+                val_loss_samples = _ddp_all_reduce(val_loss_samples, device)
+                val_policy_loss_sum = _ddp_all_reduce(val_policy_loss_sum, device)
+                val_policy_samples = _ddp_all_reduce(val_policy_samples, device)
+                val_value_loss_sum = _ddp_all_reduce(val_value_loss_sum, device)
+                val_value_samples = _ddp_all_reduce(val_value_samples, device)
                 val_correct = _ddp_all_reduce(val_correct, device)
                 val_samples = _ddp_all_reduce(val_samples, device)
                 val_per_source_correct = _ddp_all_reduce_list(val_per_source_correct, device)
@@ -978,7 +1246,9 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     val_per_source_loss_sum, device
                 )
             if has_val:
-                val_avg_loss = val_loss / max(val_samples, 1)
+                val_avg_loss = val_loss / max(val_loss_samples, 1)
+                val_avg_policy_loss = val_policy_loss_sum / max(val_policy_samples, 1)
+                val_avg_value_loss = val_value_loss_sum / max(val_value_samples, 1)
                 val_acc = val_correct / max(val_samples, 1)
                 val_losses.append(val_avg_loss)
                 val_accs.append(val_acc)
@@ -997,8 +1267,10 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     per_source_val_str = " | ".join(per_source_val) if per_source_val else "N/A"
                     print(
                         f"Epoch {epoch}/{args.epochs} | "
-                        f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
-                        f"val loss={val_avg_loss:.4f} acc={val_acc*100:.2f}% | "
+                        f"train loss={avg_loss:.4f} pol={avg_policy_loss:.4f} val={avg_value_loss:.4f} "
+                        f"acc={acc*100:.2f}% | "
+                        f"val loss={val_avg_loss:.4f} pol={val_avg_policy_loss:.4f} "
+                        f"val={val_avg_value_loss:.4f} acc={val_acc*100:.2f}% | "
                         f"train acc by source: {per_source_train_str} | "
                         f"val acc by source: {per_source_val_str}"
                     )
