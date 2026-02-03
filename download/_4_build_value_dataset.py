@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import math
 from pathlib import Path
 
 import chess
@@ -149,11 +150,13 @@ def _build_value_dataset_single(inputs, output_path, max_rows=None, include_them
 
 def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=True, workers=1):
     per_file_total = {}
+    total_all = 0
     for input_path in inputs:
         count = _count_json_array_lines(input_path)
         if max_rows is not None:
             count = min(count, max_rows)
         per_file_total[input_path] = count
+        total_all += count
 
     progress_columns = (
         TextColumn("[progress.description]{task.description}"),
@@ -165,27 +168,61 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
 
     temp_dir = output_path.parent / ".tmp_value_build"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    temp_paths = {
-        input_path: temp_dir / f"{Path(input_path).stem}_value.jsonl"
-        for input_path in inputs
-    }
+    temp_paths = {}
+    chunk_tasks = []
+    for source_id, input_path in enumerate(inputs):
+        count = per_file_total.get(input_path, 0)
+        if count == 0:
+            continue
+        file_share = count / total_all if total_all else 0
+        alloc_workers = max(1, int(round(workers * file_share)))
+        chunk_size = max(1, math.ceil(count / alloc_workers))
+        num_chunks = math.ceil(count / chunk_size)
+        temp_paths[input_path] = []
+        for chunk_index in range(num_chunks):
+            start_idx = chunk_index * chunk_size
+            end_idx = min(start_idx + chunk_size, count)
+            temp_path = temp_dir / f"{Path(input_path).stem}_part_{chunk_index:03d}.jsonl"
+            temp_paths[input_path].append(temp_path)
+            chunk_tasks.append(
+                (
+                    input_path,
+                    temp_path,
+                    start_idx,
+                    end_idx,
+                    max_rows,
+                    include_themes,
+                    source_id,
+                    Path(input_path).stem,
+                )
+            )
 
     ctx = mp.get_context("spawn")
     progress_queue = ctx.Queue()
     processes = []
-    for source_id, input_path in enumerate(inputs):
-        temp_path = temp_paths[input_path]
+    for (
+        input_path,
+        temp_path,
+        start_idx,
+        end_idx,
+        max_rows_value,
+        include_themes_value,
+        source_id,
+        source_label,
+    ) in chunk_tasks:
         proc = ctx.Process(
-            target=_process_input_file,
+            target=_process_input_chunk,
             args=(
                 input_path,
                 temp_path,
-                max_rows,
-                include_themes,
+                start_idx,
+                end_idx,
+                max_rows_value,
+                include_themes_value,
                 progress_queue,
                 1000,
                 source_id,
-                Path(input_path).stem,
+                source_label,
             ),
         )
         proc.start()
@@ -201,7 +238,7 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
                 f"Processing {label}",
                 total=per_file_total.get(input_path, 0),
             )
-        while completed < len(inputs):
+        while completed < len(chunk_tasks):
             message = progress_queue.get()
             if not message:
                 continue
@@ -221,16 +258,17 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
 
     with output_path.open("w", encoding="utf-8") as out_handle:
         for input_path in inputs:
-            temp_path = temp_paths[input_path]
-            if not temp_path.exists():
-                continue
-            with temp_path.open("r", encoding="utf-8") as in_handle:
-                for line in in_handle:
-                    out_handle.write(line)
+            for temp_path in temp_paths.get(input_path, []):
+                if not temp_path.exists():
+                    continue
+                with temp_path.open("r", encoding="utf-8") as in_handle:
+                    for line in in_handle:
+                        out_handle.write(line)
 
-    for temp_path in temp_paths.values():
-        if temp_path.exists():
-            temp_path.unlink()
+    for temp_list in temp_paths.values():
+        for temp_path in temp_list:
+            if temp_path.exists():
+                temp_path.unlink()
     if temp_dir.exists():
         try:
             temp_dir.rmdir()
@@ -240,9 +278,11 @@ def _build_value_dataset_mp(inputs, output_path, max_rows=None, include_themes=T
     return written_total
 
 
-def _process_input_file(
+def _process_input_chunk(
     input_path,
     temp_path,
+    start_idx,
+    end_idx,
     max_rows,
     include_themes,
     progress_queue,
@@ -253,9 +293,7 @@ def _process_input_file(
     written = 0
     processed = 0
     with Path(temp_path).open("w", encoding="utf-8") as out_handle:
-        for idx, entry in enumerate(iter_json_array(input_path), start=1):
-            if max_rows is not None and idx > max_rows:
-                break
+        for entry in _iter_json_array_chunk(input_path, start_idx, end_idx, max_rows):
             processed += 1
             if processed % progress_batch == 0:
                 progress_queue.put(("progress", input_path, progress_batch))
@@ -305,6 +343,27 @@ def _process_input_file(
     if remainder:
         progress_queue.put(("progress", input_path, remainder))
     progress_queue.put(("done", input_path, written))
+
+
+def _iter_json_array_chunk(path: str, start_idx: int, end_idx: int, max_rows: int | None):
+    data_idx = 0
+    max_idx = end_idx
+    if max_rows is not None:
+        max_idx = min(max_idx, max_rows)
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped == "[" or stripped == "]":
+                continue
+            if stripped.endswith(","):
+                stripped = stripped[:-1].rstrip()
+            if data_idx < start_idx:
+                data_idx += 1
+                continue
+            if data_idx >= max_idx:
+                break
+            data_idx += 1
+            yield json.loads(stripped)
 
 
 def _count_json_array_lines(path: str | Path) -> int:

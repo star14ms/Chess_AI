@@ -1,10 +1,11 @@
 """Normalize puzzle datasets by fixing move alignment and filtering multi-mates."""
 
 import argparse
-import concurrent.futures
 import json
 import os
 import multiprocessing as mp
+import concurrent.futures
+import math
 from pathlib import Path
 from typing import Callable
 
@@ -203,6 +204,72 @@ def normalize_file_worker(path_str: str, output_dir_str: str | None, progress_ma
     return normalize_file(path, output_dir, progress_cb=on_progress)
 
 
+def _count_json_array_lines(path: Path) -> int:
+    total_lines = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for _ in handle:
+            total_lines += 1
+    return max(total_lines - 2, 0)
+
+
+def _iter_json_array_chunk(path: Path, start_idx: int, end_idx: int):
+    data_idx = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped == "[" or stripped == "]":
+                continue
+            if stripped.endswith(","):
+                stripped = stripped[:-1].rstrip()
+            if data_idx < start_idx:
+                data_idx += 1
+                continue
+            if data_idx >= end_idx:
+                break
+            data_idx += 1
+            yield json.loads(stripped)
+
+
+def normalize_chunk(
+    path: Path,
+    temp_path: Path,
+    start_idx: int,
+    end_idx: int,
+    progress_queue,
+    progress_batch: int,
+) -> dict:
+    stats = {
+        "input_rows": 0,
+        "written_rows": 0,
+        "adjusted_rows": 0,
+        "odd_moves": 0,
+        "multiple_mates": 0,
+        "missing_fen": 0,
+        "missing_moves": 0,
+        "invalid_moves": 0,
+    }
+    processed = 0
+    with temp_path.open("w", encoding="utf-8") as out:
+        for entry in _iter_json_array_chunk(path, start_idx, end_idx):
+            processed += 1
+            if processed % progress_batch == 0:
+                progress_queue.put(("progress", str(path), progress_batch))
+            stats["input_rows"] += 1
+            if not isinstance(entry, dict):
+                continue
+            normalized = normalize_entry(entry, stats)
+            if normalized is None:
+                continue
+            out.write(json.dumps(normalized, ensure_ascii=True) + "\n")
+            stats["written_rows"] += 1
+    remainder = processed % progress_batch
+    if remainder:
+        progress_queue.put(("progress", str(path), remainder))
+    stats["temp_path"] = str(temp_path)
+    stats["start_idx"] = start_idx
+    return stats
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -266,47 +333,123 @@ def main() -> None:
         TimeElapsedColumn(),
         transient=True,
     ) as progress:
-        manager = mp.Manager()
-        progress_map = manager.dict()
+        progress_queue = mp.Manager().Queue()
         tasks: dict[str, int] = {}
         totals: dict[str, int] = {}
+        chunk_tasks = []
+        temp_dir = Path(output_dir) if output_dir else Path(args.input_dir)
+        temp_dir = temp_dir / ".tmp_normalize_chunks"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
         for path in json_files:
             key = str(path)
-            total_bytes = os.path.getsize(path)
-            totals[key] = total_bytes
-            progress_map[key] = 0
-            tasks[key] = progress.add_task(f"Processing {path.name}", total=total_bytes)
+            total_rows = _count_json_array_lines(path)
+            totals[key] = total_rows
+            tasks[key] = progress.add_task(f"Processing {path.name}", total=total_rows)
+            chunk_size = max(1, math.ceil(total_rows / max(1, os.cpu_count() or 1)))
+            num_chunks = math.ceil(total_rows / chunk_size)
+            for chunk_index in range(num_chunks):
+                start_idx = chunk_index * chunk_size
+                end_idx = min(start_idx + chunk_size, total_rows)
+                temp_path = temp_dir / f"{path.stem}_part_{chunk_index:03d}.jsonl"
+                chunk_tasks.append((path, temp_path, start_idx, end_idx))
 
-        max_workers = min(len(json_files), os.cpu_count() or 1)
+        max_workers = min(len(chunk_tasks), os.cpu_count() or 1)
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(
-                    normalize_file_worker,
-                    str(path),
-                    str(output_dir) if output_dir else None,
-                    progress_map,
+                    normalize_chunk,
+                    path,
+                    temp_path,
+                    start_idx,
+                    end_idx,
+                    progress_queue,
+                    1000,
                 ): str(path)
-                for path in json_files
+                for path, temp_path, start_idx, end_idx in chunk_tasks
             }
             pending = set(future_map.keys())
+            completed_chunks = 0
+            per_file_stats: dict[str, dict] = {}
             while pending:
                 done, pending = concurrent.futures.wait(
                     pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED
                 )
-                for key, task_id in tasks.items():
-                    progress.update(task_id, completed=progress_map.get(key, 0))
+                while not progress_queue.empty():
+                    msg_type, key, delta = progress_queue.get()
+                    if msg_type == "progress":
+                        progress.update(tasks[key], advance=delta)
                 for future in done:
                     stats = future.result()
                     key = future_map[future]
-                    progress.update(tasks[key], completed=totals[key])
-                    print(f"{Path(stats['output_path']).name} -> {stats['output_path']}")
-                    print(
-                        "rows: "
-                        f"in={stats['input_rows']} out={stats['written_rows']} "
-                        f"adjusted={stats['adjusted_rows']} odd_moves={stats['odd_moves']} "
-                        f"multiple_mates={stats['multiple_mates']} missing_fen={stats['missing_fen']} "
-                        f"missing_moves={stats['missing_moves']} invalid_moves={stats['invalid_moves']}"
+                    completed_chunks += 1
+                    file_stats = per_file_stats.setdefault(
+                        key,
+                        {
+                            "input_rows": 0,
+                            "written_rows": 0,
+                            "adjusted_rows": 0,
+                            "odd_moves": 0,
+                            "multiple_mates": 0,
+                            "missing_fen": 0,
+                            "missing_moves": 0,
+                            "invalid_moves": 0,
+                            "chunks": [],
+                        },
                     )
+                    file_stats["input_rows"] += stats["input_rows"]
+                    file_stats["written_rows"] += stats["written_rows"]
+                    file_stats["adjusted_rows"] += stats["adjusted_rows"]
+                    file_stats["odd_moves"] += stats["odd_moves"]
+                    file_stats["multiple_mates"] += stats["multiple_mates"]
+                    file_stats["missing_fen"] += stats["missing_fen"]
+                    file_stats["missing_moves"] += stats["missing_moves"]
+                    file_stats["invalid_moves"] += stats["invalid_moves"]
+                    file_stats["chunks"].append((stats["start_idx"], stats["temp_path"]))
+
+            for key, task_id in tasks.items():
+                progress.update(task_id, completed=totals[key])
+
+        for path in json_files:
+            key = str(path)
+            stats = per_file_stats.get(key)
+            if stats is None:
+                continue
+            chunks = sorted(stats["chunks"], key=lambda item: item[0])
+            output_path = (Path(output_dir) if output_dir else path).with_name(path.name)
+            temp_path = output_path if output_dir else path.with_suffix(path.suffix + ".tmp")
+            with temp_path.open("w", encoding="utf-8") as out:
+                out.write("[\n")
+                first = True
+                for _, chunk_path in chunks:
+                    with Path(chunk_path).open("r", encoding="utf-8") as handle:
+                        for line in handle:
+                            if not line.strip():
+                                continue
+                            if not first:
+                                out.write(",\n")
+                            out.write(line.strip())
+                            first = False
+                out.write("\n]\n")
+            if output_dir is None:
+                temp_path.replace(output_path)
+            print(f"{Path(output_path).name} -> {output_path}")
+            print(
+                "rows: "
+                f"in={stats['input_rows']} out={stats['written_rows']} "
+                f"adjusted={stats['adjusted_rows']} odd_moves={stats['odd_moves']} "
+                f"multiple_mates={stats['multiple_mates']} missing_fen={stats['missing_fen']} "
+                f"missing_moves={stats['missing_moves']} invalid_moves={stats['invalid_moves']}"
+            )
+
+        for _, _, _, _ in chunk_tasks:
+            pass
+        for chunk_path in temp_dir.glob("*.jsonl"):
+            chunk_path.unlink()
+        try:
+            temp_dir.rmdir()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
