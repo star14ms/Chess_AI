@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 
 from chess_gym.chess_custom import LegacyChessBoard, FullyTrackedBoard
 from MCTS.training_modules.chess import create_chess_network
-from utils.profile_model import profile_model
+from utils.profile_model import profile_model, format_time
 from utils.training_utils import (
     count_dataset_entries,
     iter_csv_rows,
@@ -940,6 +940,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         collect_theme_stats = is_main and not ddp_enabled
 
         for epoch in range(start_epoch, args.epochs + 1):
+            epoch_start_time = time.time()
             total_loss = 0.0
             total_samples = 0
             policy_loss_sum = 0.0
@@ -1246,6 +1247,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     ]
                     per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
                     per_source_val_str = " | ".join(per_source_val) if per_source_val else "N/A"
+                    epoch_elapsed = format_time(int(time.time() - epoch_start_time))
                     print(
                         f"Epoch {epoch}/{args.epochs} | "
                         f"train loss={avg_loss:.4f} pol={avg_policy_loss:.4f} val={avg_value_loss:.4f} "
@@ -1253,7 +1255,8 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         f"val loss={val_avg_loss:.4f} pol={val_avg_policy_loss:.4f} "
                         f"val={val_avg_value_loss:.4f} acc={val_acc*100:.2f}% | "
                         f"train acc by source: {per_source_train_str} | "
-                        f"val acc by source: {per_source_val_str}"
+                        f"val acc by source: {per_source_val_str} | "
+                        f"elapsed={epoch_elapsed}"
                     )
                 scheduler.step(val_avg_loss)
 
@@ -1290,11 +1293,13 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         if per_source_total[i] > 0
                     ]
                     per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
+                    epoch_elapsed = format_time(int(time.time() - epoch_start_time))
                     print(
                         f"Epoch {epoch}/{args.epochs} | "
                         f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
                         f"val loss=N/A acc=N/A (no validation batches) | "
-                        f"train acc by source: {per_source_train_str}"
+                        f"train acc by source: {per_source_train_str} | "
+                        f"elapsed={epoch_elapsed}"
                     )
 
             for i, label in enumerate(source_labels):
@@ -1511,7 +1516,7 @@ def main():
     parser.add_argument(
         "--theme-ignore",
         nargs="*",
-        default=["mate", "veryLong", "long", "short", "opening", "middlegame", "endgame"],
+        default=["mate", "mateIn1", "mateIn2", "mateIn3", "mateIn4", "mateIn5", "veryLong", "long", "short", "oneMove", "opening", "middlegame", "endgame"],
         help="Themes to exclude from theme logging/plots (default: mate, veryLong, long, short, opening, middlegame, endgame).",
     )
     parser.add_argument(
