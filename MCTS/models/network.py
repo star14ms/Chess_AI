@@ -99,13 +99,21 @@ class PolicyHead(nn.Module):
 # --- Value Head Module ---
 class ValueHead(nn.Module):
     """Calculates the value estimate from the final convolutional features."""
-    def __init__(self, num_channels: int, board_height: int, board_width: int, hidden_size: int = 256):
+    def __init__(
+        self,
+        num_channels: int,
+        board_height: int,
+        board_width: int,
+        hidden_size: int = 256,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         # Input channels = C
         # Use a 1x1 Conv block to reduce channels to 1
         self.value_conv = ConvBlock(num_channels, 1, kernel_size=1, padding=0) 
         value_input_size = 1 * board_height * board_width 
         self.value_fc1 = nn.Linear(value_input_size, hidden_size)
+        self.value_dropout = nn.Dropout(p=dropout) if dropout > 0.0 else None
         self.value_fc2 = nn.Linear(hidden_size, 1)
 
     def forward(self, conv_features: torch.Tensor) -> torch.Tensor:
@@ -117,6 +125,8 @@ class ValueHead(nn.Module):
         value_x = value_x_3d.view(N, -1) # Shape: (N, H*W * 1)
         
         value_x = F.relu(self.value_fc1(value_x))
+        if self.value_dropout is not None:
+            value_x = self.value_dropout(value_x)
         value = torch.tanh(self.value_fc2(value_x)) # Shape: (N, 1)
         return value
 
@@ -146,6 +156,7 @@ class ChessNetwork(nn.Module):
                  num_pieces=DEFAULT_NUM_PIECES,
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
                  policy_dropout: float = 0.0,
+                 value_dropout: float = 0.0,
                 ):
         super().__init__()
         self.board_height = board_size
@@ -189,7 +200,13 @@ class ChessNetwork(nn.Module):
             self.board_width,
             dropout=policy_dropout,
         )
-        self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size)
+        self.value_head = ValueHead(
+            self.final_conv_channels,
+            self.board_height,
+            self.board_width,
+            hidden_size=value_head_hidden_size,
+            dropout=value_dropout,
+        )
 
     def forward(self, x):
         """Forward pass through the network.

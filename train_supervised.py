@@ -743,6 +743,8 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     weight_decay = args.weight_decay if args.weight_decay is not None else cfg.optimizer.weight_decay
     if args.policy_dropout is not None:
         cfg.network.policy_dropout = float(args.policy_dropout)
+    if args.value_dropout is not None:
+        cfg.network.value_dropout = float(args.value_dropout)
     train_dataset = MateInOneIterableDataset(
         cfg,
         args.data_paths,
@@ -1459,8 +1461,14 @@ def main():
     parser.add_argument(
         "--policy-dropout",
         type=float,
-        default=None,
+        default=0.25,
         help="Override cfg.network.policy_dropout when set.",
+    )
+    parser.add_argument(
+        "--value-dropout",
+        type=float,
+        default=0.25,
+        help="Override cfg.network.value_dropout when set.",
     )
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--checkpoint-dir", default="outputs/supervised_train")

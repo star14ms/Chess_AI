@@ -156,13 +156,22 @@ class PolicyHead(nn.Module):
 # --- Value Head Module ---
 class ValueHead(nn.Module):
     """Calculates the value estimate from the final convolutional features."""
-    def __init__(self, num_channels: int, board_height: int, board_width: int, hidden_size: int = 256, conv_bias: bool = False):
+    def __init__(
+        self,
+        num_channels: int,
+        board_height: int,
+        board_width: int,
+        hidden_size: int = 256,
+        conv_bias: bool = False,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         # Input channels = C
         # Use a 1x1 Conv block to reduce channels to 1
         self.conv = ConvBlock(num_channels, 1, kernel_size=1, padding=0, conv_bias=conv_bias) 
         value_input_size = 1 * board_height * board_width 
         self.fc1 = nn.Linear(value_input_size, hidden_size)
+        self.dropout = nn.Dropout(p=dropout) if dropout > 0.0 else None
         self.fc2 = nn.Linear(hidden_size, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -171,6 +180,8 @@ class ValueHead(nn.Module):
         x = self.conv(x)
         x = x.view(x.size(0), -1) # Shape: (N, H*W * 1)
         x = F.relu(self.fc1(x), inplace=True)
+        if self.dropout is not None:
+            x = self.dropout(x)
         x = torch.tanh(self.fc2(x)) # Shape: (N, 1)
         return x
 
@@ -198,6 +209,7 @@ class ChessNetwork4672(nn.Module):
                  policy_linear_out_features: list | None = DEFAULT_POLICY_LINEAR_OUT_FEATURES,
                  conv_bias: bool = False,
                  policy_dropout: float = 0.0,
+                 value_dropout: float = 0.0,
                  conv_dropout: float = 0.0,
                 ):
         super().__init__()
@@ -228,7 +240,14 @@ class ChessNetwork4672(nn.Module):
             conv_bias=conv_bias,
             dropout=policy_dropout,
         )
-        self.value_head = ValueHead(self.final_conv_channels, self.board_height, self.board_width, hidden_size=value_head_hidden_size, conv_bias=conv_bias)
+        self.value_head = ValueHead(
+            self.final_conv_channels,
+            self.board_height,
+            self.board_width,
+            hidden_size=value_head_hidden_size,
+            conv_bias=conv_bias,
+            dropout=value_dropout,
+        )
 
     def forward(self, x, policy_only: bool = False):
         """Forward pass through the network.

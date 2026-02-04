@@ -18,6 +18,7 @@ class NetworkConfig:
     policy_linear_out_features: Optional[List[int]] = field(default_factory=lambda: [4672])
     conv_bias: bool = False # Whether to use bias in convolutional layers
     policy_dropout: float = 0.0
+    value_dropout: float = 0.0
     conv_dropout: float = 0.0
 
 @dataclass
