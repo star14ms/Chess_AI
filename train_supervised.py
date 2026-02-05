@@ -523,6 +523,16 @@ def save_learning_curve(
             top6_10,
             "Theme accuracy (top 6-10 by frequency)",
         )
+        theme_mins = []
+        for _, train_series, val_series in top1_5 + top6_10:
+            for value in train_series + val_series:
+                if isinstance(value, float) and math.isfinite(value):
+                    theme_mins.append(value)
+        if theme_mins:
+            min_value = min(theme_mins)
+            ymin = max(0.0, min_value - 1.0)
+            axes[2].set_ylim(ymin, 100)
+            axes[3].set_ylim(ymin, 100)
 
     fig.tight_layout()
     plot_path = os.path.join(checkpoint_dir, "learning_curve.png")
