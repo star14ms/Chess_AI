@@ -218,6 +218,10 @@ def save_checkpoint(
     train_accs: list[float] | None = None,
     val_losses: list[float] | None = None,
     val_accs: list[float] | None = None,
+    per_source_train_loss: dict[str, list[float]] | None = None,
+    per_source_train_acc: dict[str, list[float]] | None = None,
+    per_source_val_loss: dict[str, list[float]] | None = None,
+    per_source_val_acc: dict[str, list[float]] | None = None,
 ):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     cfg_payload = OmegaConf.to_container(cfg, resolve=False)
@@ -247,6 +251,14 @@ def save_checkpoint(
         payload["val_losses"] = val_losses
     if val_accs is not None:
         payload["val_accs"] = val_accs
+    if per_source_train_loss is not None:
+        payload["per_source_train_loss"] = per_source_train_loss
+    if per_source_train_acc is not None:
+        payload["per_source_train_acc"] = per_source_train_acc
+    if per_source_val_loss is not None:
+        payload["per_source_val_loss"] = per_source_val_loss
+    if per_source_val_acc is not None:
+        payload["per_source_val_acc"] = per_source_val_acc
     torch.save(payload, path)
 
 

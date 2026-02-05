@@ -849,6 +849,30 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         train_accs = list(resume_data.get("train_accs", train_accs))
         val_losses = list(resume_data.get("val_losses", val_losses))
         val_accs = list(resume_data.get("val_accs", val_accs))
+        resume_per_source_train_loss = resume_data.get("per_source_train_loss")
+        resume_per_source_train_acc = resume_data.get("per_source_train_acc")
+        resume_per_source_val_loss = resume_data.get("per_source_val_loss")
+        resume_per_source_val_acc = resume_data.get("per_source_val_acc")
+        if isinstance(resume_per_source_train_loss, dict):
+            per_source_train_loss_history = {
+                label: list(resume_per_source_train_loss.get(label, []))
+                for label in source_labels
+            }
+        if isinstance(resume_per_source_train_acc, dict):
+            per_source_train_acc_history = {
+                label: list(resume_per_source_train_acc.get(label, []))
+                for label in source_labels
+            }
+        if isinstance(resume_per_source_val_loss, dict):
+            per_source_val_loss_history = {
+                label: list(resume_per_source_val_loss.get(label, []))
+                for label in source_labels
+            }
+        if isinstance(resume_per_source_val_acc, dict):
+            per_source_val_acc_history = {
+                label: list(resume_per_source_val_acc.get(label, []))
+                for label in source_labels
+            }
         if is_main:
             print(f"Resumed from {args.resume} (next epoch={start_epoch}).")
         if start_epoch > args.epochs:
@@ -1313,6 +1337,10 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                             train_accs=train_accs,
                             val_losses=val_losses,
                             val_accs=val_accs,
+                            per_source_train_loss=per_source_train_loss_history,
+                            per_source_train_acc=per_source_train_acc_history,
+                            per_source_val_loss=per_source_val_loss_history if has_val else None,
+                            per_source_val_acc=per_source_val_acc_history if has_val else None,
                         )
                 else:
                     patience_counter += 1
@@ -1402,22 +1430,6 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             elif is_main and ddp_enabled and epoch == start_epoch:
                 print("DDP enabled: theme stats/plots are disabled to avoid partial metrics.")
 
-            if is_main:
-                save_learning_curve(
-                    train_losses,
-                    train_accs,
-                    val_losses,
-                    val_accs,
-                    checkpoint_dir,
-                    theme_metrics_path=theme_metrics_path if collect_theme_stats else None,
-                    ignored_themes=ignored_themes,
-                    theme_plot_include_missing=args.theme_plot_include_missing,
-                    per_source_train_loss=per_source_train_loss_history,
-                    per_source_train_acc=per_source_train_acc_history,
-                    per_source_val_loss=per_source_val_loss_history if has_val else None,
-                    per_source_val_acc=per_source_val_acc_history if has_val else None,
-                )
-
             if args.save_every > 0 and epoch % args.save_every == 0 and is_main:
                 if has_val:
                     ckpt_filename = (
@@ -1439,6 +1451,26 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     train_accs=train_accs,
                     val_losses=val_losses,
                     val_accs=val_accs,
+                    per_source_train_loss=per_source_train_loss_history,
+                    per_source_train_acc=per_source_train_acc_history,
+                    per_source_val_loss=per_source_val_loss_history if has_val else None,
+                    per_source_val_acc=per_source_val_acc_history if has_val else None,
+                )
+
+            if is_main:
+                save_learning_curve(
+                    train_losses,
+                    train_accs,
+                    val_losses,
+                    val_accs,
+                    checkpoint_dir,
+                    theme_metrics_path=theme_metrics_path if collect_theme_stats else None,
+                    ignored_themes=ignored_themes,
+                    theme_plot_include_missing=args.theme_plot_include_missing,
+                    per_source_train_loss=per_source_train_loss_history,
+                    per_source_train_acc=per_source_train_acc_history,
+                    per_source_val_loss=per_source_val_loss_history if has_val else None,
+                    per_source_val_acc=per_source_val_acc_history if has_val else None,
                 )
 
     if is_main:
@@ -1462,6 +1494,10 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             train_accs=train_accs,
             val_losses=val_losses,
             val_accs=val_accs,
+            per_source_train_loss=per_source_train_loss_history,
+            per_source_train_acc=per_source_train_acc_history,
+            per_source_val_loss=per_source_val_loss_history if has_val else None,
+            per_source_val_acc=per_source_val_acc_history if has_val else None,
         )
         print(f"Saved final checkpoint to {final_path}")
         if collect_theme_stats:
