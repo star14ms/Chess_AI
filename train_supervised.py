@@ -619,6 +619,25 @@ def _plot_theme_group(
         axis.legend(fontsize=8)
 
 
+def _seed_theme_metrics_from_resume(
+    resume_path: str | None, theme_metrics_path: str
+) -> None:
+    if not resume_path or os.path.exists(theme_metrics_path):
+        return
+    resume_dir = os.path.dirname(os.path.abspath(resume_path))
+    resume_theme_path = os.path.join(resume_dir, "theme_metrics.jsonl")
+    if not os.path.exists(resume_theme_path):
+        return
+    try:
+        with open(resume_theme_path, "r", encoding="utf-8") as src, open(
+            theme_metrics_path, "w", encoding="utf-8"
+        ) as dst:
+            dst.write(src.read())
+    except OSError:
+        # Best-effort: skip if we can't read/write the file.
+        return
+
+
 def _update_theme_stats(
     theme_stats: dict, themes_batch: list[list[str]], correct_batch: list[bool]
 ) -> None:
@@ -810,6 +829,8 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     if is_main:
         os.makedirs(checkpoint_dir, exist_ok=True)
     theme_metrics_path = os.path.join(checkpoint_dir, "theme_metrics.jsonl")
+    if is_main:
+        _seed_theme_metrics_from_resume(args.resume, theme_metrics_path)
     ignored_themes = {t.strip() for t in args.theme_ignore if t and t.strip()}
 
     start_epoch = 1
@@ -839,6 +860,20 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             if ddp_enabled:
                 _cleanup_ddp()
             return
+
+    # If resuming, per-source history is not stored in checkpoints; pad to match epochs.
+    prior_epochs = len(train_losses)
+    if prior_epochs:
+        for label in source_labels:
+            while len(per_source_train_loss_history[label]) < prior_epochs:
+                per_source_train_loss_history[label].append(float("nan"))
+            while len(per_source_train_acc_history[label]) < prior_epochs:
+                per_source_train_acc_history[label].append(float("nan"))
+            while len(per_source_val_loss_history[label]) < prior_epochs:
+                per_source_val_loss_history[label].append(float("nan"))
+            while len(per_source_val_acc_history[label]) < prior_epochs:
+                per_source_val_acc_history[label].append(float("nan"))
+
 
     if is_main:
         max_rows_label = args.max_rows if args.max_rows is not None else "all"
