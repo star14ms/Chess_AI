@@ -121,7 +121,9 @@ class MateInOneIterableDataset(IterableDataset):
 
         raw_index = 0
         yielded = 0
-        rng = random.Random(self.seed + global_worker_id)
+        # Use a consistent RNG across workers so sharding by global index
+        # is deterministic and non-overlapping across ranks/workers.
+        rng = random.Random(self.seed)
         active = list(range(len(sources)))
         while active:
             active_idx = rng.randrange(len(active))
