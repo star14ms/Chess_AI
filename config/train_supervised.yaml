@@ -40,6 +40,7 @@ supervised:
   lr_patience: 3
   lr_factor: 0.5
   resume: null
+  max_time: null
   amp: false # Set true on CUDA GPUs (Tensor Cores) for speed/memory gains; keep false on CPU/MPS.
 
   logging:

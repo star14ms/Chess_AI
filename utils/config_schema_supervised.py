@@ -60,6 +60,7 @@ class SupervisedConfig:
     lr_patience: int = 3
     lr_factor: float = 0.5
     resume: Optional[str] = None
+    max_time: Optional[float] = None
     amp: bool = False
     logging: SupervisedLoggingConfig = field(default_factory=SupervisedLoggingConfig)
 

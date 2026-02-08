@@ -1052,6 +1052,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
         )
         last_val_loss = None
         last_val_acc = None
+        total_start_time = time.time()
 
         collect_theme_stats = True
 
@@ -1367,6 +1368,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                     per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
                     per_source_val_str = " | ".join(per_source_val) if per_source_val else "N/A"
                     epoch_elapsed = format_time(int(time.time() - epoch_start_time))
+                    total_elapsed = format_time(int(time.time() - total_start_time))
                     print(
                         f"Epoch {epoch}/{supervised_cfg.epochs} | "
                         f"train loss={avg_loss:.4f} pol={avg_policy_loss:.4f} val={avg_value_loss:.4f} "
@@ -1375,7 +1377,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                         f"val={val_avg_value_loss:.4f} acc={val_acc*100:.2f}% | "
                         f"train acc by source: {per_source_train_str} | "
                         f"val acc by source: {per_source_val_str} | "
-                        f"elapsed={epoch_elapsed}"
+                        f"elapsed={epoch_elapsed} total={total_elapsed}"
                     )
                 scheduler.step(val_avg_loss)
 
@@ -1417,12 +1419,13 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                     ]
                     per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
                     epoch_elapsed = format_time(int(time.time() - epoch_start_time))
+                    total_elapsed = format_time(int(time.time() - total_start_time))
                     print(
                         f"Epoch {epoch}/{supervised_cfg.epochs} | "
                         f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
                         f"val loss=N/A acc=N/A (no validation batches) | "
                         f"train acc by source: {per_source_train_str} | "
-                        f"elapsed={epoch_elapsed}"
+                        f"elapsed={epoch_elapsed} total={total_elapsed}"
                     )
 
             for i, label in enumerate(source_labels):
@@ -1533,6 +1536,23 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                     per_source_val_loss=per_source_val_loss_history if has_val else None,
                     per_source_val_acc=per_source_val_acc_history if has_val else None,
                 )
+            if supervised_cfg.max_time is not None:
+                try:
+                    max_time = float(supervised_cfg.max_time)
+                except (TypeError, ValueError):
+                    max_time = None
+                if max_time is not None and max_time > 0:
+                    completed_epochs = epoch - start_epoch + 1
+                    total_elapsed_seconds = time.time() - total_start_time
+                    avg_epoch_seconds = total_elapsed_seconds / max(completed_epochs, 1)
+                    if total_elapsed_seconds + avg_epoch_seconds > max_time:
+                        if is_main:
+                            print(
+                                "Stopping early to respect max_time="
+                                f"{format_time(int(max_time))} "
+                                f"(elapsed={format_time(int(total_elapsed_seconds))})."
+                            )
+                        break
 
     if is_main:
         if last_val_loss is not None and last_val_acc is not None:
