@@ -709,6 +709,24 @@ def _ddp_all_reduce_float_list(values: list[float], device: torch.device) -> lis
     return tensor.tolist()
 
 
+def _ddp_merge_theme_stats(theme_stats: dict, world_size: int) -> dict:
+    if not dist.is_initialized():
+        return theme_stats
+    gathered: list[dict | None] = [None for _ in range(world_size)]
+    dist.all_gather_object(gathered, theme_stats)
+    if dist.get_rank() != 0:
+        return {}
+    merged: dict[str, dict[str, int]] = {}
+    for stats in gathered:
+        if not stats:
+            continue
+        for theme, counts in stats.items():
+            entry = merged.setdefault(theme, {"total": 0, "correct": 0})
+            entry["total"] += int(counts.get("total", 0))
+            entry["correct"] += int(counts.get("correct", 0))
+    return merged
+
+
 def _train_worker(rank: int, world_size: int, args) -> None:
     ddp_enabled = world_size > 1
     is_main = rank == 0
@@ -1006,7 +1024,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         last_val_loss = None
         last_val_acc = None
 
-        collect_theme_stats = is_main and not ddp_enabled
+        collect_theme_stats = True
 
         for epoch in range(start_epoch, args.epochs + 1):
             epoch_start_time = time.time()
@@ -1281,7 +1299,6 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             train_losses.append(avg_loss)
             train_accs.append(acc)
 
-            has_val = val_samples > 0
             if ddp_enabled:
                 val_loss = _ddp_all_reduce(val_loss, device)
                 val_loss_samples = _ddp_all_reduce(val_loss_samples, device)
@@ -1296,6 +1313,10 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 val_per_source_loss_sum = _ddp_all_reduce_float_list(
                     val_per_source_loss_sum, device
                 )
+            has_val = val_samples > 0
+            if ddp_enabled and collect_theme_stats:
+                train_theme_stats = _ddp_merge_theme_stats(train_theme_stats, world_size)
+                val_theme_stats = _ddp_merge_theme_stats(val_theme_stats, world_size)
             if has_val:
                 val_avg_loss = val_loss / max(val_loss_samples, 1)
                 val_avg_policy_loss = val_policy_loss_sum / max(val_policy_samples, 1)
@@ -1437,9 +1458,6 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         if total < min_theme_total:
                             break
                         print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
-            elif is_main and ddp_enabled and epoch == start_epoch:
-                print("DDP enabled: theme stats/plots are disabled to avoid partial metrics.")
-
             if args.save_every > 0 and epoch % args.save_every == 0 and is_main:
                 if has_val:
                     ckpt_filename = (
