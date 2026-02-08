@@ -22,7 +22,7 @@ supervised:
     - ${hydra:runtime.cwd}/data/mate_in_5_flipped_expanded.jsonl
     - ${hydra:runtime.cwd}/data/endgame_without_mate_flipped.json
   epochs: 10
-  batch_size: null
+  batch_size: 64
   learning_rate: 1e-4
   policy_dropout: 0.25
   value_dropout: 0.25

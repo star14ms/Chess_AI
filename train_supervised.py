@@ -738,9 +738,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
         _setup_ddp(rank, world_size)
         device = torch.device(f"cuda:{rank}")
     else:
-        device = select_device(
-            supervised_cfg.device or cfg.training.get("device", "auto")
-        )
+        device = select_device(supervised_cfg.device or "auto")
 
     source_labels = ["m1", "m2", "m3", "m4", "m5", "m6plus", "endgame"]
     num_sources = len(source_labels)
@@ -789,13 +787,9 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
         dist.broadcast(total_rows_tensor, src=0)
         total_rows = None if total_rows_tensor.item() < 0 else int(total_rows_tensor.item())
 
-    batch_size = supervised_cfg.batch_size or cfg.training.batch_size
-    learning_rate = supervised_cfg.learning_rate or cfg.optimizer.learning_rate
-    weight_decay = (
-        supervised_cfg.weight_decay
-        if supervised_cfg.weight_decay is not None
-        else cfg.optimizer.weight_decay
-    )
+    batch_size = supervised_cfg.batch_size
+    learning_rate = supervised_cfg.learning_rate
+    weight_decay = supervised_cfg.weight_decay
     if supervised_cfg.policy_dropout is not None:
         cfg.network.policy_dropout = float(supervised_cfg.policy_dropout)
     if supervised_cfg.value_dropout is not None:
@@ -1617,8 +1611,6 @@ def main(cfg: DictConfig):
                     "supervised": supervised_cfg,
                     "network": cfg.network,
                     "env": cfg.env,
-                    "optimizer": cfg.optimizer,
-                    "training": cfg.training,
                 }
             )
         )

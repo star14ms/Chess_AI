@@ -41,7 +41,7 @@ class SupervisedConfig:
         ]
     )
     epochs: int = 10
-    batch_size: Optional[int] = None
+    batch_size: int = 64
     learning_rate: float = 1e-4
     policy_dropout: Optional[float] = 0.25
     value_dropout: Optional[float] = 0.25
