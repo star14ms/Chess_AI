@@ -37,8 +37,8 @@ supervised:
   val_split: 0.1
   seed: 1337
   early_stop_patience: 10
-  lr_patience: 3
-  lr_factor: 0.5
+  lr_patience: 2
+  lr_factor: 0.1
   resume: null
   max_time: null
   amp: false # Set true on CUDA GPUs (Tensor Cores) for speed/memory gains; keep false on CPU/MPS.

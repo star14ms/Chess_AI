@@ -132,13 +132,14 @@ class MateInOneIterableDataset(IterableDataset):
             except StopIteration:
                 active.pop(active_idx)
                 continue
+            if not self._entry_matches_split(entry):
+                continue
+            # Shard only after confirming the entry belongs to this split.
+            # This keeps per-rank batch counts more consistent under DDP.
             if raw_index % global_num_workers != global_worker_id:
                 raw_index += 1
                 continue
             raw_index += 1
-
-            if not self._entry_matches_split(entry):
-                continue
 
             if _is_processed_entry(entry, source_type):
                 processed = _extract_processed_entry(entry, source_type)
@@ -1608,8 +1609,20 @@ def main(cfg: DictConfig):
     # DDP subprocesses won't have Hydra's resolver registered.
     OmegaConf.resolve(cfg)
     supervised_cfg = cfg.supervised
-    print("Configuration:\n")
-    print(OmegaConf.to_yaml(cfg))
+    print("Configuration (used hyperparams):\n")
+    print(
+        OmegaConf.to_yaml(
+            OmegaConf.create(
+                {
+                    "supervised": supervised_cfg,
+                    "network": cfg.network,
+                    "env": cfg.env,
+                    "optimizer": cfg.optimizer,
+                    "training": cfg.training,
+                }
+            )
+        )
+    )
     if supervised_cfg.num_workers == "auto":
         cpu_cores = os.cpu_count() or 1
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
