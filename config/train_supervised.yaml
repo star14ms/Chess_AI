@@ -1,0 +1,62 @@
+# @package _global_
+
+defaults:
+  - train_mcts
+  - _self_
+
+_target_: utils.config_schema_supervised.SupervisedTrainConfig
+
+hydra:
+  run:
+    dir: outputs/supervised_train/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/supervised_train/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+
+supervised:
+  data_paths:
+    - ${hydra:runtime.cwd}/data/mate_in_1_flipped_expanded.jsonl
+    - ${hydra:runtime.cwd}/data/mate_in_2_flipped_expanded.jsonl
+    - ${hydra:runtime.cwd}/data/mate_in_3_flipped_expanded.jsonl
+    - ${hydra:runtime.cwd}/data/mate_in_4_flipped_expanded.jsonl
+    - ${hydra:runtime.cwd}/data/mate_in_5_flipped_expanded.jsonl
+    - ${hydra:runtime.cwd}/data/endgame_without_mate_flipped.json
+  epochs: 10
+  batch_size: null
+  learning_rate: 1e-4
+  policy_dropout: 0.25
+  value_dropout: 0.25
+  weight_decay: 1e-2
+  checkpoint_dir: ${hydra:runtime.output_dir}
+  save_every: 1
+  num_workers: auto
+  max_rows: null
+  device: auto
+  skip_value_sources:
+    - endgame_without_mate_flipped
+  val_split: 0.1
+  seed: 1337
+  early_stop_patience: 10
+  lr_patience: 3
+  lr_factor: 0.5
+  resume: null
+  amp: false # Set true on CUDA GPUs (Tensor Cores) for speed/memory gains; keep false on CPU/MPS.
+
+  logging:
+    no_progress: false
+    theme_log_min_total: 100
+    theme_ignore:
+      - mate
+      - mateIn1
+      - mateIn2
+      - mateIn3
+      - mateIn4
+      - mateIn5
+      - veryLong
+      - long
+      - short
+      - oneMove
+      - opening
+      - middlegame
+      - endgame
+    theme_plot_include_missing: false

@@ -12,11 +12,11 @@ hydra:
     subdir: ${hydra.job.num}
 
 # Target the main Config dataclass
-_target_: MCTS.config_schema.Config
+_target_: utils.config_schema_rl.Config
 
 network:
   # Target the specific NetworkConfig dataclass
-  _target_: MCTS.config_schema.NetworkConfig
+  _target_: utils.config_schema_rl.NetworkConfig
   # Values here override defaults in the dataclass
   input_channels: 2  # Black and white pieces
   dim_piece_type: 0  # Only two piece types in Gomoku
@@ -31,14 +31,14 @@ network:
 
 # Environment configuration
 env:
-  _target_: MCTS.config_schema.EnvConfig
+  _target_: utils.config_schema_rl.EnvConfig
   type: gomoku  # Specify Gomoku environment
   observation_mode: vector
   render_mode: rgb_array
   save_video_folder: './videos'
 
 mcts:
-  _target_: MCTS.config_schema.MCTSConfig
+  _target_: utils.config_schema_rl.MCTSConfig
   iterations: 0
   c_puct: 1.41
   temperature_start: 1.0
@@ -47,13 +47,13 @@ mcts:
   batch_size: 8  # Number of leaves to evaluate in one batched network call
 
 optimizer:
-  _target_: MCTS.config_schema.OptimizerConfig
+  _target_: utils.config_schema_rl.OptimizerConfig
   type: Adam
   learning_rate: 0.1
   weight_decay: 1e-4
 
 training:
-  _target_: MCTS.config_schema.TrainingConfig
+  _target_: utils.config_schema_rl.TrainingConfig
   replay_buffer_size: 8192
   device: auto
   num_training_iterations: 1000

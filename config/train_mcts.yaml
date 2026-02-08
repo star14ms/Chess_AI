@@ -14,11 +14,11 @@ hydra:
     subdir: ${hydra.job.num}
 
 # Target the main Config dataclass
-_target_: MCTS.config_schema.Config
+_target_: utils.config_schema_rl.Config
 
 network:
   # Target the specific NetworkConfig dataclass
-  _target_: MCTS.config_schema.NetworkConfig
+  _target_: utils.config_schema_rl.NetworkConfig
   # Values here override defaults in the dataclass
   input_channels: 119  # 8-step AlphaZero history (112) + 7 meta planes for Legacy board
   dim_piece_type: 16
@@ -38,7 +38,7 @@ network:
 
 # New Env section
 env:
-  _target_: MCTS.config_schema.EnvConfig
+  _target_: utils.config_schema_rl.EnvConfig
   type: chess  # "chess" or "gomoku" - specifies which environment to use
   observation_mode: vector
   render_mode: rgb_array # Set to null or remove for no rendering
@@ -46,7 +46,7 @@ env:
   history_steps: 8
 
 mcts:
-  _target_: MCTS.config_schema.MCTSConfig
+  _target_: utils.config_schema_rl.MCTSConfig
   iterations: 1024  # More search to find mate
   c_puct: 2.0      # Moderate (not too high!)
   temperature_start: 1.0  # Some randomness early
@@ -59,14 +59,14 @@ mcts:
   
 
 optimizer:
-  _target_: MCTS.config_schema.OptimizerConfig
+  _target_: utils.config_schema_rl.OptimizerConfig
   type: Adam
   learning_rate: 1e-4
   # momentum: 0.9 # Not needed for Adam default
   weight_decay: 1e-4
 
 training:
-  _target_: MCTS.config_schema.TrainingConfig
+  _target_: utils.config_schema_rl.TrainingConfig
   replay_buffer_size: 8192
   device: auto # If device is cpu and multiprocessing is false and render_mode is not null, you can see the pygame window
   amp: false # Enable CUDA AMP (mixed precision) during training

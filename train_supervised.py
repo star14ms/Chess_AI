@@ -1,4 +1,3 @@
-import argparse
 import hashlib
 import json
 import math
@@ -17,7 +16,8 @@ from torch.amp import autocast, GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data._utils.collate import default_collate
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
-from omegaconf import OmegaConf
+import hydra
+from omegaconf import DictConfig, OmegaConf
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
 import matplotlib.pyplot as plt
 
@@ -727,20 +727,23 @@ def _ddp_merge_theme_stats(theme_stats: dict, world_size: int) -> dict:
     return merged
 
 
-def _train_worker(rank: int, world_size: int, args) -> None:
+def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
     ddp_enabled = world_size > 1
     is_main = rank == 0
-    cfg = OmegaConf.load(args.config)
+    OmegaConf.set_struct(cfg, False)
+    supervised_cfg = cfg.supervised
     if ddp_enabled:
         torch.cuda.set_device(rank)
         _setup_ddp(rank, world_size)
         device = torch.device(f"cuda:{rank}")
     else:
-        device = select_device(args.device or cfg.training.get("device", "auto"))
+        device = select_device(
+            supervised_cfg.device or cfg.training.get("device", "auto")
+        )
 
     source_labels = ["m1", "m2", "m3", "m4", "m5", "m6plus", "endgame"]
     num_sources = len(source_labels)
-    skip_value_sources = {s for s in args.skip_value_sources if s}
+    skip_value_sources = {s for s in supervised_cfg.skip_value_sources if s}
     skip_value_source_ids = {
         idx
         for idx, label in enumerate(source_labels)
@@ -760,7 +763,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     json_only = True
     if is_main:
         total_rows = 0
-        for data_path in args.data_paths:
+        for data_path in supervised_cfg.data_paths:
             lower_path = data_path.lower()
             if lower_path.endswith(".json"):
                 data_lines = fast_count_json_lines(data_path)
@@ -785,30 +788,34 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         dist.broadcast(total_rows_tensor, src=0)
         total_rows = None if total_rows_tensor.item() < 0 else int(total_rows_tensor.item())
 
-    batch_size = args.batch_size or cfg.training.batch_size
-    learning_rate = args.learning_rate or cfg.optimizer.learning_rate
-    weight_decay = args.weight_decay if args.weight_decay is not None else cfg.optimizer.weight_decay
-    if args.policy_dropout is not None:
-        cfg.network.policy_dropout = float(args.policy_dropout)
-    if args.value_dropout is not None:
-        cfg.network.value_dropout = float(args.value_dropout)
+    batch_size = supervised_cfg.batch_size or cfg.training.batch_size
+    learning_rate = supervised_cfg.learning_rate or cfg.optimizer.learning_rate
+    weight_decay = (
+        supervised_cfg.weight_decay
+        if supervised_cfg.weight_decay is not None
+        else cfg.optimizer.weight_decay
+    )
+    if supervised_cfg.policy_dropout is not None:
+        cfg.network.policy_dropout = float(supervised_cfg.policy_dropout)
+    if supervised_cfg.value_dropout is not None:
+        cfg.network.value_dropout = float(supervised_cfg.value_dropout)
     train_dataset = MateInOneIterableDataset(
         cfg,
-        args.data_paths,
+        supervised_cfg.data_paths,
         split="train",
-        val_split=args.val_split,
-        seed=args.seed,
-        max_rows=args.max_rows,
+        val_split=supervised_cfg.val_split,
+        seed=supervised_cfg.seed,
+        max_rows=supervised_cfg.max_rows,
         rank=rank,
         world_size=world_size,
     )
     val_dataset = MateInOneIterableDataset(
         cfg,
-        args.data_paths,
+        supervised_cfg.data_paths,
         split="val",
-        val_split=args.val_split,
-        seed=args.seed,
-        max_rows=args.max_rows,
+        val_split=supervised_cfg.val_split,
+        seed=supervised_cfg.seed,
+        max_rows=supervised_cfg.max_rows,
         rank=rank,
         world_size=world_size,
     )
@@ -816,14 +823,14 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         train_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=supervised_cfg.num_workers,
         collate_fn=_collate_with_themes,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=supervised_cfg.num_workers,
         collate_fn=_collate_with_themes,
     )
 
@@ -848,18 +855,24 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", patience=args.lr_patience, factor=args.lr_factor
+        optimizer,
+        mode="min",
+        patience=supervised_cfg.lr_patience,
+        factor=supervised_cfg.lr_factor,
     )
     criterion = nn.CrossEntropyLoss()
 
     run_id = time.strftime("%Y-%m-%d/%H-%M-%S")
-    checkpoint_dir = os.path.join(args.checkpoint_dir, run_id)
+    checkpoint_dir = os.path.join(supervised_cfg.checkpoint_dir, run_id)
     if is_main:
         os.makedirs(checkpoint_dir, exist_ok=True)
     theme_metrics_path = os.path.join(checkpoint_dir, "theme_metrics.jsonl")
     if is_main:
-        _seed_theme_metrics_from_resume(args.resume, theme_metrics_path)
-    ignored_themes = {t.strip() for t in args.theme_ignore if t and t.strip()}
+        _seed_theme_metrics_from_resume(supervised_cfg.resume, theme_metrics_path)
+    logging_cfg = supervised_cfg.logging
+    ignored_themes = {
+        t.strip() for t in logging_cfg.theme_ignore if t and t.strip()
+    }
 
     start_epoch = 1
     best_val_loss = float("inf")
@@ -868,8 +881,10 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     train_accs: list[float] = []
     val_losses: list[float] = []
     val_accs: list[float] = []
-    if args.resume:
-        resume_data = load_checkpoint(args.resume, model_ref, optimizer, scheduler, device)
+    if supervised_cfg.resume:
+        resume_data = load_checkpoint(
+            supervised_cfg.resume, model_ref, optimizer, scheduler, device
+        )
         start_epoch = resume_data.get("epoch", 0) + 1
         best_val_loss = resume_data.get("best_val_loss", best_val_loss)
         patience_counter = resume_data.get("patience_counter", patience_counter)
@@ -902,11 +917,11 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 for label in source_labels
             }
         if is_main:
-            print(f"Resumed from {args.resume} (next epoch={start_epoch}).")
-        if start_epoch > args.epochs:
+            print(f"Resumed from {supervised_cfg.resume} (next epoch={start_epoch}).")
+        if start_epoch > supervised_cfg.epochs:
             if is_main:
                 print(
-                    f"Checkpoint epoch={start_epoch - 1} exceeds requested epochs={args.epochs}. "
+                    f"Checkpoint epoch={start_epoch - 1} exceeds requested epochs={supervised_cfg.epochs}. "
                     "Nothing to train."
                 )
             if ddp_enabled:
@@ -928,43 +943,55 @@ def _train_worker(rank: int, world_size: int, args) -> None:
 
 
     if is_main:
-        max_rows_label = args.max_rows if args.max_rows is not None else "all"
-        joined_paths = ", ".join(args.data_paths)
+        max_rows_label = (
+            supervised_cfg.max_rows if supervised_cfg.max_rows is not None else "all"
+        )
+        joined_paths = ", ".join(supervised_cfg.data_paths)
         print(f"Streaming data from {joined_paths} (max_rows={max_rows_label}).")
-        print(f"Split: val={args.val_split:.2f} | seed={args.seed}")
+        print(
+            f"Split: val={supervised_cfg.val_split:.2f} | seed={supervised_cfg.seed}"
+        )
         cpu_cores = os.cpu_count() or 0
         gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        total_workers = args.num_workers * world_size if ddp_enabled else args.num_workers
+        total_workers = (
+            supervised_cfg.num_workers * world_size
+            if ddp_enabled
+            else supervised_cfg.num_workers
+        )
         print(
             "Resources | "
             f"cpu_cores={cpu_cores} gpus={gpus} "
-            f"num_workers={args.num_workers} total_workers={total_workers}"
+            f"num_workers={supervised_cfg.num_workers} total_workers={total_workers}"
         )
-        print(f"Training on {device} | batch_size={batch_size} | epochs={args.epochs}")
+        print(
+            f"Training on {device} | batch_size={batch_size} | epochs={supervised_cfg.epochs}"
+        )
         if ddp_enabled:
             print(f"DDP enabled | world_size={world_size}")
-        if args.amp:
+        if supervised_cfg.amp:
             amp_status = (
                 "enabled" if device.type in {"cuda", "mps"} else "disabled (non-CUDA)"
             )
             print(f"AMP: {amp_status}")
 
-    amp_enabled = bool(args.amp and device.type in {"cuda", "mps"})
+    amp_enabled = bool(supervised_cfg.amp and device.type in {"cuda", "mps"})
     amp_device = "cuda" if device.type == "cuda" else "mps"
-    scaler = GradScaler(amp_device, enabled=args.amp and device.type == "cuda")
+    scaler = GradScaler(
+        amp_device, enabled=supervised_cfg.amp and device.type == "cuda"
+    )
 
     train_total = None
     val_total = None
     if total_rows is not None:
         effective_rows = total_rows
-        if args.max_rows is not None:
-            effective_rows = min(effective_rows, args.max_rows)
-        if args.val_split <= 0:
+        if supervised_cfg.max_rows is not None:
+            effective_rows = min(effective_rows, supervised_cfg.max_rows)
+        if supervised_cfg.val_split <= 0:
             val_count = 0
-        elif args.val_split >= 1:
+        elif supervised_cfg.val_split >= 1:
             val_count = effective_rows
         else:
-            val_count = int(effective_rows * args.val_split)
+            val_count = int(effective_rows * supervised_cfg.val_split)
         train_count = max(effective_rows - val_count, 0)
     else:
         train_count = count_dataset_entries(train_dataset)
@@ -990,12 +1017,14 @@ def _train_worker(rank: int, world_size: int, args) -> None:
     )
 
     progress_manager = (
-        NullProgress() if args.no_progress or not is_main else Progress(*progress_columns, transient=False)
+        NullProgress()
+        if logging_cfg.no_progress or not is_main
+        else Progress(*progress_columns, transient=False)
     )
     with progress_manager as progress:
         epoch_task = progress.add_task(
             "Epochs",
-            total=args.epochs,
+            total=supervised_cfg.epochs,
             completed=start_epoch - 1,
             loss=float("nan"),
             pol=float("nan"),
@@ -1026,7 +1055,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
 
         collect_theme_stats = True
 
-        for epoch in range(start_epoch, args.epochs + 1):
+        for epoch in range(start_epoch, supervised_cfg.epochs + 1):
             epoch_start_time = time.time()
             total_loss = 0.0
             total_samples = 0
@@ -1339,7 +1368,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     per_source_val_str = " | ".join(per_source_val) if per_source_val else "N/A"
                     epoch_elapsed = format_time(int(time.time() - epoch_start_time))
                     print(
-                        f"Epoch {epoch}/{args.epochs} | "
+                        f"Epoch {epoch}/{supervised_cfg.epochs} | "
                         f"train loss={avg_loss:.4f} pol={avg_policy_loss:.4f} val={avg_value_loss:.4f} "
                         f"acc={acc*100:.2f}% | "
                         f"val loss={val_avg_loss:.4f} pol={val_avg_policy_loss:.4f} "
@@ -1375,7 +1404,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         )
                 else:
                     patience_counter += 1
-                    if patience_counter >= args.early_stop_patience:
+                    if patience_counter >= supervised_cfg.early_stop_patience:
                         if is_main:
                             print(f"Early stopping at epoch {epoch}.")
                         break
@@ -1389,7 +1418,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     per_source_train_str = " | ".join(per_source_train) if per_source_train else "N/A"
                     epoch_elapsed = format_time(int(time.time() - epoch_start_time))
                     print(
-                        f"Epoch {epoch}/{args.epochs} | "
+                        f"Epoch {epoch}/{supervised_cfg.epochs} | "
                         f"train loss={avg_loss:.4f} acc={acc*100:.2f}% | "
                         f"val loss=N/A acc=N/A (no validation batches) | "
                         f"train acc by source: {per_source_train_str} | "
@@ -1441,7 +1470,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         }
                         theme_out.write(json.dumps(val_payload, ensure_ascii=True) + "\n")
 
-                min_theme_total = max(0, int(args.theme_log_min_total))
+                min_theme_total = max(0, int(logging_cfg.theme_log_min_total))
                 if train_theme_stats:
                     print(f"Theme accuracy (train, total>={min_theme_total}):")
                     for theme, total, correct, acc in _format_theme_stats(train_theme_stats):
@@ -1458,7 +1487,11 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                         if total < min_theme_total:
                             break
                         print(f"- {theme}: {correct}/{total} ({acc:.2f}%)")
-            if args.save_every > 0 and epoch % args.save_every == 0 and is_main:
+            if (
+                supervised_cfg.save_every > 0
+                and epoch % supervised_cfg.save_every == 0
+                and is_main
+            ):
                 if has_val:
                     ckpt_filename = (
                         f"model_epoch_{epoch}_val_{val_avg_loss:.4f}_acc_{val_acc*100:.2f}.pth"
@@ -1494,7 +1527,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                     checkpoint_dir,
                     theme_metrics_path=theme_metrics_path if collect_theme_stats else None,
                     ignored_themes=ignored_themes,
-                    theme_plot_include_missing=args.theme_plot_include_missing,
+                    theme_plot_include_missing=logging_cfg.theme_plot_include_missing,
                     per_source_train_loss=per_source_train_loss_history,
                     per_source_train_acc=per_source_train_acc_history,
                     per_source_val_loss=per_source_val_loss_history if has_val else None,
@@ -1513,7 +1546,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
             final_path,
             model_ref,
             optimizer,
-            args.epochs,
+            supervised_cfg.epochs,
             cfg,
             scheduler=scheduler,
             best_val_loss=best_val_loss,
@@ -1537,7 +1570,7 @@ def _train_worker(rank: int, world_size: int, args) -> None:
                 checkpoint_dir,
                 theme_metrics_path=theme_metrics_path,
                 ignored_themes=ignored_themes,
-                theme_plot_include_missing=args.theme_plot_include_missing,
+                theme_plot_include_missing=logging_cfg.theme_plot_include_missing,
                 per_source_train_loss=per_source_train_loss_history,
                 per_source_train_acc=per_source_train_acc_history,
                 per_source_val_loss=per_source_val_loss_history if has_val else None,
@@ -1548,104 +1581,33 @@ def _train_worker(rank: int, world_size: int, args) -> None:
         _cleanup_ddp()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Supervised training on puzzle positions.")
-    parser.add_argument(
-        "--data",
-        "--csv",
-        dest="data_paths",
-        nargs="+",
-        default=["data/mate_in_1_flipped_expanded.jsonl", "data/mate_in_2_flipped_expanded.jsonl", "data/mate_in_3_flipped_expanded.jsonl", "data/mate_in_4_flipped_expanded.jsonl", "data/mate_in_5_flipped_expanded.jsonl", "data/endgame_without_mate_flipped.json"],
-        help="Paths to puzzle data (CSV or JSON). Pass multiple paths to mix datasets.",
-    )
-    parser.add_argument("--config", default="config/train_mcts.yaml", help="Config YAML for network settings.")
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument(
-        "--policy-dropout",
-        type=float,
-        default=0.25,
-        help="Override cfg.network.policy_dropout when set.",
-    )
-    parser.add_argument(
-        "--value-dropout",
-        type=float,
-        default=0.25,
-        help="Override cfg.network.value_dropout when set.",
-    )
-    parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--checkpoint-dir", default="outputs/supervised_train")
-    parser.add_argument("--save-every", type=int, default=1)
-    parser.add_argument(
-        "--num-workers",
-        type=str,
-        default="auto",
-        help=(
-            "DataLoader workers per GPU process (DDP). Use an int or 'auto'. "
-            "Auto caps at 2: total workers = num_workers * num_gpus; keep total near CPU cores."
-        ),
-    )
-    parser.add_argument("--max-rows", type=int, default=None)
-    parser.add_argument("--device", default="auto", help="auto, cuda, mps, or cpu")
-    parser.add_argument(
-        "--skip-value-sources",
-        nargs="*",
-        default=["endgame_without_mate_flipped"],
-        help="Source labels to exclude from value loss (e.g., endgame_without_mate_flipped).",
-    )
-    parser.add_argument("--val-split", type=float, default=0.1)
-    parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--early-stop-patience", type=int, default=10)
-    parser.add_argument("--lr-patience", type=int, default=3)
-    parser.add_argument("--lr-factor", type=float, default=0.5)
-    parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from.")
-    parser.add_argument("--no-progress", action="store_true", help="Disable progress bars.")
-    parser.add_argument(
-        "--amp",
-        action="store_true",
-        help="Enable CUDA AMP (mixed precision) training.",
-    )
-    parser.add_argument(
-        "--theme-log-min-total",
-        type=int,
-        default=100,
-        help="Minimum theme count to log to console (default: 100).",
-    )
-    parser.add_argument(
-        "--theme-ignore",
-        nargs="*",
-        default=["mate", "mateIn1", "mateIn2", "mateIn3", "mateIn4", "mateIn5", "veryLong", "long", "short", "oneMove", "opening", "middlegame", "endgame"],
-        help="Themes to exclude from theme logging/plots (default: mate, veryLong, long, short, opening, middlegame, endgame).",
-    )
-    parser.add_argument(
-        "--theme-plot-include-missing",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="If true, keep missing epochs as gaps in theme plots (default: False).",
-    )
-    args = parser.parse_args()
-    if args.num_workers == "auto":
+@hydra.main(config_path="config", config_name="train_supervised", version_base=None)
+def main(cfg: DictConfig):
+    OmegaConf.set_struct(cfg, False)
+    supervised_cfg = cfg.supervised
+    if supervised_cfg.num_workers == "auto":
         cpu_cores = os.cpu_count() or 1
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
-        args.num_workers = min(2, max(1, cpu_cores // max(1, num_gpus)))
+        supervised_cfg.num_workers = min(
+            2, max(1, cpu_cores // max(1, num_gpus))
+        )
     else:
         try:
-            args.num_workers = int(args.num_workers)
+            supervised_cfg.num_workers = int(supervised_cfg.num_workers)
         except ValueError as exc:
             raise ValueError("--num-workers must be an int or 'auto'.") from exc
-    device_str = args.device or "auto"
+    device_str = supervised_cfg.device or "auto"
     use_ddp = (
         device_str in {"auto", "cuda"}
         and torch.cuda.is_available()
         and torch.cuda.device_count() > 1
-        and args.num_workers > 1
+        and supervised_cfg.num_workers > 1
     )
     if use_ddp:
         world_size = torch.cuda.device_count()
-        mp.spawn(_train_worker, args=(world_size, args), nprocs=world_size, join=True)
+        mp.spawn(_train_worker, args=(world_size, cfg), nprocs=world_size, join=True)
     else:
-        _train_worker(0, 1, args)
+        _train_worker(0, 1, cfg)
 
 
 if __name__ == "__main__":
