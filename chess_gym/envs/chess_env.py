@@ -45,6 +45,13 @@ class MoveSpace(spaces.Space):
         # AlphaZero 4672 action space: 64 squares × 73 actions per square
         if isinstance(action, (int, np.integer)):
             if self.action_space_size == 4672:
+                if hasattr(self.board, "action_id_to_move"):
+                    try:
+                        move = self.board.action_id_to_move(int(action))
+                        if move is not None:
+                            return move
+                    except Exception:
+                        pass
                 square = (action - 1) // 73
                 relative_action = (action - 1) % 73  # 0-based: 0-72
 
@@ -378,6 +385,8 @@ class ChessEnv(gym.Env):
 
         # Push the move regardless of legality
         self.board.push(move)
+        stack_snapshot = self.board.copy(stack=True)
+        fen_snapshot = self.board.fen()
 
         observation = self._observe()
         # Use centralized reward calculation from the previous player's perspective (who just moved)
@@ -421,6 +430,32 @@ class ChessEnv(gym.Env):
             if self.save_video_folder is not None and frame is not None: # Ensure render returned something
                 self.recorded_frames.append(frame)
         # --- End Record Frame --- 
+
+        if hasattr(self.board, "move_stack") and hasattr(stack_snapshot, "move_stack"):
+            if (
+                len(self.board.move_stack) != len(stack_snapshot.move_stack)
+                or (
+                    self.board.move_stack
+                    and stack_snapshot.move_stack
+                    and self.board.move_stack[-1] != stack_snapshot.move_stack[-1]
+                )
+            ):
+                from MCTS.mcts_algorithm import _restore_chess_stack
+                _restore_chess_stack(self.board, stack_snapshot)
+
+        if self.board.fen().split()[:4] != fen_snapshot.split()[:4]:
+            from MCTS.mcts_algorithm import _restore_chess_stack
+            self.board.set_fen(fen_snapshot)
+            _restore_chess_stack(self.board, stack_snapshot)
+            info = {
+                'turn': self.board.turn,
+                'castling_rights': self.board.castling_rights,
+                'fullmove_number': self.board.fullmove_number,
+                'halfmove_clock': self.board.halfmove_clock,
+                'promoted': self.board.promoted,
+                'chess960': self.board.chess960,
+                'ep_square': self.board.ep_square
+            }
 
         return observation, reward, terminated, truncated, info
 
