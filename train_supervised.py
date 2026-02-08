@@ -1604,6 +1604,9 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
 @hydra.main(config_path="config", config_name="train_supervised", version_base=None)
 def main(cfg: DictConfig):
     OmegaConf.set_struct(cfg, False)
+    # Resolve Hydra interpolations before spawning workers.
+    # DDP subprocesses won't have Hydra's resolver registered.
+    OmegaConf.resolve(cfg)
     supervised_cfg = cfg.supervised
     print("Configuration:\n")
     print(OmegaConf.to_yaml(cfg))
