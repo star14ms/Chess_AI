@@ -1605,6 +1605,8 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
 def main(cfg: DictConfig):
     OmegaConf.set_struct(cfg, False)
     supervised_cfg = cfg.supervised
+    print("Configuration:\n")
+    print(OmegaConf.to_yaml(cfg))
     if supervised_cfg.num_workers == "auto":
         cpu_cores = os.cpu_count() or 1
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
