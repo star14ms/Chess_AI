@@ -74,6 +74,17 @@ def _extract_moves(entry: dict) -> list[str]:
     return []
 
 
+def _extract_themes(entry: dict) -> list[str]:
+    themes_field = entry.get("Themes") or entry.get("themes")
+    if not themes_field:
+        return []
+    if isinstance(themes_field, list):
+        return [str(t).strip() for t in themes_field if str(t).strip()]
+    if isinstance(themes_field, str):
+        return [t for t in themes_field.split() if t.strip()]
+    return []
+
+
 def _entry_matches_split(entry: dict, split: str, val_split: float, seed: int) -> bool:
     if val_split <= 0:
         return split == "train"
@@ -153,8 +164,8 @@ def _play_position(
     return False, False
 
 
-def _worker_play(task: tuple[str, str, int]) -> tuple[str, bool, bool]:
-    path, fen, max_moves = task
+def _worker_play(task: tuple[str, str, int, list[str]]) -> tuple[str, bool, bool, list[str]]:
+    path, fen, max_moves, themes = task
     success, checkmated = _play_position(
         mcts=_WORKER_MCTS,
         cfg=_WORKER_CFG,
@@ -162,7 +173,7 @@ def _worker_play(task: tuple[str, str, int]) -> tuple[str, bool, bool]:
         max_moves=max_moves,
         mcts_iterations=_WORKER_CFG.runtime_mcts_iterations,
     )
-    return path, success, checkmated
+    return path, success, checkmated, themes
 
 
 def _load_default_data(cfg: OmegaConf) -> tuple[list[str], dict]:
@@ -226,7 +237,7 @@ def main() -> None:
     parser.add_argument(
         "--sample-size",
         type=int,
-        default=1000,
+        default=5,
         help="Sample size per file (default: 1000).",
     )
     parser.add_argument(
@@ -325,6 +336,7 @@ def main() -> None:
         args.seed,
     )
     by_file = defaultdict(lambda: {"total": 0, "success": 0, "checkmates": 0, "skipped": 0})
+    by_theme = defaultdict(lambda: {"total": 0, "success": 0})
     total_seen = 0
     total_success = 0
 
@@ -380,11 +392,17 @@ def main() -> None:
                     continue
 
                 max_moves = per_file_max_moves.get(path, len(moves))
+                themes = _extract_themes(entry)
                 sampled += 1
-                yield (path, fen, max_moves)
+                yield (path, fen, max_moves, themes)
 
-    def apply_result(path: str, success: bool, checkmated: bool) -> None:
+    def apply_result(path: str, success: bool, checkmated: bool, themes: list[str]) -> None:
         nonlocal total_success, total_seen
+        if themes:
+            for theme in set(themes):
+                by_theme[theme]["total"] += 1
+                if success:
+                    by_theme[theme]["success"] += 1
         if checkmated:
             by_file[path]["checkmates"] += 1
         if success:
@@ -410,7 +428,7 @@ def main() -> None:
         )
 
         if gpu_device is None and cpu_workers <= 1:
-            for path, fen, max_moves in task_generator():
+            for path, fen, max_moves, themes in task_generator():
                 success, checkmated = _play_position(
                     mcts=mcts,
                     cfg=cfg,
@@ -418,7 +436,7 @@ def main() -> None:
                     max_moves=max_moves,
                     mcts_iterations=args.iterations,
                 )
-                apply_result(path, success, checkmated)
+                apply_result(path, success, checkmated, themes)
         elif gpu_device is None:
             ctx = mp.get_context("spawn")
             cfg_path = os.path.join(PROJECT_ROOT, "config/train_mcts.yaml")
@@ -427,8 +445,10 @@ def main() -> None:
                 initializer=_init_worker,
                 initargs=(args.checkpoint, cfg_path, args.iterations),
             ) as pool:
-                for path, success, checkmated in pool.imap_unordered(_worker_play, task_generator(), chunksize=8):
-                    apply_result(path, success, checkmated)
+                for path, success, checkmated, themes in pool.imap_unordered(
+                    _worker_play, task_generator(), chunksize=8
+                ):
+                    apply_result(path, success, checkmated, themes)
         else:
             ctx = mp.get_context("spawn")
             cfg_path = os.path.join(PROJECT_ROOT, "config/train_mcts.yaml")
@@ -442,7 +462,7 @@ def main() -> None:
                 use_gpu = True
                 for task in task_generator():
                     if cpu_workers == 0 or use_gpu:
-                        path, fen, max_moves = task
+                        path, fen, max_moves, themes = task
                         success, checkmated = _play_position(
                             mcts=mcts,
                             cfg=cfg,
@@ -450,19 +470,19 @@ def main() -> None:
                             max_moves=max_moves,
                             mcts_iterations=args.iterations,
                         )
-                        apply_result(path, success, checkmated)
+                        apply_result(path, success, checkmated, themes)
                     else:
                         pending.append(pool.apply_async(_worker_play, (task,)))
 
                     use_gpu = not use_gpu
 
                     while pending and len(pending) >= max_pending:
-                        path, success, checkmated = pending.pop(0).get()
-                        apply_result(path, success, checkmated)
+                        path, success, checkmated, themes = pending.pop(0).get()
+                        apply_result(path, success, checkmated, themes)
 
                 for async_result in pending:
-                    path, success, checkmated = async_result.get()
-                    apply_result(path, success, checkmated)
+                    path, success, checkmated, themes = async_result.get()
+                    apply_result(path, success, checkmated, themes)
 
     print("\n=== Puzzle Dataset Evaluation ===")
     print(f"Checkpoint: {args.checkpoint}")
@@ -481,6 +501,16 @@ def main() -> None:
         success = stats["success"]
         ratio = (success / total * 100) if total else 0.0
         print(f"- {path}: {success}/{total} ({ratio:.2f}%)")
+
+    if by_theme:
+        print("\n=== Theme Success (first-move) ===")
+        for theme, stats in sorted(
+            by_theme.items(), key=lambda item: (-item[1]["total"], item[0])
+        ):
+            total = stats["total"]
+            success = stats["success"]
+            ratio = (success / total * 100) if total else 0.0
+            print(f"- {theme}: {success}/{total} ({ratio:.2f}%)")
 
 
 if __name__ == "__main__":
