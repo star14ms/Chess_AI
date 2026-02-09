@@ -859,8 +859,8 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
     )
     criterion = nn.CrossEntropyLoss()
 
-    run_id = time.strftime("%Y-%m-%d/%H-%M-%S")
-    checkpoint_dir = os.path.join(supervised_cfg.checkpoint_dir, run_id)
+    # Use Hydra output dir directly to avoid nested timestamp folders.
+    checkpoint_dir = supervised_cfg.checkpoint_dir
     if is_main:
         os.makedirs(checkpoint_dir, exist_ok=True)
     theme_metrics_path = os.path.join(checkpoint_dir, "theme_metrics.jsonl")
