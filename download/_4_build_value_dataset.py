@@ -100,6 +100,20 @@ def count_mobility(board):
         return white_moves - black_moves
 
 
+def _endgame_solver_value_target(entry, position_fen=None):
+    """Binary value from current player's perspective: 1.0 if current player is the solver (wins), else -1.0.
+    Solver = side to move in the puzzle's initial position. position_fen defaults to entry's FEN (initial position).
+    Same convention as supervised and RL: value is always from side-to-move, not 'White win +1 / Black win -1'."""
+    fen0 = entry.get("FEN") or entry.get("fen") or ""
+    if not fen0:
+        return 0.0
+    board0 = chess.Board(fen0)
+    solver_color = board0.turn
+    fen = position_fen if position_fen is not None else fen0
+    board = chess.Board(fen)
+    return 1.0 if board.turn == solver_color else -1.0
+
+
 def label_endgame_value(entry, rng=None, use_mobility=True):
     """Generate value label for any position (mate or heuristic).
     Value is from side-to-move perspective; positive = good for current player.
@@ -298,9 +312,9 @@ def _build_value_dataset_single(inputs, output_map, max_rows=None, include_theme
                             written += 1
                             board.push(move)
                     else:
-                        # Endgame: first move only
+                        # Endgame: first move only; binary value 1.0 (solver / side to move wins)
                         first_move = parsed_moves[0]
-                        value_target = label_endgame_value(entry)
+                        value_target = _endgame_solver_value_target(entry)
                         payload = {
                             "fen": fen,
                             "value_target": value_target,
@@ -539,7 +553,7 @@ def _process_input_chunk(
                     board.push(move)
             else:
                 first_move = parsed_moves[0]
-                value_target = label_endgame_value(entry)
+                value_target = _endgame_solver_value_target(entry)
                 payload = {
                     "fen": fen,
                     "value_target": value_target,
