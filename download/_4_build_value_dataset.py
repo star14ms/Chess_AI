@@ -1,10 +1,12 @@
 import argparse
+import hashlib
 import json
 import os
 import sys
 import math
 from pathlib import Path
 
+import numpy as np
 import chess
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 import multiprocessing as mp
@@ -14,6 +16,26 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from utils.training_utils import iter_json_array
+
+# Short forcing tactics: expand full trajectory; otherwise endgame uses first move only
+FORCING_THEMES = frozenset({
+    "fork", "pin", "skewer", "discoveredAttack",
+    "backRankMate", "smotheredMate",
+})
+
+
+def _is_mate_puzzle(themes):
+    return "mate" in themes or any(t.startswith("mateIn") for t in themes)
+
+
+def _should_expand_endgame(themes, moves):
+    """Expand full trajectory only for short forcing tactics (crushing + forcing theme + ≤3 moves)."""
+    theme_set = set(themes)
+    return (
+        bool(theme_set & FORCING_THEMES)
+        and "crushing" in theme_set
+        and len(moves) <= 3
+    )
 
 
 def _extract_moves_list(moves_field):
@@ -36,6 +58,95 @@ def _normalize_themes(themes_field):
     if isinstance(themes_field, str):
         return [t for t in themes_field.split() if t.strip()]
     return []
+
+
+def count_material(board):
+    """Material difference from current player's perspective (in pawn units).
+    Used for endgame pseudo-labels; piece values match common practice (Q=9,R=5,B=3,N=3,P=1)."""
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+    }
+    white = sum(
+        piece_values.get(p.piece_type, 0)
+        for p in board.piece_map().values()
+        if p.color == chess.WHITE
+    )
+    black = sum(
+        piece_values.get(p.piece_type, 0)
+        for p in board.piece_map().values()
+        if p.color == chess.BLACK
+    )
+    diff = white - black
+    return diff if board.turn == chess.WHITE else -diff
+
+
+def count_mobility(board):
+    """Legal move count difference from current player's perspective (current side minus opponent)."""
+    if board.turn == chess.WHITE:
+        white_moves = board.legal_moves.count()
+        board.push(chess.Move.null())  # no-op to flip turn for black count
+        black_moves = board.legal_moves.count()
+        board.pop()
+        return white_moves - black_moves
+    else:
+        black_moves = board.legal_moves.count()
+        board.push(chess.Move.null())
+        white_moves = board.legal_moves.count()
+        board.pop()
+        return white_moves - black_moves
+
+
+def label_endgame_value(entry, rng=None, use_mobility=True):
+    """Generate value label for any position (mate or heuristic).
+    Value is from side-to-move perspective; positive = good for current player.
+    Supports metadata['mate_in_n'] + metadata['winner'], or theme-based mate (mate/mateIn*).
+    Heuristics: material (primary), additive theme (crushing/advantage/equality), optional mobility.
+    """
+    fen = entry.get("FEN") or entry.get("fen") or ""
+    if not fen:
+        return 0.0
+    board = chess.Board(fen)
+    themes = _normalize_themes(entry.get("Themes") or entry.get("themes"))
+
+    # Mate: true label ±1.0 (mate_in_n or theme-based)
+    if entry.get("mate_in_n"):
+        winner = entry.get("winner")
+        if winner is None:
+            winner = "white" if board.turn == chess.WHITE else "black"
+        return 1.0 if winner == "white" else -1.0
+    if "mate" in themes or any(t.startswith("mateIn") for t in themes):
+        winner = entry.get("winner")
+        if winner is None:
+            winner = "white" if board.turn == chess.WHITE else "black"
+        return 1.0 if winner == "white" else -1.0
+
+    # Heuristics: material (primary) + theme adjustment + optional mobility
+    material_diff = count_material(board)
+    material_term = np.tanh(material_diff / 8.0) * 0.6
+    value = material_term
+
+    # Theme-based additive adjustment (signed by who is better)
+    sign = 1 if material_diff >= 0 else -1
+    if "equality" in themes:
+        value = 0.0
+    elif "crushing" in themes:
+        value += sign * 0.3
+    elif "advantage" in themes:
+        value += sign * 0.2
+
+    if use_mobility:
+        mobility_diff = count_mobility(board)
+        value += np.tanh(mobility_diff / 20.0) * 0.2
+
+    if rng is None:
+        seed = int(hashlib.sha256(fen.encode()).hexdigest()[:12], 16)
+        rng = np.random.default_rng(seed)
+    value += rng.normal(0, 0.03)
+    return float(np.clip(value, -1.0, 1.0))
 
 
 def _extract_entry(entry):
@@ -100,7 +211,33 @@ def _build_value_dataset_single(inputs, output_map, max_rows=None, include_theme
                     if max_rows is not None and idx > max_rows:
                         break
                     fen, moves, puzzle_id, themes = _extract_entry(entry)
-                    if not fen or not moves:
+                    if not fen:
+                        progress.update(task_id, advance=1)
+                        continue
+                    # Endgame position (no solution line): one row with pseudo-labeled value and deterministic policy
+                    if not moves:
+                        try:
+                            board = chess.Board(fen)
+                        except ValueError:
+                            progress.update(task_id, advance=1)
+                            continue
+                        value_target = label_endgame_value(entry)
+                        # Use first legal move (UCI order) as policy label so every row has an actual move
+                        legal_list = list(board.legal_moves)
+                        first_move = min(legal_list, key=lambda m: m.uci()) if legal_list else None
+                        policy_uci = first_move.uci() if first_move is not None else None
+                        payload = {
+                            "fen": fen,
+                            "value_target": value_target,
+                            "policy_uci": policy_uci,
+                            "position_type": "endgame",  # no moves_to_mate; game does not finish in a fixed sequence
+                        }
+                        if puzzle_id:
+                            payload["puzzle_id"] = puzzle_id
+                        if include_themes and themes:
+                            payload["themes"] = themes
+                        out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                        written += 1
                         progress.update(task_id, advance=1)
                         continue
                     board = chess.Board(fen)
@@ -121,17 +258,54 @@ def _build_value_dataset_single(inputs, output_map, max_rows=None, include_theme
                         progress.update(task_id, advance=1)
                         continue
 
-                    board = chess.Board(fen)
-                    total_plies = len(parsed_moves)
-                    for ply_index, move in enumerate(parsed_moves):
-                        policy_mask = True
-                        value_target = 1.0 if ply_index % 2 == 0 else -1.0
-                        moves_to_mate = total_plies - ply_index
+                    if _is_mate_puzzle(themes):
+                        # Mate puzzle: expand full trajectory with moves_to_mate
+                        board = chess.Board(fen)
+                        total_plies = len(parsed_moves)
+                        for ply_index, move in enumerate(parsed_moves):
+                            value_target = 1.0 if ply_index % 2 == 0 else -1.0
+                            moves_to_mate = total_plies - ply_index
+                            payload = {
+                                "fen": board.fen(),
+                                "value_target": value_target,
+                                "policy_uci": move.uci(),
+                                "moves_to_mate": moves_to_mate,
+                                "position_type": "mate",
+                            }
+                            if puzzle_id:
+                                payload["puzzle_id"] = puzzle_id
+                            if include_themes and themes:
+                                payload["themes"] = themes
+                            out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                            written += 1
+                            board.push(move)
+                    elif _should_expand_endgame(themes, moves):
+                        # Endgame: short forcing tactic — expand full trajectory (no moves_to_mate)
+                        board = chess.Board(fen)
+                        for ply_index, move in enumerate(parsed_moves):
+                            value_target = 1.0 if ply_index % 2 == 0 else -1.0
+                            payload = {
+                                "fen": board.fen(),
+                                "value_target": value_target,
+                                "policy_uci": move.uci(),
+                                "position_type": "endgame",
+                            }
+                            if puzzle_id:
+                                payload["puzzle_id"] = puzzle_id
+                            if include_themes and themes:
+                                payload["themes"] = themes
+                            out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                            written += 1
+                            board.push(move)
+                    else:
+                        # Endgame: first move only
+                        first_move = parsed_moves[0]
+                        value_target = label_endgame_value(entry)
                         payload = {
-                            "fen": board.fen(),
+                            "fen": fen,
                             "value_target": value_target,
-                            "policy_uci": move.uci(),
-                            "moves_to_mate": moves_to_mate,
+                            "policy_uci": first_move.uci(),
+                            "position_type": "endgame",
                         }
                         if puzzle_id:
                             payload["puzzle_id"] = puzzle_id
@@ -139,7 +313,6 @@ def _build_value_dataset_single(inputs, output_map, max_rows=None, include_theme
                             payload["themes"] = themes
                         out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
                         written += 1
-                        board.push(move)
                     progress.update(task_id, advance=1)
     return written
 
@@ -286,7 +459,29 @@ def _process_input_chunk(
             if processed % progress_batch == 0:
                 progress_queue.put(("progress", input_path, progress_batch))
             fen, moves, puzzle_id, themes = _extract_entry(entry)
-            if not fen or not moves:
+            if not fen:
+                continue
+            if not moves:
+                try:
+                    board = chess.Board(fen)
+                except ValueError:
+                    continue
+                value_target = label_endgame_value(entry)
+                legal_list = list(board.legal_moves)
+                first_move = min(legal_list, key=lambda m: m.uci()) if legal_list else None
+                policy_uci = first_move.uci() if first_move is not None else None
+                payload = {
+                    "fen": fen,
+                    "value_target": value_target,
+                    "policy_uci": policy_uci,
+                    "position_type": "endgame",  # no moves_to_mate; game does not finish in a fixed sequence
+                }
+                if puzzle_id:
+                    payload["puzzle_id"] = puzzle_id
+                if include_themes and themes:
+                    payload["themes"] = themes
+                out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                written += 1
                 continue
             board = chess.Board(fen)
             parsed_moves = []
@@ -305,17 +500,51 @@ def _process_input_chunk(
             if not valid:
                 continue
 
-            board = chess.Board(fen)
-            total_plies = len(parsed_moves)
-            for ply_index, move in enumerate(parsed_moves):
-                policy_mask = True
-                value_target = 1.0 if ply_index % 2 == 0 else -1.0
-                moves_to_mate = total_plies - ply_index
+            if _is_mate_puzzle(themes):
+                board = chess.Board(fen)
+                total_plies = len(parsed_moves)
+                for ply_index, move in enumerate(parsed_moves):
+                    value_target = 1.0 if ply_index % 2 == 0 else -1.0
+                    moves_to_mate = total_plies - ply_index
+                    payload = {
+                        "fen": board.fen(),
+                        "value_target": value_target,
+                        "policy_uci": move.uci(),
+                        "moves_to_mate": moves_to_mate,
+                        "position_type": "mate",
+                    }
+                    if puzzle_id:
+                        payload["puzzle_id"] = puzzle_id
+                    if include_themes and themes:
+                        payload["themes"] = themes
+                    out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                    written += 1
+                    board.push(move)
+            elif _should_expand_endgame(themes, moves):
+                board = chess.Board(fen)
+                for ply_index, move in enumerate(parsed_moves):
+                    value_target = 1.0 if ply_index % 2 == 0 else -1.0
+                    payload = {
+                        "fen": board.fen(),
+                        "value_target": value_target,
+                        "policy_uci": move.uci(),
+                        "position_type": "endgame",
+                    }
+                    if puzzle_id:
+                        payload["puzzle_id"] = puzzle_id
+                    if include_themes and themes:
+                        payload["themes"] = themes
+                    out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                    written += 1
+                    board.push(move)
+            else:
+                first_move = parsed_moves[0]
+                value_target = label_endgame_value(entry)
                 payload = {
-                    "fen": board.fen(),
+                    "fen": fen,
                     "value_target": value_target,
-                    "policy_uci": move.uci(),
-                    "moves_to_mate": moves_to_mate,
+                    "policy_uci": first_move.uci(),
+                    "position_type": "endgame",
                 }
                 if puzzle_id:
                     payload["puzzle_id"] = puzzle_id
@@ -323,7 +552,6 @@ def _process_input_chunk(
                     payload["themes"] = themes
                 out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
                 written += 1
-                board.push(move)
     remainder = processed % progress_batch
     if remainder:
         progress_queue.put(("progress", input_path, remainder))
@@ -368,7 +596,10 @@ def _build_output_map(inputs: list[str], output_path: Path) -> dict[str, Path]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build value training dataset from mate puzzles.")
+    parser = argparse.ArgumentParser(
+        description="Build value training dataset from mate puzzles and/or endgame positions. "
+        "Mate puzzles: value_target from solution; endgame (entries with fen, no moves): pseudo-labels from themes + material (see puzzleTheme.xml)."
+    )
     parser.add_argument(
         "--inputs",
         nargs="+",
@@ -378,8 +609,9 @@ def main():
             "data/mate_in_3_flipped.json",
             "data/mate_in_4_flipped.json",
             "data/mate_in_5_flipped.json",
+            "data/endgame_without_mate_flipped.json",
         ],
-        help="Input mate JSON array files (e.g., data/mate_in_1_flipped.json).",
+        help="Input JSON array files. Mate files have FEN + Moves; endgame files have FEN + optional Themes, no Moves (one value_target row per entry).",
     )
     parser.add_argument(
         "--output",
