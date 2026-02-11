@@ -23,19 +23,37 @@ FORCING_THEMES = frozenset({
     "backRankMate", "smotheredMate",
 })
 
+# Defaults for endgame expansion (parameterized)
+DEFAULT_ENDGAME_EXPAND_MAX_PLIES = 3
+DEFAULT_ENDGAME_EXPAND_MAX_MOVES = 3
+DEFAULT_ENDGAME_EXPAND_REQUIRE_CRUSHING = True
+DEFAULT_ENDGAME_EXPAND_REQUIRE_FORCING_THEME = True
+
 
 def _is_mate_puzzle(themes):
     return "mate" in themes or any(t.startswith("mateIn") for t in themes)
 
 
-def _should_expand_endgame(themes, moves):
-    """Expand full trajectory only for short forcing tactics (crushing + forcing theme + ≤3 moves)."""
+def _should_expand_endgame(
+    themes,
+    moves,
+    *,
+    max_moves: int = DEFAULT_ENDGAME_EXPAND_MAX_MOVES,
+    require_crushing: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_CRUSHING,
+    require_forcing_theme: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_FORCING_THEME,
+    forcing_themes: frozenset | None = None,
+) -> bool:
+    """Expand full trajectory only when conditions are met (e.g. short forcing tactics)."""
+    if forcing_themes is None:
+        forcing_themes = FORCING_THEMES
     theme_set = set(themes)
-    return (
-        bool(theme_set & FORCING_THEMES)
-        and "crushing" in theme_set
-        and len(moves) <= 3
-    )
+    if len(moves) > max_moves:
+        return False
+    if require_crushing and "crushing" not in theme_set:
+        return False
+    if require_forcing_theme and not (theme_set & forcing_themes):
+        return False
+    return True
 
 
 def _extract_moves_list(moves_field):
@@ -178,12 +196,23 @@ def build_value_dataset(
     max_rows=None,
     include_themes=True,
     workers=None,
+    *,
+    endgame_expand_max_plies: int = DEFAULT_ENDGAME_EXPAND_MAX_PLIES,
+    endgame_expand_max_moves: int = DEFAULT_ENDGAME_EXPAND_MAX_MOVES,
+    endgame_expand_require_crushing: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_CRUSHING,
+    endgame_expand_require_forcing_theme: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_FORCING_THEME,
 ):
     output_path = Path(output_path)
     output_map = _build_output_map(inputs, output_path)
     for path in output_map.values():
         path.parent.mkdir(parents=True, exist_ok=True)
     source_labels = [Path(path).stem for path in inputs]
+    endgame_opts = {
+        "endgame_expand_max_plies": endgame_expand_max_plies,
+        "endgame_expand_max_moves": endgame_expand_max_moves,
+        "endgame_expand_require_crushing": endgame_expand_require_crushing,
+        "endgame_expand_require_forcing_theme": endgame_expand_require_forcing_theme,
+    }
     if workers is None:
         workers = min(os.cpu_count() or 1, len(inputs))
     if len(inputs) > 1 and workers > 1:
@@ -193,6 +222,7 @@ def build_value_dataset(
             max_rows=max_rows,
             include_themes=include_themes,
             workers=workers,
+            **endgame_opts,
         )
         return written
     return _build_value_dataset_single(
@@ -200,10 +230,21 @@ def build_value_dataset(
         output_map,
         max_rows=max_rows,
         include_themes=include_themes,
+        **endgame_opts,
     )
 
 
-def _build_value_dataset_single(inputs, output_map, max_rows=None, include_themes=True):
+def _build_value_dataset_single(
+    inputs,
+    output_map,
+    max_rows=None,
+    include_themes=True,
+    *,
+    endgame_expand_max_plies: int = DEFAULT_ENDGAME_EXPAND_MAX_PLIES,
+    endgame_expand_max_moves: int = DEFAULT_ENDGAME_EXPAND_MAX_MOVES,
+    endgame_expand_require_crushing: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_CRUSHING,
+    endgame_expand_require_forcing_theme: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_FORCING_THEME,
+):
     written = 0
     progress_columns = (
         TextColumn("[progress.description]{task.description}"),
@@ -293,16 +334,26 @@ def _build_value_dataset_single(inputs, output_map, max_rows=None, include_theme
                             out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
                             written += 1
                             board.push(move)
-                    elif _should_expand_endgame(themes, moves):
+                    elif _should_expand_endgame(
+                        themes,
+                        moves,
+                        max_moves=endgame_expand_max_moves,
+                        require_crushing=endgame_expand_require_crushing,
+                        require_forcing_theme=endgame_expand_require_forcing_theme,
+                    ):
                         # Endgame: short forcing tactic — expand full trajectory (no moves_to_mate)
                         board = chess.Board(fen)
+                        max_ply_idx = endgame_expand_max_plies - 1
                         for ply_index, move in enumerate(parsed_moves):
+                            if ply_index > max_ply_idx:
+                                break
                             value_target = 1.0 if ply_index % 2 == 0 else -1.0
                             payload = {
                                 "fen": board.fen(),
                                 "value_target": value_target,
                                 "policy_uci": move.uci(),
                                 "position_type": "endgame",
+                                "endgame_ply": ply_index,
                             }
                             if puzzle_id:
                                 payload["puzzle_id"] = puzzle_id
@@ -320,6 +371,7 @@ def _build_value_dataset_single(inputs, output_map, max_rows=None, include_theme
                             "value_target": value_target,
                             "policy_uci": first_move.uci(),
                             "position_type": "endgame",
+                            "endgame_ply": 0,
                         }
                         if puzzle_id:
                             payload["puzzle_id"] = puzzle_id
@@ -331,7 +383,18 @@ def _build_value_dataset_single(inputs, output_map, max_rows=None, include_theme
     return written
 
 
-def _build_value_dataset_mp(inputs, output_map, max_rows=None, include_themes=True, workers=1):
+def _build_value_dataset_mp(
+    inputs,
+    output_map,
+    max_rows=None,
+    include_themes=True,
+    workers=1,
+    *,
+    endgame_expand_max_plies: int = DEFAULT_ENDGAME_EXPAND_MAX_PLIES,
+    endgame_expand_max_moves: int = DEFAULT_ENDGAME_EXPAND_MAX_MOVES,
+    endgame_expand_require_crushing: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_CRUSHING,
+    endgame_expand_require_forcing_theme: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_FORCING_THEME,
+):
     per_file_total = {}
     total_all = 0
     for input_path in inputs:
@@ -375,20 +438,29 @@ def _build_value_dataset_mp(inputs, output_map, max_rows=None, include_themes=Tr
                     end_idx,
                     max_rows,
                     include_themes,
+                    endgame_expand_max_plies,
+                    endgame_expand_max_moves,
+                    endgame_expand_require_crushing,
+                    endgame_expand_require_forcing_theme,
                 )
             )
 
     ctx = mp.get_context("spawn")
     progress_queue = ctx.Queue()
     processes = []
-    for (
-        input_path,
-        temp_path,
-        start_idx,
-        end_idx,
-        max_rows_value,
-        include_themes_value,
-    ) in chunk_tasks:
+    for task in chunk_tasks:
+        (
+            input_path,
+            temp_path,
+            start_idx,
+            end_idx,
+            max_rows_value,
+            include_themes_value,
+            eg_max_plies,
+            eg_max_moves,
+            eg_require_crushing,
+            eg_require_forcing,
+        ) = task
         proc = ctx.Process(
             target=_process_input_chunk,
             args=(
@@ -400,6 +472,10 @@ def _build_value_dataset_mp(inputs, output_map, max_rows=None, include_themes=Tr
                 include_themes_value,
                 progress_queue,
                 1000,
+                eg_max_plies,
+                eg_max_moves,
+                eg_require_crushing,
+                eg_require_forcing,
             ),
         )
         proc.start()
@@ -464,6 +540,10 @@ def _process_input_chunk(
     include_themes,
     progress_queue,
     progress_batch,
+    endgame_expand_max_plies: int = DEFAULT_ENDGAME_EXPAND_MAX_PLIES,
+    endgame_expand_max_moves: int = DEFAULT_ENDGAME_EXPAND_MAX_MOVES,
+    endgame_expand_require_crushing: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_CRUSHING,
+    endgame_expand_require_forcing_theme: bool = DEFAULT_ENDGAME_EXPAND_REQUIRE_FORCING_THEME,
 ):
     written = 0
     processed = 0
@@ -534,15 +614,25 @@ def _process_input_chunk(
                     out_handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
                     written += 1
                     board.push(move)
-            elif _should_expand_endgame(themes, moves):
+            elif _should_expand_endgame(
+                themes,
+                moves,
+                max_moves=endgame_expand_max_moves,
+                require_crushing=endgame_expand_require_crushing,
+                require_forcing_theme=endgame_expand_require_forcing_theme,
+            ):
                 board = chess.Board(fen)
+                max_ply_idx = endgame_expand_max_plies - 1
                 for ply_index, move in enumerate(parsed_moves):
+                    if ply_index > max_ply_idx:
+                        break
                     value_target = 1.0 if ply_index % 2 == 0 else -1.0
                     payload = {
                         "fen": board.fen(),
                         "value_target": value_target,
                         "policy_uci": move.uci(),
                         "position_type": "endgame",
+                        "endgame_ply": ply_index,
                     }
                     if puzzle_id:
                         payload["puzzle_id"] = puzzle_id
@@ -559,6 +649,7 @@ def _process_input_chunk(
                     "value_target": value_target,
                     "policy_uci": first_move.uci(),
                     "position_type": "endgame",
+                    "endgame_ply": 0,
                 }
                 if puzzle_id:
                     payload["puzzle_id"] = puzzle_id
@@ -643,6 +734,32 @@ def main():
         default=True,
         help="Include themes field in output (default: True).",
     )
+    parser.add_argument(
+        "--endgame-expand-max-plies",
+        type=int,
+        default=DEFAULT_ENDGAME_EXPAND_MAX_PLIES,
+        metavar="N",
+        help=f"Number of plies to emit when expanding endgame (0..N-1). Default: {DEFAULT_ENDGAME_EXPAND_MAX_PLIES}.",
+    )
+    parser.add_argument(
+        "--endgame-expand-max-moves",
+        type=int,
+        default=DEFAULT_ENDGAME_EXPAND_MAX_MOVES,
+        metavar="N",
+        help=f"Only expand endgame when puzzle has at most N moves. Default: {DEFAULT_ENDGAME_EXPAND_MAX_MOVES}.",
+    )
+    parser.add_argument(
+        "--endgame-expand-require-crushing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require 'crushing' theme to expand endgame (default: True).",
+    )
+    parser.add_argument(
+        "--endgame-expand-require-forcing-theme",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require a forcing theme (fork/pin/skewer/etc.) to expand endgame (default: True).",
+    )
     args = parser.parse_args()
 
     written = build_value_dataset(
@@ -651,6 +768,10 @@ def main():
         max_rows=args.max_rows,
         include_themes=args.include_themes,
         workers=args.workers,
+        endgame_expand_max_plies=args.endgame_expand_max_plies,
+        endgame_expand_max_moves=args.endgame_expand_max_moves,
+        endgame_expand_require_crushing=args.endgame_expand_require_crushing,
+        endgame_expand_require_forcing_theme=args.endgame_expand_require_forcing_theme,
     )
     output_path = Path(args.output)
     print(f"Wrote {written} rows across files in {output_path}/")
