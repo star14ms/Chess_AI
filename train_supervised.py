@@ -17,6 +17,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data._utils.collate import default_collate
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
 import matplotlib.pyplot as plt
@@ -1605,6 +1606,12 @@ def main(cfg: DictConfig):
     # DDP subprocesses won't have Hydra's resolver registered.
     OmegaConf.resolve(cfg)
     supervised_cfg = cfg.supervised
+    if not supervised_cfg.get("checkpoint_dir") or (isinstance(supervised_cfg.checkpoint_dir, str) and not supervised_cfg.checkpoint_dir.strip()):
+        hydra_runtime = HydraConfig.get()
+        if hydra_runtime is not None:
+            supervised_cfg.checkpoint_dir = hydra_runtime.runtime.output_dir
+        else:
+            supervised_cfg.checkpoint_dir = "./checkpoints"
     print("Configuration (used hyperparams):\n")
     print(
         OmegaConf.to_yaml(

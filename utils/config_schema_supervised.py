@@ -46,7 +46,7 @@ class SupervisedConfig:
     policy_dropout: Optional[float] = 0.25
     value_dropout: Optional[float] = 0.25
     weight_decay: Optional[float] = 1e-2
-    checkpoint_dir: str = "${hydra:runtime.output_dir}"
+    checkpoint_dir: Optional[str] = None  # If null, set to Hydra output_dir in main()
     save_every: int = 1
     num_workers: Union[int, str] = "auto"
     max_rows: Optional[int] = None

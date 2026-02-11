@@ -20,14 +20,14 @@ supervised:
     - ${hydra:runtime.cwd}/data/mate_in_3_flipped_expanded.jsonl
     - ${hydra:runtime.cwd}/data/mate_in_4_flipped_expanded.jsonl
     - ${hydra:runtime.cwd}/data/mate_in_5_flipped_expanded.jsonl
-    - ${hydra:runtime.cwd}/data/endgame_without_mate_flipped.json
+    - ${hydra:runtime.cwd}/data/endgame_without_mate_flipped_expanded.jsonl
   epochs: 10
-  batch_size: 64
+  batch_size: 128
   learning_rate: 1e-4
   policy_dropout: 0.25
   value_dropout: 0.25
   weight_decay: 1e-2
-  checkpoint_dir: ${hydra:runtime.output_dir}
+  checkpoint_dir: null # If null, set to Hydra's run dir in main(); default for non-Hydra runs
   save_every: 1
   num_workers: auto
   max_rows: null
