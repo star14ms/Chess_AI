@@ -39,6 +39,7 @@ Run the training pipeline in this order:
    - `python download/_1_export_lichess_themes.py`
    - `python download/_2_normalize_puzzle_moves.py`
    - `python download/_3_augment_puzzle_json.py`
+   - `python download/_4_build_value_dataset.py`
 
 2. **Supervised pretraining (policy/value initialization)**  
    Train on the prepared puzzle data to bootstrap the network:

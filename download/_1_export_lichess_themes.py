@@ -76,6 +76,7 @@ def main() -> None:
     parser.add_argument(
         "themes",
         nargs="+",
+        default=["mateIn1", "mateIn2", "mateIn3", "mateIn4", "mateIn5", "endgame,!mate"],
         help=(
             "Theme queries to export. Use comma-separated tokens per query. "
             "Prefix tokens with '-' or '!' to exclude. "

@@ -284,8 +284,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--input-glob",
-        default="mate_in_[0-9].json",
-        help="Glob for input files when --files is not set (default: mate_in_[0-9].json).",
+        nargs="*",
+        default=["mate_in_[0-9].json", "endgame_without_mate.json"],
+        metavar="PATTERN",
+        help="Glob pattern(s) for input files when --files is not set (default: mate_in_[0-9].json endgame_without_mate.json).",
     )
     parser.add_argument(
         "--output-dir",
@@ -319,7 +321,10 @@ def main() -> None:
         input_dir = Path(args.input_dir)
         if not input_dir.exists():
             raise SystemExit(f"Input directory not found: {input_dir}")
-        json_files = sorted(input_dir.glob(args.input_glob))
+        json_files = []
+        for pattern in args.input_glob:
+            json_files.extend(input_dir.glob(pattern))
+        json_files = sorted(set(json_files))
         if not json_files:
             raise SystemExit(
                 f"No files found in {input_dir} matching {args.input_glob}"
