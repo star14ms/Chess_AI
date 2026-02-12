@@ -14,7 +14,7 @@ sys.path.append(os.path.abspath('.'))
 import chess_gym  # noqa: F401
 
 from utils.policy_human import sample_action_v2 as heuristic_policy
-from chess_pygame.config import IMG_DIR
+from _early_version.config import IMG_DIR
 
 # Optional DQN/MCTS model imports
 try:
