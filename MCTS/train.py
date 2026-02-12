@@ -1885,11 +1885,13 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Optional inference server for batched GPU inference
     if cfg.training.get("use_inference_server", False):
         checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
+        # Move state_dict to CPU before passing to spawned process (GPU tensors cannot be pickled)
+        network_state_cpu = {k: v.cpu().clone() if hasattr(v, "cpu") else v for k, v in network.state_dict().items()}
         inference_request_queue, inference_stop_event, inference_process, inference_device_str = _start_inference_server(
             cfg,
             manager,
             checkpoint_path_for_actors,
-            network.state_dict(),
+            network_state_cpu,
         )
         if inference_process is not None:
             progress.print(
