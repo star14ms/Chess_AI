@@ -23,6 +23,7 @@ supervised:
     - ${hydra:runtime.cwd}/data/endgame_without_mate_flipped_expanded.jsonl
   epochs: 10
   batch_size: 128
+  val_batch_size: null  # If null, uses batch_size. Set to e.g. 512 for faster validation.
   learning_rate: 1e-4
   policy_dropout: 0.25
   value_dropout: 0.25

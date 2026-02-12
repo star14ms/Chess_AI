@@ -791,6 +791,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
         total_rows = None if total_rows_tensor.item() < 0 else int(total_rows_tensor.item())
 
     batch_size = supervised_cfg.batch_size
+    val_batch_size = supervised_cfg.val_batch_size if supervised_cfg.val_batch_size is not None else batch_size
     learning_rate = supervised_cfg.learning_rate
     weight_decay = supervised_cfg.weight_decay
     if supervised_cfg.policy_dropout is not None:
@@ -826,7 +827,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=val_batch_size,
         shuffle=False,
         num_workers=supervised_cfg.num_workers,
         collate_fn=_collate_with_themes,
@@ -962,7 +963,9 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
             f"num_workers={supervised_cfg.num_workers} total_workers={total_workers}"
         )
         print(
-            f"Training on {device} | batch_size={batch_size} | epochs={supervised_cfg.epochs}"
+            f"Training on {device} | batch_size={batch_size}"
+            + (f" val_batch_size={val_batch_size}" if val_batch_size != batch_size else "")
+            + f" | epochs={supervised_cfg.epochs}"
         )
         if ddp_enabled:
             print(f"DDP enabled | world_size={world_size}")
@@ -995,7 +998,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
         train_count = count_dataset_entries(train_dataset)
         val_count = count_dataset_entries(val_dataset)
     train_total = math.ceil(train_count / batch_size) if train_count else 0
-    val_total = math.ceil(val_count / batch_size) if val_count else 0
+    val_total = math.ceil(val_count / val_batch_size) if val_count else 0
     if is_main:
         print(f"Total data entries | train={train_count} | val={val_count}")
         print(f"Total batches      | train={train_total} | val={val_total}")

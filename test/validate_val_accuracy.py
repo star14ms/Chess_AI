@@ -471,9 +471,15 @@ def run_validation(
     checkpoint_path: str | None,
     device: torch.device,
     num_workers_override: int | None = None,
+    batch_size_override: int | None = None,
 ):
     supervised_cfg = cfg.supervised
-    batch_size = supervised_cfg.batch_size
+    default_batch = (
+        supervised_cfg.val_batch_size
+        if getattr(supervised_cfg, "val_batch_size", None) is not None
+        else supervised_cfg.batch_size
+    )
+    batch_size = batch_size_override if batch_size_override is not None else default_batch
     max_rows = supervised_cfg.max_rows
 
     if num_workers_override is not None:
@@ -795,6 +801,13 @@ def _parse_validate_args():
         metavar="N",
         help="DataLoader workers (default: from config or 'auto')",
     )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Batch size (default: from config)",
+    )
     args, unknown = p.parse_known_args()
     return args, unknown
 
@@ -822,10 +835,18 @@ def main(cfg: DictConfig):
             num_workers_override = int(num_workers_override)
         except ValueError:
             num_workers_override = None
+    batch_size_override = os.environ.get("VALIDATE_BATCH_SIZE")
+    if batch_size_override == "":
+        batch_size_override = None
+    elif batch_size_override is not None:
+        try:
+            batch_size_override = int(batch_size_override)
+        except ValueError:
+            batch_size_override = None
     device = select_device(
         device_override or supervised_cfg.device or "auto"
     )
-    run_validation(cfg, checkpoint_path, device, num_workers_override)
+    run_validation(cfg, checkpoint_path, device, num_workers_override, batch_size_override)
 
 
 if __name__ == "__main__":
@@ -837,5 +858,8 @@ if __name__ == "__main__":
     os.environ["VALIDATE_DEVICE"] = args.device or ""
     os.environ["VALIDATE_NUM_WORKERS"] = (
         str(args.num_workers) if args.num_workers is not None else ""
+    )
+    os.environ["VALIDATE_BATCH_SIZE"] = (
+        str(args.batch_size) if args.batch_size is not None else ""
     )
     main()

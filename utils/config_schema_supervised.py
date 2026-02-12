@@ -42,6 +42,7 @@ class SupervisedConfig:
     )
     epochs: int = 10
     batch_size: int = 64
+    val_batch_size: Optional[int] = None  # Validation batch size; if None, uses batch_size
     learning_rate: float = 1e-4
     policy_dropout: Optional[float] = 0.25
     value_dropout: Optional[float] = 0.25
