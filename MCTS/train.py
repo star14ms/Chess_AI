@@ -1529,7 +1529,17 @@ def _load_checkpoint(
         network.load_state_dict(checkpoint["model_state_dict"])
         network.to(device)
 
-        if "optimizer_state_dict" in checkpoint:
+        # Load optimizer only if checkpoint is from RL training (not from supervised learning)
+        is_rl_checkpoint = (
+            checkpoint.get("training_mode") == "rl"
+            or (checkpoint.get("training_mode") is None and checkpoint.get("total_games_simulated", 0) > 0)
+        )
+        if not is_rl_checkpoint:
+            progress.print(
+                "Checkpoint appears to be from supervised learning (or unknown). Using fresh optimizer for RL training."
+            )
+
+        if is_rl_checkpoint and "optimizer_state_dict" in checkpoint:
             try:
                 checkpoint_opt_state = checkpoint["optimizer_state_dict"]
                 if "param_groups" in checkpoint_opt_state and len(checkpoint_opt_state["param_groups"]) > 0:
@@ -1676,6 +1686,8 @@ def _load_checkpoint(
                     import traceback
 
                     traceback.print_exc()
+        elif not is_rl_checkpoint:
+            progress.print("Skipping optimizer load (checkpoint not from RL). Optimizer starts fresh.")
         else:
             progress.print("Warning: No optimizer state found in checkpoint")
             progress.print("Optimizer will start fresh (this will cause higher initial losses)")
@@ -2833,6 +2845,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             'iteration': iteration + 1,
             'model_state_dict': network.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'training_mode': 'rl',
             'total_games_simulated': total_games_simulated,
             'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
             'history': history,
