@@ -2067,8 +2067,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     train_mate_success[idx] += 1
 
         def _include_in_replay_buffer(game_info) -> bool:
-            # Exclude MAX_MOVES draws from training data, but keep stats.
-            return game_info.get('termination') != "MAX_MOVES"
+            exclude = set(cfg.training.replay_buffer_exclude_terminations)
+            return game_info.get('termination') not in exclude
 
         if continual_enabled:
             # Drain queue to collect games for this iteration
@@ -2554,7 +2554,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                 label_stats[label]['count'] += 1
             if label_stats:
                 label_parts = []
-                for label in sorted(label_stats.keys()):
+                def _label_sort_key(value: str):
+                    lowered = value.lower()
+                    is_endgame = "endgame" in lowered
+                    return (1 if is_endgame else 0, lowered)
+                for label in sorted(label_stats.keys(), key=_label_sort_key):
                     count = label_stats[label]['count']
                     avg_nodes_label = label_stats[label]['sum_nodes'] / max(1, count)
                     label_parts.append(f"{label}={avg_nodes_label:.0f} ({count})")

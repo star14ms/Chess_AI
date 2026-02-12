@@ -91,6 +91,9 @@ class TrainingConfig:
     max_training_time_seconds: Optional[int] = None  # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
     draw_reward: Optional[float] = None  # Fixed reward value for draws. If None, uses draw_reward_table based on termination type and position quality
     draw_reward_table: Optional[Dict[str, Dict[str, float]]] = None  # Nested dictionary: {termination_type: {position_quality: reward}}. Used when draw_reward is None
+    replay_buffer_exclude_terminations: List[str] = field(
+        default_factory=lambda: ["MAX_MOVES", "THREEFOLD_REPETITION"]
+    )  # Draw termination types to exclude from replay buffer (kept for stats only)
 
 
 @dataclass

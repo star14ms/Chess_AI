@@ -109,6 +109,7 @@ training:
   progress_bar: true
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
   draw_reward: 0.0 # Fixed reward value for draws. Set to null to use draw_reward_table
+  replay_buffer_exclude_terminations: [MAX_MOVES, THREEFOLD_REPETITION]  # Draw terminations excluded from replay buffer
   # draw_reward_table:
   #   THREEFOLD_REPETITION:
   #     winning: -0.9
