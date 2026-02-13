@@ -30,6 +30,7 @@ from utils.thermal import maybe_pause_for_thermal_throttle
 from inference_server import InferenceClient, inference_server_worker
 from utils.training_utils import (
     RewardComputer,
+    freeze_first_n_conv_layers,
     iter_json_array,
     select_fen_from_dict,
     select_random_fen_from_entries,
@@ -1358,6 +1359,13 @@ def _init_network_and_optimizer(
     network = create_network(cfg, device)
     network.eval()
 
+    # Freeze first N conv layers if configured (train only layers after)
+    freeze_n = int(cfg.network.get("freeze_first_n_conv_layers", 0))
+    if freeze_n > 0:
+        freeze_first_n_conv_layers(network, freeze_n)
+        n_trainable = sum(p.numel() for p in network.parameters() if p.requires_grad)
+        progress.print(f"Frozen first {freeze_n} conv layers. Training {n_trainable:,} parameters.")
+
     profile_network = create_network(cfg, device)
     profile_network.eval()
     N, C, H, W = cfg.training.batch_size, cfg.network.input_channels, cfg.network.board_size, cfg.network.board_size
@@ -1366,12 +1374,13 @@ def _init_network_and_optimizer(
 
     opt_cfg = cfg.optimizer
     actual_learning_rate = opt_cfg.learning_rate
+    trainable_params = [p for p in network.parameters() if p.requires_grad]
     if opt_cfg.type == "Adam":
-        optimizer = optim.Adam(network.parameters(), lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+        optimizer = optim.Adam(trainable_params, lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
     elif opt_cfg.type == "SGD":
         momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
         optimizer = optim.SGD(
-            network.parameters(),
+            trainable_params,
             lr=opt_cfg.learning_rate,
             momentum=momentum,
             weight_decay=opt_cfg.weight_decay,
@@ -1667,16 +1676,16 @@ def _load_checkpoint(
                 progress.print(
                     "Warning: Optimizer will start fresh and be reinitialized for RL training (this will cause higher initial losses)"
                 )
+                trainable_params = [p for p in network.parameters() if p.requires_grad]
                 if opt_cfg.type == "Adam":
                     optimizer = optim.Adam(
-                        network.parameters(),
                         lr=opt_cfg.learning_rate,
                         weight_decay=opt_cfg.weight_decay,
                     )
                 elif opt_cfg.type == "SGD":
                     momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
                     optimizer = optim.SGD(
-                        network.parameters(),
+                        trainable_params,
                         lr=opt_cfg.learning_rate,
                         momentum=momentum,
                         weight_decay=opt_cfg.weight_decay,
@@ -2657,11 +2666,12 @@ def run_training_loop(cfg: DictConfig) -> None:
             # Extract current learning rate from optimizer state to preserve it
             current_lr = optimizer.param_groups[0]['lr']
             # Recreate optimizer with new parameter references, using preserved learning rate
+            trainable_params = [p for p in network.parameters() if p.requires_grad]
             if opt_cfg.type == "Adam":
-                optimizer = optim.Adam(network.parameters(), lr=current_lr, weight_decay=opt_cfg.weight_decay)
+                optimizer = optim.Adam(trainable_params, lr=current_lr, weight_decay=opt_cfg.weight_decay)
             elif opt_cfg.type == "SGD":
                 momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
-                optimizer = optim.SGD(network.parameters(), lr=current_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+                optimizer = optim.SGD(trainable_params, lr=current_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
             # Restore optimizer state (this preserves momentum, adaptive rates, etc.)
             try:
                 optimizer.load_state_dict(opt_state)

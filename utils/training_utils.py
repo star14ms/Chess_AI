@@ -205,6 +205,41 @@ def freeze_value_head(model: torch.nn.Module) -> None:
             param.requires_grad = False
 
 
+def freeze_first_n_conv_layers(model: torch.nn.Module, n: int) -> None:
+    """Freeze the first n layers of the convolutional body. Only trains layers after.
+
+    Layers are counted in order: initial conv block layers, then residual blocks.
+    Works with ChessNetwork4672 (body) and ChessNetwork (first_conv_block + residual_blocks).
+    """
+    if n <= 0:
+        return
+    layers = []
+    # ChessNetwork4672 uses body.first_conv_block and body.residual_blocks
+    if hasattr(model, "body"):
+        body = model.body
+        for block in body.first_conv_block.conv_blocks:
+            layers.append(block)
+        if hasattr(body.first_conv_block, "bn") and body.first_conv_block.bn is not None:
+            layers.append(body.first_conv_block.bn)
+        for block in body.residual_blocks:
+            layers.append(block)
+    # ChessNetwork uses first_conv_block and residual_blocks directly
+    elif hasattr(model, "first_conv_block") and hasattr(model, "residual_blocks"):
+        for block in model.first_conv_block.conv_blocks:
+            layers.append(block)
+        if hasattr(model.first_conv_block, "bn") and model.first_conv_block.bn is not None:
+            layers.append(model.first_conv_block.bn)
+        for block in model.residual_blocks:
+            layers.append(block)
+    else:
+        raise ValueError("Unsupported network structure for freeze_first_n_conv_layers")
+
+    to_freeze = min(n, len(layers))
+    for i in range(to_freeze):
+        for param in layers[i].parameters():
+            param.requires_grad = False
+
+
 def save_checkpoint(
     path: str,
     model: torch.nn.Module,

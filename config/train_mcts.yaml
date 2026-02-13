@@ -35,6 +35,7 @@ network:
   policy_dropout: 0.0
   value_dropout: 0.0
   conv_dropout: 0.0
+  freeze_first_n_conv_layers: null  # Freeze first N layers of conv body. Training only layers after. 0 = train all.
 
 # New Env section
 env:
