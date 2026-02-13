@@ -707,7 +707,7 @@ def main():
     )
     parser.add_argument(
         "--inputs",
-        nargs="+",
+        nargs="*",
         default=[
             "data/mate_in_1_flipped.json",
             "data/mate_in_2_flipped.json",

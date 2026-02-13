@@ -9,7 +9,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ThemeQuery:
     raw: str
-    includes: tuple[str, ...]
+    includes: tuple[tuple[str, ...], ...]  # OR groups; each group AND'd, themes within group OR'd
     excludes: tuple[str, ...]
     filename: str
 
@@ -20,11 +20,13 @@ def iter_matching_queries(themes, queries):
     theme_set = set(themes)
     matched = []
     for query in queries:
-        if query.includes and not set(query.includes).issubset(theme_set):
-            continue
-        if query.excludes and set(query.excludes).intersection(theme_set):
-            continue
-        matched.append(query)
+        for or_group in query.includes:
+            if not any(t in theme_set for t in or_group):
+                break
+        else:
+            if query.excludes and set(query.excludes).intersection(theme_set):
+                continue
+            matched.append(query)
     return matched
 
 
@@ -37,12 +39,13 @@ def theme_to_filename(theme: str) -> str:
     return "".join(normalized)
 
 
-def query_to_filename(includes: tuple[str, ...], excludes: tuple[str, ...]) -> str:
+def query_to_filename(includes: tuple[tuple[str, ...], ...], excludes: tuple[str, ...]) -> str:
     if not includes and not excludes:
         return "all"
     parts = []
     if includes:
-        parts.append("-".join(theme_to_filename(t) for t in includes))
+        or_parts = ["_or_".join(theme_to_filename(t) for t in group) for group in includes]
+        parts.append("-".join(or_parts))
     else:
         parts.append("all")
     if excludes:
@@ -57,13 +60,15 @@ def parse_theme_query(raw: str) -> ThemeQuery:
     excludes = []
     for token in tokens:
         if token.startswith(("-", "!")):
-            excludes.append(token[1:])
+            excludes.append(token[1:].strip())
         else:
-            includes.append(token)
-    includes_sorted = tuple(sorted(set(includes)))
+            or_group = tuple(sorted(set(t.strip() for t in token.split("|") if t.strip())))
+            if or_group:
+                includes.append(or_group)
+    includes_tuple = tuple(includes)
     excludes_sorted = tuple(sorted(set(excludes)))
-    filename = query_to_filename(includes_sorted, excludes_sorted)
-    return ThemeQuery(raw=raw, includes=includes_sorted, excludes=excludes_sorted, filename=filename)
+    filename = query_to_filename(includes_tuple, excludes_sorted)
+    return ThemeQuery(raw=raw, includes=includes_tuple, excludes=excludes_sorted, filename=filename)
 
 
 def main() -> None:
@@ -75,12 +80,13 @@ def main() -> None:
     )
     parser.add_argument(
         "themes",
-        nargs="+",
+        nargs="*",
         default=["mateIn1", "mateIn2", "mateIn3", "mateIn4", "mateIn5", "endgame,!mate"],
         help=(
             "Theme queries to export. Use comma-separated tokens per query. "
             "Prefix tokens with '-' or '!' to exclude. "
-            "Examples: mateIn1, endgame,-mate, rookEndgame,!mate"
+            "Use '|' for OR within includes. Examples: mateIn1, endgame,-mate, "
+            "endgame|middlegame,!mate,!long"
         ),
     )
     args = parser.parse_args()
