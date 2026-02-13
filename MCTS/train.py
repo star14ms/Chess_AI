@@ -1360,7 +1360,8 @@ def _init_network_and_optimizer(
     network.eval()
 
     # Freeze first N conv layers if configured (train only layers after)
-    freeze_n = int(cfg.network.get("freeze_first_n_conv_layers", 0))
+    freeze_n_raw = cfg.network.get("freeze_first_n_conv_layers", 0)
+    freeze_n = int(freeze_n_raw) if freeze_n_raw is not None else 0
     if freeze_n > 0:
         freeze_first_n_conv_layers(network, freeze_n)
         n_trainable = sum(p.numel() for p in network.parameters() if p.requires_grad)

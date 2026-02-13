@@ -21,7 +21,7 @@ class NetworkConfig:
     policy_dropout: float = 0.0
     value_dropout: float = 0.0
     conv_dropout: float = 0.0
-    freeze_first_n_conv_layers: int = 0  # Freeze first N layers of conv body (initial conv + residual). 0 = train all.
+    freeze_first_n_conv_layers: Optional[int] = 0  # Freeze first N layers of conv body (initial conv + residual). 0 or null = train all.
 
 
 @dataclass
