@@ -48,15 +48,15 @@ env:
 
 mcts:
   _target_: utils.config_schema_rl.MCTSConfig
-  iterations: 1024  # More search to find mate
+  iterations: 256  # More search to find mate
   c_puct: 2.0      # Moderate (not too high!)
   temperature_start: 1.0  # Some randomness early
   temperature_end: 0.0
   temperature_decay_moves: 30  # Quick transition
   temperature_custom_start: 0.0
   dirichlet_alpha: 0.3
-  dirichlet_epsilon: 0.0
-  batch_size: 32  # Maximum batch size for MCTS (dynamic batching will optimize based on GPU memory)
+  dirichlet_epsilon: 0.25
+  batch_size: 16  # Per-game batch (keep small to avoid MCTS variance)
   
 
 optimizer:
@@ -70,9 +70,9 @@ training:
   _target_: utils.config_schema_rl.TrainingConfig
   replay_buffer_size: 8192
   device: auto # If device is cpu and multiprocessing is false and render_mode is not null, you can see the pygame window
-  amp: false # Enable CUDA AMP (mixed precision) during training
+  amp: true # Enable CUDA AMP (mixed precision) during training
   num_training_iterations: 20
-  num_training_steps: 20
+  num_training_steps: 40
   batch_size: 64
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
@@ -90,51 +90,54 @@ training:
   checkpoint_dir_load: null # If set, load checkpoints from here; otherwise use checkpoint_dir
   game_history_dir: ${hydra:runtime.output_dir}/game_history # Directory to save game history files. Set to null to disable.
   initial_board_fen:
-    - path: data/mate_in_1_flipped.json
-      weight: 0.5
-      max_game_moves: 6
-    - path: data/mate_in_2_flipped.json
+    # - path: data/mate_in_1.json
+    #   weight: 0.3
+    #   max_game_moves: 6
+    # - path: data/mate_in_2.json
+    #   weight: 0.2
+    #   max_game_moves: 8
+    # - path: data/mate_in_3.json
+    #   weight: 0.2
+    #   max_game_moves: 10
+    # - path: data/mate_in_4.json
+    #   weight: 0.2
+    #   max_game_moves: 12
+    # - path: data/mate_in_5.json
+    #   weight: 0.3
+    #   max_game_moves: 14
+    - path: data/endgame-crushing_without_defensive_move-long-mate-quite_move-very_long.json
       weight: 0.3
-      max_game_moves: 8
-    - path: data/mate_in_3_flipped.json
-      weight: 0.2
-      max_game_moves: 10
-    - path: data/mate_in_4_flipped.json
-      weight: 0.0
-      max_game_moves: 12
-    - path: data/mate_in_5_flipped.json
-      weight: 0.0
-      max_game_moves: 14
+      max_game_moves: 50
   progress_bar: true
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
-  draw_reward: 0.0 # Fixed reward value for draws. Set to null to use draw_reward_table
-  replay_buffer_exclude_terminations: [MAX_MOVES, THREEFOLD_REPETITION]  # Draw terminations excluded from replay buffer
-  # draw_reward_table:
-  #   THREEFOLD_REPETITION:
-  #     winning: -0.9
-  #     equal: -0.5
-  #     losing: 0.0
-  #   FIVEFOLD_REPETITION:
-  #     winning: -0.9
-  #     equal: -0.5
-  #     losing: 0.0
-  #   STALEMATE:
-  #     winning: -0.9
-  #     equal: -0.5
-  #     losing: 0.0
-  #   FIFTY_MOVES:
-  #     winning: -0.9
-  #     equal: -0.5
-  #     losing: 0.0
-  #   SEVENTYFIVE_MOVES:
-  #     winning: -0.9
-  #     equal: -0.5
-  #     losing: 0.0
-  #   MAX_MOVES:
-  #     winning: -0.9
-  #     equal: -0.5
-  #     losing: 0.0
-  #   INSUFFICIENT_MATERIAL:
-  #     winning: -0.9
-  #     equal: -0.05
-  #     losing: 0.0
+  draw_reward: null # Fixed reward value for draws. Set to null to use draw_reward_table
+  replay_buffer_exclude_terminations: []  # Draw terminations excluded from replay buffer
+  draw_reward_table:
+    THREEFOLD_REPETITION:
+      winning: -0.9
+      equal: -0.5
+      losing: 0.0
+    FIVEFOLD_REPETITION:
+      winning: -0.9
+      equal: -0.5
+      losing: 0.0
+    STALEMATE:
+      winning: -0.9
+      equal: -0.5
+      losing: 0.0
+    FIFTY_MOVES:
+      winning: -0.9
+      equal: -0.5
+      losing: 0.0
+    SEVENTYFIVE_MOVES:
+      winning: -0.9
+      equal: -0.5
+      losing: 0.0
+    MAX_MOVES:
+      winning: -0.9
+      equal: -0.5
+      losing: 0.0
+    INSUFFICIENT_MATERIAL:
+      winning: -0.9
+      equal: -0.05
+      losing: 0.0
