@@ -1,5 +1,6 @@
 import logging
 import queue
+import threading
 import time
 import uuid
 import os
@@ -10,6 +11,19 @@ import torch
 from omegaconf import OmegaConf
 
 logger = logging.getLogger(__name__)
+
+# Lazy import for torch_xla (TPU); only used when inference_server_device is "xla"
+_torch_xla = None
+
+def _get_torch_xla():
+    global _torch_xla
+    if _torch_xla is None:
+        try:
+            import torch_xla.core.xla_model as xm
+            _torch_xla = xm
+        except ImportError:
+            _torch_xla = False
+    return _torch_xla if _torch_xla else None
 
 # Set to True to enable inference server logging (startup, throughput, exceptions)
 INFERENCE_SERVER_LOGGING_ENABLED = False
@@ -186,6 +200,142 @@ def inference_server_worker(
                 torch.cuda.synchronize(device)
             except Exception:
                 pass
+
+
+def inference_server_worker_tpu(
+    checkpoint_path: str,
+    cfg,
+    device_str: str,
+    request_queue,
+    stop_event,
+    max_batch_size: int,
+    min_batch_size: int,
+    max_wait_ms: int,
+    reply_queues_by_worker: dict,
+    initial_state_dict: Optional[dict] = None,
+    tpu_lock: Optional[threading.Lock] = None,
+):
+    """TPU variant of inference server. Runs in a thread (not process) since TPU cannot be shared across processes.
+    Uses tpu_lock to serialize TPU usage with the main training loop."""
+    xm = _get_torch_xla()
+    if xm is None:
+        raise RuntimeError("torch_xla is required for TPU inference. Install with: pip install torch_xla")
+
+    if isinstance(cfg, dict) and not OmegaConf.is_config(cfg):
+        cfg = OmegaConf.create(cfg)
+
+    create_network = _create_network_from_cfg(cfg)
+    device = xm.xla_device()
+    network = create_network(cfg, device)
+    if initial_state_dict is not None:
+        try:
+            network.load_state_dict(initial_state_dict)
+        except Exception:
+            pass
+    network.to(device).eval()
+
+    last_mtime = 0.0
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            last_mtime = os.path.getmtime(checkpoint_path)
+        except Exception:
+            last_mtime = 0.0
+
+    max_wait_s = max(0.001, max_wait_ms / 1000.0)
+    lock = tpu_lock if tpu_lock is not None else threading.Lock()
+
+    if INFERENCE_SERVER_LOGGING_ENABLED:
+        logger.info(f"InferenceServer(TPU): max_wait_ms={max_wait_ms} (max_wait_s={max_wait_s})")
+
+    while not stop_event.is_set():
+        try:
+            if checkpoint_path and os.path.exists(checkpoint_path):
+                mtime = os.path.getmtime(checkpoint_path)
+                if mtime > last_mtime:
+                    try:
+                        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+                        network.load_state_dict(ckpt["model_state_dict"])
+                        network.to(device).eval()
+                        last_mtime = mtime
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        pending = []
+        try:
+            req = request_queue.get(timeout=max_wait_s)
+            pending.append(req)
+        except queue.Empty:
+            continue
+        except Exception:
+            continue
+
+        deadline = time.monotonic() + max_wait_s
+        deadline_extended = False
+        while len(pending) < max_batch_size:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if len(pending) < min_batch_size and not deadline_extended:
+                    deadline = time.monotonic() + max_wait_s
+                    deadline_extended = True
+                else:
+                    break
+            try:
+                req = request_queue.get(timeout=min(0.05, remaining))
+                pending.append(req)
+            except queue.Empty:
+                time.sleep(max(0, min(0.05, remaining)))
+            except Exception as e:
+                if INFERENCE_SERVER_LOGGING_ENABLED:
+                    logger.warning(f"InferenceServer(TPU): collection loop exception: {e}")
+                break
+
+        obs_list = []
+        sizes = []
+        for req in pending:
+            obs = req.get("obs")
+            if obs is None:
+                sizes.append(0)
+                obs_list.append(None)
+                continue
+            if obs.ndim == 3:
+                obs = obs[None, ...]
+            sizes.append(obs.shape[0])
+            obs_list.append(obs)
+
+        valid_pairs = [(req, obs, size) for req, obs, size in zip(pending, obs_list, sizes) if size > 0]
+        if not valid_pairs:
+            continue
+
+        obs_batch = np.concatenate([obs for _, obs, _ in valid_pairs], axis=0)
+        obs_tensor = torch.from_numpy(obs_batch).float().to(device)
+
+        with lock:
+            with torch.no_grad():
+                policy_logits, value_preds = network(obs_tensor)
+            xm.mark_step()
+            policy_np = policy_logits.cpu().numpy()
+            value_np = value_preds.cpu().numpy()
+
+        offset = 0
+        for req, _obs, size in valid_pairs:
+            worker_id = req.get("worker_id")
+            request_id = req.get("id")
+            if size <= 0:
+                offset += size
+                continue
+            reply_queue = reply_queues_by_worker.get(worker_id) if worker_id is not None else None
+            if reply_queue is None:
+                offset += size
+                continue
+            pol_slice = policy_np[offset:offset + size]
+            val_slice = value_np[offset:offset + size]
+            try:
+                reply_queue.put((request_id, pol_slice, val_slice))
+            except Exception:
+                pass
+            offset += size
 
 
 class InferenceClient:

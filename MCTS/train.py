@@ -27,7 +27,7 @@ from mcts_algorithm import MCTS
 from utils.profile_model import get_optimal_worker_count, profile_model, format_time
 from utils.progress import NullProgress
 from utils.thermal import maybe_pause_for_thermal_throttle
-from inference_server import InferenceClient, inference_server_worker
+from inference_server import InferenceClient, inference_server_worker, inference_server_worker_tpu
 from utils.training_utils import (
     RewardComputer,
     freeze_first_n_conv_layers,
@@ -1263,6 +1263,12 @@ def _parse_optional_seconds(value):
 
 
 def _select_training_device() -> torch.device:
+    if os.environ.get("XRT_TPU_CONFIG") or os.environ.get("COORDINATOR_ADDRESS"):
+        try:
+            import torch_xla.core.xla_model as xm
+            return xm.xla_device()
+        except ImportError:
+            pass
     if torch.cuda.is_available():
         return torch.device("cuda")
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
@@ -1417,7 +1423,7 @@ def _init_self_play_infra(cfg: DictConfig):
 
 def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, network_state_dict: dict, reply_queues_by_worker: dict = None):
     if not cfg.training.get("use_inference_server", False):
-        return None, None, None, None
+        return None, None, None, None, None
     if reply_queues_by_worker is None:
         reply_queues_by_worker = {}
 
@@ -1425,7 +1431,6 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
     if queue_maxsize in (None, "", "null"):
         queue_maxsize = len(reply_queues_by_worker) if reply_queues_by_worker else 128
     queue_maxsize = int(queue_maxsize)
-    # Max stacked = num workers (each sends 1 request at a time)
     max_stacked_requests = len(reply_queues_by_worker) if reply_queues_by_worker else cfg.mcts.batch_size
     max_stacked_requests = int(max_stacked_requests)
     min_stacked_requests = cfg.training.get("inference_server_min_stacked_requests")
@@ -1435,7 +1440,9 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
     max_wait_ms = int(cfg.training.get("inference_server_max_wait_ms", 2))
     device_str = cfg.training.get("inference_server_device", None)
     if not device_str or str(device_str).lower() in ("none", "null", "auto"):
-        if torch.cuda.is_available():
+        if os.environ.get("XRT_TPU_CONFIG") or os.environ.get("COORDINATOR_ADDRESS"):
+            device_str = "xla"
+        elif torch.cuda.is_available():
             device_str = "cuda:0"
         elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
             device_str = "mps"
@@ -1445,24 +1452,51 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
     request_queue = multiprocessing.get_context("spawn").Queue(maxsize=queue_maxsize)
     stop_event = manager.Event()
     cfg_for_worker = OmegaConf.to_container(cfg, resolve=True) if OmegaConf.is_config(cfg) else cfg
-    p = multiprocessing.get_context("spawn").Process(
-        target=inference_server_worker,
-        args=(
-            checkpoint_path,
-            cfg_for_worker,
-            device_str,
-            request_queue,
-            stop_event,
-            max_stacked_requests,
-            min_stacked_requests,
-            max_wait_ms,
-            reply_queues_by_worker,
-            network_state_dict,
-        ),
-    )
-    p.daemon = True
-    p.start()
-    return request_queue, stop_event, p, device_str
+
+    use_tpu = str(device_str).lower() in ("xla", "tpu")
+    tpu_lock = None
+
+    if use_tpu:
+        import threading
+        tpu_lock = threading.Lock()
+        t = threading.Thread(
+            target=inference_server_worker_tpu,
+            args=(
+                checkpoint_path,
+                cfg_for_worker,
+                device_str,
+                request_queue,
+                stop_event,
+                max_stacked_requests,
+                min_stacked_requests,
+                max_wait_ms,
+                reply_queues_by_worker,
+                network_state_dict,
+                tpu_lock,
+            ),
+            daemon=True,
+        )
+        t.start()
+        return request_queue, stop_event, t, device_str, tpu_lock
+    else:
+        p = multiprocessing.get_context("spawn").Process(
+            target=inference_server_worker,
+            args=(
+                checkpoint_path,
+                cfg_for_worker,
+                device_str,
+                request_queue,
+                stop_event,
+                max_stacked_requests,
+                min_stacked_requests,
+                max_wait_ms,
+                reply_queues_by_worker,
+                network_state_dict,
+            ),
+        )
+        p.daemon = True
+        p.start()
+        return request_queue, stop_event, p, device_str, None
 
 
 def _load_checkpoint(
@@ -1770,7 +1804,13 @@ def run_training_loop(cfg: DictConfig) -> None:
         # Will launch actors after checkpoint loading
         pass
     elif use_multiprocessing_flag and num_workers > 1:
-        device = "cpu"
+        # When using TPU inference server, keep device as TPU for training
+        use_tpu_inference = (
+            cfg.training.get("use_inference_server", False)
+            and str(cfg.training.get("inference_server_device", "")).lower() in ("xla", "tpu")
+        ) or os.environ.get("XRT_TPU_CONFIG") or os.environ.get("COORDINATOR_ADDRESS")
+        if not use_tpu_inference:
+            device = "cpu"
         # Describe mixed actors plan
         if torch.cuda.is_available():
             gpu_count = torch.cuda.device_count()
@@ -1826,9 +1866,10 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     history = _ensure_mate_success_history(history, mate_labels)
 
-    # Optional inference server for batched GPU inference
+    # Optional inference server for batched GPU/TPU inference
     inference_request_queue = None
     inference_reply_queues = None
+    tpu_lock = None
     if cfg.training.get("use_inference_server", False):
         checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
         # Move state_dict to CPU before passing to spawned process (GPU tensors cannot be pickled)
@@ -1836,7 +1877,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         desired_processes = max(1, num_workers if num_workers > 0 else 1)
         inference_reply_queues = [multiprocessing.get_context("spawn").Queue() for _ in range(desired_processes)]
         reply_queues_by_worker = {i: q for i, q in enumerate(inference_reply_queues)}
-        inference_request_queue, inference_stop_event, inference_process, inference_device_str = _start_inference_server(
+        inference_request_queue, inference_stop_event, inference_process, inference_device_str, tpu_lock = _start_inference_server(
             cfg,
             manager,
             checkpoint_path_for_actors,
@@ -2559,9 +2600,10 @@ def run_training_loop(cfg: DictConfig) -> None:
             _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
             continue
         
-        # Dynamic accelerator assignment: if we have enough data and using GPU/MPS, wait for first available accelerator
+        # Dynamic accelerator assignment: if we have enough data and using GPU/MPS (not TPU), wait for first available accelerator
         training_device = device
-        if continual_enabled and device.type in ('cuda', 'mps') and len(replay_buffer) >= cfg.training.batch_size:
+        use_tpu = tpu_lock is not None
+        if continual_enabled and not use_tpu and device.type in ('cuda', 'mps') and len(replay_buffer) >= cfg.training.batch_size:
             # Wait for whichever accelerator finishes its current self-play game first
             # Wait for next game from queue to identify which accelerator just finished
             try:
@@ -2601,176 +2643,187 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.columns = training_columns
 
         # progress.print("Starting training phase...")
-        network.to(training_device).train()
-        
-        # CRITICAL: Refresh optimizer parameter references after moving network
-        # When network.to(device) creates new parameter tensors, optimizer must be updated
-        if use_multiprocessing_flag:
-            # Save optimizer state before refreshing
-            opt_state = optimizer.state_dict()
-            # Extract current learning rate from optimizer state to preserve it
-            current_lr = optimizer.param_groups[0]['lr']
-            # Recreate optimizer with new parameter references, using preserved learning rate
-            trainable_params = [p for p in network.parameters() if p.requires_grad]
-            if opt_cfg.type == "Adam":
-                optimizer = optim.Adam(trainable_params, lr=current_lr, weight_decay=opt_cfg.weight_decay)
-            elif opt_cfg.type == "SGD":
-                momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
-                optimizer = optim.SGD(trainable_params, lr=current_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
-            # Restore optimizer state (this preserves momentum, adaptive rates, etc.)
-            try:
-                optimizer.load_state_dict(opt_state)
-                # Ensure optimizer state tensors are on correct device
-                for state in optimizer.state.values():
-                    for k, v in state.items():
-                        if isinstance(v, torch.Tensor):
-                            state[k] = v.to(device)
-                # Verify learning rate was preserved
-                restored_lr = optimizer.param_groups[0]['lr']
-                if abs(restored_lr - current_lr) > 1e-8:
-                    # Fix learning rate if it wasn't preserved correctly
+        # For TPU, acquire lock so inference thread yields (TPU cannot run inference and training concurrently)
+        if tpu_lock is not None:
+            tpu_lock.acquire()
+        try:
+            network.to(training_device).train()
+
+            # CRITICAL: Refresh optimizer parameter references after moving network
+            # When network.to(device) creates new parameter tensors, optimizer must be updated
+            if use_multiprocessing_flag:
+                # Save optimizer state before refreshing
+                opt_state = optimizer.state_dict()
+                # Extract current learning rate from optimizer state to preserve it
+                current_lr = optimizer.param_groups[0]['lr']
+                # Recreate optimizer with new parameter references, using preserved learning rate
+                trainable_params = [p for p in network.parameters() if p.requires_grad]
+                if opt_cfg.type == "Adam":
+                    optimizer = optim.Adam(trainable_params, lr=current_lr, weight_decay=opt_cfg.weight_decay)
+                elif opt_cfg.type == "SGD":
+                    momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                    optimizer = optim.SGD(trainable_params, lr=current_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+                # Restore optimizer state (this preserves momentum, adaptive rates, etc.)
+                try:
+                    optimizer.load_state_dict(opt_state)
+                    # Ensure optimizer state tensors are on correct device
+                    for state in optimizer.state.values():
+                        for k, v in state.items():
+                            if isinstance(v, torch.Tensor):
+                                state[k] = v.to(training_device)
+                    # Verify learning rate was preserved
+                    restored_lr = optimizer.param_groups[0]['lr']
+                    if abs(restored_lr - current_lr) > 1e-8:
+                        # Fix learning rate if it wasn't preserved correctly
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = current_lr
+                except Exception as e:
+                    progress.print(f"Warning: Could not restore optimizer state after device move: {e}")
+                    # At minimum, preserve the learning rate
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = current_lr
-            except Exception as e:
-                progress.print(f"Warning: Could not restore optimizer state after device move: {e}")
-                # At minimum, preserve the learning rate
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = current_lr
-                import traceback
-                traceback.print_exc()
-        amp_enabled = bool(
-            cfg.training.get("amp", False) and training_device.type in {"cuda", "mps"}
-        )
-        amp_device = "cuda" if training_device.type == "cuda" else "mps"
-        scaler = GradScaler(amp_device, enabled=cfg.training.get("amp", False) and training_device.type == "cuda")
-        if amp_enabled:
-            progress.print("AMP enabled for training phase.")
-
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        total_illegal_moves_in_iteration = 0
-        total_samples_in_iteration = 0
-        avg_illegal_prob_mass = 0.0
-        per_source_correct = [0 for _ in source_labels]
-        per_source_total = [0 for _ in source_labels]
-        illegal_metrics_interval = max(1, int(cfg.training.get("illegal_metrics_interval", 1)))
-        task_id_train = progress.add_task(
-            "Training Epochs",
-            total=cfg.training.num_training_steps,
-            loss_p=float("nan"),
-            loss_v=float("nan"),
-            illegal_r=float("nan"),
-            illegal_p=float("nan"),
-        )
-        # Use values from cfg
-        for epoch in range(cfg.training.num_training_steps):
-            batch = replay_buffer.sample(cfg.training.batch_size, action_space_size=cfg.network.action_space_size)
-            if batch is None: continue
-
-            # states_np, policy_targets_np, fens_batch, value_targets_np = batch
-            states_np, policy_targets_np, boards_batch, value_targets_np, source_ids_np = batch # Unpack boards
-            states_tensor = torch.from_numpy(states_np).to(device)
-            policy_targets_tensor = torch.from_numpy(policy_targets_np).to(device)
-            value_targets_tensor = torch.from_numpy(value_targets_np).to(device)
-
-            with autocast(amp_device, enabled=amp_enabled):
-                policy_logits, value_preds = network(states_tensor)
-
-                # AlphaZero-style: policy targets are already legal-only, no masking needed.
-                policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
-                # Ensure value shapes match before loss calc
-                value_loss = value_loss_fn(value_preds.squeeze(-1), value_targets_tensor.squeeze(-1))
-
-                total_loss = policy_loss + value_loss
-
-            optimizer.zero_grad()
-            if scaler.is_enabled():
-                scaler.scale(total_loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                total_loss.backward()
-                optimizer.step()
-
-            total_policy_loss += policy_loss.item()
-            total_value_loss += value_loss.item()
-
-            if source_labels and source_ids_np is not None:
-                source_ids_tensor = torch.from_numpy(source_ids_np).to(device)
-                preds = torch.argmax(policy_logits, dim=1)
-                target_indices = torch.argmax(policy_targets_tensor, dim=1)
-                for source_idx in range(len(source_labels)):
-                    mask = source_ids_tensor == source_idx
-                    count = mask.sum().item()
-                    if count:
-                        per_source_total[source_idx] += count
-                        per_source_correct[source_idx] += (preds[mask] == target_indices[mask]).sum().item()
-            
-            # Track illegal move metrics (model behavior monitoring)
-            do_illegal_metrics = (
-                illegal_metrics_interval == 1
-                or epoch % illegal_metrics_interval == 0
-                or epoch == cfg.training.num_training_steps - 1
+                    import traceback
+                    traceback.print_exc()
+            amp_enabled = bool(
+                cfg.training.get("amp", False)
+                and (training_device.type in {"cuda", "mps"} or (use_tpu and "xla" in str(training_device)))
             )
-            if do_illegal_metrics:
-                with torch.no_grad():
-                    policy_probs = torch.softmax(policy_logits, dim=1)
-                    batch_illegal_prob_mass = 0.0
-                    batch_illegal_moves = 0
-                    predicted_action_indices = torch.argmax(policy_logits, dim=1)
-                    
-                    for i in range(len(boards_batch)):
-                        current_board = boards_batch[i]
-                        legal_moves = set(get_legal_actions(current_board))
-                        if not legal_moves:
-                            continue
-                        legal_indices = torch.tensor(
-                            [move_id - 1 for move_id in legal_moves],
-                            device=device,
-                            dtype=torch.long,
-                        )
-                        illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
-                        batch_illegal_prob_mass += illegal_prob
-                        
-                        predicted_action_id = predicted_action_indices[i].item() + 1
-                        if predicted_action_id not in legal_moves:
-                            batch_illegal_moves += 1
-                    
-                    avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
-                
-                    total_illegal_moves_in_iteration += batch_illegal_moves
-                    total_samples_in_iteration += len(boards_batch)
-            
-            current_avg_policy_loss = total_policy_loss / (epoch + 1)
-            current_avg_value_loss = total_value_loss / (epoch + 1)
-            current_illegal_ratio = (
-                total_illegal_moves_in_iteration / total_samples_in_iteration
-                if total_samples_in_iteration > 0
-                else 0.0
-            )
+            amp_device = "xla" if use_tpu else ("cuda" if training_device.type == "cuda" else "mps")
+            scaler = GradScaler(amp_device, enabled=cfg.training.get("amp", False) and training_device.type == "cuda" and not use_tpu)
+            if amp_enabled:
+                progress.print("AMP enabled for training phase.")
 
-            progress.update(
-                task_id_train, advance=1,
-                loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss,
-                illegal_r=current_illegal_ratio,
-                illegal_p=avg_illegal_prob_mass
+            total_policy_loss = 0.0
+            total_value_loss = 0.0
+            total_illegal_moves_in_iteration = 0
+            total_samples_in_iteration = 0
+            avg_illegal_prob_mass = 0.0
+            per_source_correct = [0 for _ in source_labels]
+            per_source_total = [0 for _ in source_labels]
+            illegal_metrics_interval = max(1, int(cfg.training.get("illegal_metrics_interval", 1)))
+            task_id_train = progress.add_task(
+                "Training Epochs",
+                total=cfg.training.num_training_steps,
+                loss_p=float("nan"),
+                loss_v=float("nan"),
+                illegal_r=float("nan"),
+                illegal_p=float("nan"),
             )
-        progress.update(task_id_train, visible=False)
+            # Use values from cfg
+            for epoch in range(cfg.training.num_training_steps):
+                batch = replay_buffer.sample(cfg.training.batch_size, action_space_size=cfg.network.action_space_size)
+                if batch is None: continue
 
-        avg_policy_loss = total_policy_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
-        avg_value_loss = total_value_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
-        avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
-        per_source_acc_str = _format_source_accuracy(
-            source_labels, per_source_correct, per_source_total, digits=2
-        )
-        progress.print(
-            f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, "
-            f"Avg Value Loss: {avg_value_loss:.4f}, "
-            f"Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, "
-            f"Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%} | "
-            f"Policy top-1 by dataset: {per_source_acc_str}"
-        )
-        _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
+                # states_np, policy_targets_np, fens_batch, value_targets_np = batch
+                states_np, policy_targets_np, boards_batch, value_targets_np, source_ids_np = batch # Unpack boards
+                states_tensor = torch.from_numpy(states_np).to(training_device)
+                policy_targets_tensor = torch.from_numpy(policy_targets_np).to(training_device)
+                value_targets_tensor = torch.from_numpy(value_targets_np).to(training_device)
+
+                with autocast(amp_device, enabled=amp_enabled):
+                    policy_logits, value_preds = network(states_tensor)
+
+                    # AlphaZero-style: policy targets are already legal-only, no masking needed.
+                    policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
+                    # Ensure value shapes match before loss calc
+                    value_loss = value_loss_fn(value_preds.squeeze(-1), value_targets_tensor.squeeze(-1))
+
+                    total_loss = policy_loss + value_loss
+
+                optimizer.zero_grad()
+                if scaler.is_enabled():
+                    scaler.scale(total_loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    total_loss.backward()
+                    if use_tpu:
+                        import torch_xla.core.xla_model as xm
+                        xm.optimizer_step(optimizer, barrier=True)
+                    else:
+                        optimizer.step()
+
+                total_policy_loss += policy_loss.item()
+                total_value_loss += value_loss.item()
+
+                if source_labels and source_ids_np is not None:
+                    source_ids_tensor = torch.from_numpy(source_ids_np).to(training_device)
+                    preds = torch.argmax(policy_logits, dim=1)
+                    target_indices = torch.argmax(policy_targets_tensor, dim=1)
+                    for source_idx in range(len(source_labels)):
+                        mask = source_ids_tensor == source_idx
+                        count = mask.sum().item()
+                        if count:
+                            per_source_total[source_idx] += count
+                            per_source_correct[source_idx] += (preds[mask] == target_indices[mask]).sum().item()
+
+                # Track illegal move metrics (model behavior monitoring)
+                do_illegal_metrics = (
+                    illegal_metrics_interval == 1
+                    or epoch % illegal_metrics_interval == 0
+                    or epoch == cfg.training.num_training_steps - 1
+                )
+                if do_illegal_metrics:
+                    with torch.no_grad():
+                        policy_probs = torch.softmax(policy_logits, dim=1)
+                        batch_illegal_prob_mass = 0.0
+                        batch_illegal_moves = 0
+                        predicted_action_indices = torch.argmax(policy_logits, dim=1)
+
+                        for i in range(len(boards_batch)):
+                            current_board = boards_batch[i]
+                            legal_moves = set(get_legal_actions(current_board))
+                            if not legal_moves:
+                                continue
+                            legal_indices = torch.tensor(
+                                [move_id - 1 for move_id in legal_moves],
+                                device=training_device,
+                                dtype=torch.long,
+                            )
+                            illegal_prob = 1.0 - policy_probs[i, legal_indices].sum().item()
+                            batch_illegal_prob_mass += illegal_prob
+
+                            predicted_action_id = predicted_action_indices[i].item() + 1
+                            if predicted_action_id not in legal_moves:
+                                batch_illegal_moves += 1
+
+                        avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
+                        total_illegal_moves_in_iteration += batch_illegal_moves
+                        total_samples_in_iteration += len(boards_batch)
+
+                current_avg_policy_loss = total_policy_loss / (epoch + 1)
+                current_avg_value_loss = total_value_loss / (epoch + 1)
+                current_illegal_ratio = (
+                    total_illegal_moves_in_iteration / total_samples_in_iteration
+                    if total_samples_in_iteration > 0
+                    else 0.0
+                )
+
+                progress.update(
+                    task_id_train, advance=1,
+                    loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss,
+                    illegal_r=current_illegal_ratio,
+                    illegal_p=avg_illegal_prob_mass
+                )
+            progress.update(task_id_train, visible=False)
+
+            avg_policy_loss = total_policy_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
+            avg_value_loss = total_value_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
+            avg_illegal_ratio = total_illegal_moves_in_iteration / total_samples_in_iteration if total_samples_in_iteration > 0 else 0.0
+            per_source_acc_str = _format_source_accuracy(
+                source_labels, per_source_correct, per_source_total, digits=2
+            )
+            progress.print(
+                f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, "
+                f"Avg Value Loss: {avg_value_loss:.4f}, "
+                f"Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, "
+                f"Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%} | "
+                f"Policy top-1 by dataset: {per_source_acc_str}"
+            )
+            _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
+        finally:
+            if tpu_lock is not None:
+                tpu_lock.release()
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
         

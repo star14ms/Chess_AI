@@ -25,6 +25,7 @@ Optional:
 
 *   **[`pygame`](https://www.pygame.org/)**: UI/visualization for interactive chess play.
 *   **[`rich`](https://rich.readthedocs.io/)**: terminal progress bars and formatted logging.
+*   **[`torch_xla`](https://github.com/pytorch/xla)**: PyTorch/XLA for TPU support (inference + training on TPU v5e).
 
 ## Environment
 
@@ -48,6 +49,22 @@ Run the training pipeline in this order:
 3. **RL fine-tuning with self-play + MCTS**  
    Continue training from the supervised checkpoint using self-play:
    - `python MCTS/train.py`
+
+### TPU support
+
+To run RL on TPU (inference + training):
+
+1. Install `torch_xla` for your PyTorch/TPU environment (see [PyTorch/XLA](https://github.com/pytorch/xla)).
+2. Set `XRT_TPU_CONFIG` or `COORDINATOR_ADDRESS` as required by your TPU setup.
+3. Enable the inference server and set the device to `xla` in `config/train_mcts.yaml`:
+
+```yaml
+training:
+  use_inference_server: true
+  inference_server_device: "xla"
+```
+
+Self-play workers run on CPU and send positions to the TPU inference server. Training runs on TPU with `xm.optimizer_step()`. A lock serializes TPU use between inference and training in the same process.
 
 ## Training Performance
 

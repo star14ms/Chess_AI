@@ -76,8 +76,8 @@ training:
   batch_size: 64
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
-  use_inference_server: false # Use a dedicated GPU inference process
-  inference_server_device: null # Example: "cuda:0"
+  use_inference_server: false # Use a dedicated GPU/TPU inference process (or thread for TPU)
+  inference_server_device: null # Example: "cuda:0", "xla" for TPU v5e
   inference_server_max_wait_ms: 0  # Longer wait to collect requests from multiple workers
   inference_server_min_stacked_requests: 0 # Min requests before processing; extends wait when below this (0 is emperically proven to be the best)
   enable_thermal_pause: false
