@@ -26,7 +26,7 @@ def select_fen_from_dict(fen_dict):
         Tuple of (selected FEN string, position quality) or (None, None) if dictionary is empty/invalid
     """
     if not fen_dict or not isinstance(fen_dict, dict):
-        return None, None
+        return None, None, []
     
     fens = []
     weights = []
@@ -46,7 +46,7 @@ def select_fen_from_dict(fen_dict):
     # Normalize weights to ensure they sum to 1
     total_weight = sum(weights)
     if total_weight == 0:
-        return None, None
+        return None, None, []
     
     normalized_weights = [w / total_weight for w in weights]
     
@@ -55,7 +55,7 @@ def select_fen_from_dict(fen_dict):
     selected_fen = fens[selected_idx]
     selected_quality = qualities[selected_idx]
     
-    return selected_fen, selected_quality
+    return selected_fen, selected_quality, []
 
 
 def iter_json_array(path: str | Path):
@@ -411,23 +411,40 @@ def load_checkpoint(
     return checkpoint
 
 
-def select_random_fen_from_entries(entries) -> tuple[str | None, str | None]:
+def _normalize_themes(themes_field) -> list:
+    """Extract themes from entry field (Themes or themes)."""
+    if not themes_field:
+        return []
+    if isinstance(themes_field, list):
+        return [str(t).strip() for t in themes_field if str(t).strip()]
+    if isinstance(themes_field, str):
+        return [t.strip() for t in themes_field.split() if t.strip()]
+    return []
+
+
+def select_random_fen_from_entries(entries) -> tuple[str | None, str | None, list]:
+    """Select a random FEN from entries. Returns (fen, quality, themes)."""
     if not entries:
-        return None, None
+        return None, None, []
     valid = []
     for entry in entries:
         if isinstance(entry, str):
             fen = entry.strip()
+            if fen:
+                valid.append((fen, None, []))
         elif isinstance(entry, dict):
             fen = entry.get("FEN") or entry.get("fen")
             fen = str(fen).strip() if fen else None
+            if fen:
+                themes = _normalize_themes(entry.get("Themes") or entry.get("themes"))
+                quality = entry.get("quality") if isinstance(entry.get("quality"), str) else None
+                valid.append((fen, quality, themes))
         else:
             continue
-        if fen:
-            valid.append(fen)
     if not valid:
-        return None, None
-    return random.choice(valid), None
+        return None, None, []
+    chosen = random.choice(valid)
+    return chosen[0], chosen[1], chosen[2]
 
 
 def select_random_fen_from_json_list(path: str | Path) -> tuple[str | None, str | None]:

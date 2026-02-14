@@ -38,6 +38,7 @@ def parse_game_file(file_path: str) -> List[Dict]:
     - initial_fen_source: Optional[str]
     - initial_fen_label: Optional[str]
     - reward: Optional[float]
+    - position_themes: Optional[List[str]]  # Themes from dataset (e.g., endgame, fork, mateIn2)
     - moves: List[str] (SAN notation moves)
     """
     games = []
@@ -63,6 +64,7 @@ def parse_game_file(file_path: str) -> List[Dict]:
             initial_fen_source = None
             initial_fen_label = None
             reward = None
+            position_themes = None
             
             # Parse optional metadata lines
             i += 1
@@ -122,6 +124,13 @@ def parse_game_file(file_path: str) -> List[Dict]:
                     if label_match:
                         initial_fen_label = label_match.group(1).strip()
 
+                # Check for Position Themes
+                elif meta_line.startswith('Position Themes:'):
+                    themes_match = re.match(r'Position Themes:\s*(.+)', meta_line)
+                    if themes_match:
+                        themes_str = themes_match.group(1).strip()
+                        position_themes = [t.strip() for t in themes_str.split(',') if t.strip()]
+
                 # Check for Reward
                 elif meta_line.startswith('Reward:'):
                     reward_match = re.match(r'Reward:\s*([\d\.\-]+)', meta_line)
@@ -166,6 +175,7 @@ def parse_game_file(file_path: str) -> List[Dict]:
                 'moves': moves,
                 'initial_fen_source': initial_fen_source,
                 'initial_fen_label': initial_fen_label,
+                'position_themes': position_themes,
             })
         else:
             i += 1
@@ -435,7 +445,9 @@ def select_and_replay_game(
         header_height = 100
         rows_per_page = 15
         item_height = line_height + 5
-        window_width = 1000
+        theme_panel_width = 220
+        list_panel_width = 780
+        window_width = list_panel_width + theme_panel_width + margin * 2
         window_height = header_height + min(len(games), rows_per_page) * item_height + margin * 2
         clock = pygame.time.Clock()
         
@@ -575,11 +587,33 @@ def select_and_replay_game(
         filter_tabs = [t for t in fen_types if t not in ("custom", "default")]
         selected_filter = 0 if filter_tabs else None
 
+        # Theme filter: collect all unique themes, support multi-select
+        all_themes: List[str] = []
+        for g in games:
+            themes = g.get("position_themes")
+            if themes and isinstance(themes, (list, tuple)):
+                for t in themes:
+                    tstr = str(t).strip()
+                    if tstr and tstr not in all_themes:
+                        all_themes.append(tstr)
+        all_themes = sorted(all_themes)
+        selected_themes: set = set()
+        theme_checkbox_height = 22
+        theme_list_max_visible = 12
+
         def _filter_game_indices() -> List[int]:
-            if not filter_tabs or selected_filter is None:
-                return list(range(len(games)))
-            current_label = filter_tabs[selected_filter]
-            return [idx for idx, game in enumerate(games) if _game_fen_type(game) == current_label]
+            indices = list(range(len(games)))
+            if filter_tabs and selected_filter is not None:
+                current_label = filter_tabs[selected_filter]
+                indices = [idx for idx in indices if _game_fen_type(games[idx]) == current_label]
+            if selected_themes:
+                theme_set = selected_themes
+                indices = [
+                    idx for idx in indices
+                    if games[idx].get("position_themes")
+                    and theme_set & {str(t).strip() for t in games[idx]["position_themes"] if t}
+                ]
+            return indices
 
         def _rebuild_menu_rows():
             nonlocal menu_rows, game_row_indices, selected_row, scroll_offset
@@ -660,10 +694,11 @@ def select_and_replay_game(
                 selected_row = game_row_indices[-1]
                 scroll_offset = max(0, len(menu_rows) - rows_per_page)
 
+        theme_state = [False]  # [0] = dropdown open (list to allow mutation in nested scope)
+
         while running:
             clock.tick(fps)
             now_ms = pygame.time.get_ticks()
-            
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -695,11 +730,31 @@ def select_and_replay_game(
                                 _rebuild_menu_rows()
                                 break
                             tab_x += tab_w + 6
+
+                    # Theme panel: dropdown toggle
+                    theme_btn_rect = pygame.Rect(list_panel_width + margin, header_height + margin, theme_panel_width - margin, 28)
+                    if theme_btn_rect.collidepoint(mouse_x, mouse_y) and all_themes:
+                        theme_state[0] = not theme_state[0]
+                    # Theme checkboxes (when dropdown open)
+                    elif theme_state[0] and all_themes:
+                        theme_panel_x = list_panel_width + margin
+                        theme_list_y = header_height + margin + 35
+                        for ti, theme_name in enumerate(all_themes):
+                            cb_y = theme_list_y + ti * theme_checkbox_height
+                            cb_rect = pygame.Rect(theme_panel_x, cb_y, theme_panel_width - margin * 2, theme_checkbox_height)
+                            if cb_rect.collidepoint(mouse_x, mouse_y):
+                                if theme_name in selected_themes:
+                                    selected_themes.discard(theme_name)
+                                else:
+                                    selected_themes.add(theme_name)
+                                _rebuild_menu_rows()
+                                break
+
                     list_start_y = header_height + margin
                     visible_rows = min(rows_per_page, max(0, len(menu_rows) - scroll_offset))
                     list_end_y = list_start_y + visible_rows * item_height
                     list_left_x = margin
-                    list_right_x = window_width - margin
+                    list_right_x = list_panel_width - margin
                     if list_left_x <= mouse_x <= list_right_x and list_start_y <= mouse_y <= list_end_y:
                         list_idx = (mouse_y - list_start_y) // item_height
                         hover_row = scroll_offset + int(list_idx)
@@ -724,7 +779,7 @@ def select_and_replay_game(
                     visible_rows = min(rows_per_page, max(0, len(menu_rows) - scroll_offset))
                     list_end_y = list_start_y + visible_rows * item_height
                     list_left_x = margin
-                    list_right_x = window_width - margin
+                    list_right_x = list_panel_width - margin
                     if list_left_x <= mouse_x <= list_right_x and list_start_y <= mouse_y <= list_end_y:
                         list_idx = (mouse_y - list_start_y) // item_height
                         hover_row = scroll_offset + int(list_idx)
@@ -780,7 +835,8 @@ def select_and_replay_game(
             # Header
             header_rect = pygame.Rect(0, 0, window_width, header_height)
             pygame.draw.rect(screen, header_bg, header_rect)
-            title_text = title_font.render(f"Select Game to Replay ({len(games)} games)", True, text_color)
+            filtered_count = len(_filter_game_indices())
+            title_text = title_font.render(f"Select Game to Replay ({filtered_count} games)", True, text_color)
             screen.blit(title_text, (margin, 15))
             
             # Instructions
@@ -819,6 +875,32 @@ def select_and_replay_game(
                 text_y = layout_tab_y + (layout_tab_height - tab_text.get_height()) // 2
                 screen.blit(tab_text, (text_x, text_y))
                 tab_x += tab_w + 6
+
+            # Theme filter panel (right side)
+            theme_panel_x = list_panel_width
+            theme_panel_rect = pygame.Rect(theme_panel_x, 0, theme_panel_width + margin, window_height)
+            pygame.draw.rect(screen, (35, 35, 40), theme_panel_rect)
+            pygame.draw.line(screen, (60, 60, 65), (theme_panel_x, 0), (theme_panel_x, window_height))
+            if all_themes:
+                theme_btn_rect = pygame.Rect(theme_panel_x + margin, header_height + margin, theme_panel_width - margin, 28)
+                btn_label = "Themes ▼" if theme_state[0] else "Themes ▶"
+                if selected_themes:
+                    btn_label += f" ({len(selected_themes)})"
+                theme_btn_color = selected_bg if theme_state[0] else header_row_bg
+                pygame.draw.rect(screen, theme_btn_color, theme_btn_rect, border_radius=4)
+                theme_btn_text = small_font.render(btn_label, True, text_color)
+                screen.blit(theme_btn_text, (theme_btn_rect.x + 6, theme_btn_rect.y + 6))
+                if theme_state[0]:
+                    theme_list_y = header_height + margin + 35
+                    for ti, theme_name in enumerate(all_themes):
+                        cb_y = theme_list_y + ti * theme_checkbox_height
+                        is_checked = theme_name in selected_themes
+                        cb_rect = pygame.Rect(theme_panel_x + margin, cb_y, 16, 16)
+                        pygame.draw.rect(screen, (60, 60, 65), cb_rect, border_radius=2)
+                        if is_checked:
+                            pygame.draw.rect(screen, (100, 180, 100), cb_rect.inflate(-4, -4), border_radius=2)
+                        theme_text = small_font.render(theme_name, True, text_color)
+                        screen.blit(theme_text, (cb_rect.right + 6, cb_y - 2))
             
             # Game list
             visible_start = scroll_offset
@@ -835,7 +917,7 @@ def select_and_replay_game(
                 item_bg_color = header_row_bg if is_header else (selected_bg if is_selected else item_bg)
                 text_color_use = selected_text if is_selected else text_color
                 
-                item_rect = pygame.Rect(margin, y_pos, window_width - margin * 2, item_height - 2)
+                item_rect = pygame.Rect(margin, y_pos, list_panel_width - margin * 2, item_height - 2)
                 pygame.draw.rect(screen, item_bg_color, item_rect)
                 
                 if is_header:
@@ -872,12 +954,12 @@ def select_and_replay_game(
                     if info_parts:
                         info_text = " | ".join(info_parts)
                         info_surface = small_font.render(info_text, True, (150, 150, 200))
-                        screen.blit(info_surface, (window_width - margin - info_surface.get_width() - 5, y_pos + 20))
+                        screen.blit(info_surface, (list_panel_width - margin - info_surface.get_width() - 5, y_pos + 20))
             
-            # Scrollbar (if needed)
+            # Scrollbar (if needed) - in list panel area
             if len(menu_rows) > rows_per_page:
                 scrollbar_width = 10
-                scrollbar_x = window_width - margin - scrollbar_width
+                scrollbar_x = list_panel_width - margin - scrollbar_width
                 scrollbar_height = (window_height - header_height - margin * 2)
                 scrollbar_rect = pygame.Rect(scrollbar_x, header_height + margin, scrollbar_width, scrollbar_height)
                 pygame.draw.rect(screen, (60, 60, 60), scrollbar_rect)

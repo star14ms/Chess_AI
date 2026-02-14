@@ -72,7 +72,7 @@ def _select_fen_from_loaded(loaded):
         return select_fen_from_dict(loaded)
     if isinstance(loaded, list) and loaded:
         return select_random_fen_from_entries(loaded)
-    return None, None
+    return None, None, []
 
 
 def _select_fen_from_json_path(json_path: str):
@@ -95,19 +95,22 @@ def _select_fen_from_json_path(json_path: str):
         return _select_fen_from_loaded(loaded)
     except Exception as e:
         print(f"Warning: Failed to load initial_board_fen from JSON file {json_path}: {e}")
-        return None, None
+        return None, None, []
 
 
 def _select_fen_from_source(source):
+    """Return (fen, quality, themes). Themes are extracted from dataset entries when available."""
     if isinstance(source, str) and source.endswith('.json'):
         return _select_fen_from_json_path(source)
     if isinstance(source, dict):
-        return select_fen_from_dict(source)
+        result = select_fen_from_dict(source)
+        return result if len(result) >= 3 else (result[0], result[1], [])
     if isinstance(source, list):
-        return select_random_fen_from_entries(source)
+        result = select_random_fen_from_entries(source)
+        return result if len(result) >= 3 else (result[0], result[1], [])
     if isinstance(source, str):
-        return source, None
-    return None, None
+        return source, None, []
+    return None, None, []
 
 
 def _dataset_cache_key(value) -> str:
@@ -126,20 +129,36 @@ def _extract_fen_from_entry(entry):
     return None
 
 
-def _sample_fens_from_json(path: str, max_samples: int) -> tuple[list[str], int]:
-    sample: list[str] = []
+def _extract_themes_from_entry(entry) -> list:
+    """Extract themes from JSON entry (Themes or themes field)."""
+    if isinstance(entry, dict):
+        raw = entry.get("Themes") or entry.get("themes")
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(t).strip() for t in raw if str(t).strip()]
+        if isinstance(raw, str):
+            return [t.strip() for t in raw.split() if t.strip()]
+    return []
+
+
+def _sample_fens_from_json(path: str, max_samples: int) -> tuple[list, int]:
+    """Sample entries from JSON. Each item is a dict with 'fen' and 'themes' for downstream theme extraction."""
+    sample: list = []
     seen = 0
     for entry in iter_json_array(path):
         fen = _extract_fen_from_entry(entry)
         if not fen:
             continue
         seen += 1
+        themes = _extract_themes_from_entry(entry)
+        item = {"fen": fen, "Themes": themes} if themes else fen
         if len(sample) < max_samples:
-            sample.append(fen)
+            sample.append(item)
         else:
             j = random.randint(1, seen)
             if j <= max_samples:
-                sample[j - 1] = fen
+                sample[j - 1] = item
     return sample, seen
 
 
@@ -699,6 +718,7 @@ def run_self_play_game(
     # Handle initial_board_fen: supports single dataset or weighted list of datasets
     initial_fen = None
     initial_position_quality = None
+    initial_themes = []
     initial_dataset_id = None
     initial_dataset_label = None
     initial_dataset_source = None
@@ -730,9 +750,9 @@ def run_self_play_game(
                         initial_dataset_source = _resolve_json_path(source_value)
                     else:
                         initial_dataset_source = source_value
-                initial_fen, initial_position_quality = _select_fen_from_source(selected_entry["source"])
+                initial_fen, initial_position_quality, initial_themes = _select_fen_from_source(selected_entry["source"])
         else:
-            initial_fen, initial_position_quality = _select_fen_from_source(initial_board_fen_cfg)
+            initial_fen, initial_position_quality, initial_themes = _select_fen_from_source(initial_board_fen_cfg)
             if isinstance(initial_board_fen_cfg, str) and initial_board_fen_cfg.endswith(".json"):
                 initial_dataset_source = _resolve_json_path(initial_board_fen_cfg)
                 initial_dataset_label = _shorten_dataset_label(initial_board_fen_cfg)
@@ -1309,6 +1329,7 @@ def run_self_play_game(
         'initial_dataset_label': initial_dataset_label,
         'initial_dataset_id': initial_dataset_id,
         'initial_dataset_source': initial_dataset_source,
+        'position_themes': initial_themes if initial_themes else None,
     }
 
     return (full_game_data, game_info)
@@ -1457,6 +1478,11 @@ def _save_game_history(
                 f.write(f"Initial FEN Source: {initial_fen_source}\n")
             if initial_fen_label:
                 f.write(f"Initial FEN Label: {initial_fen_label}\n")
+            # Write position themes if available (from dataset entry)
+            position_themes = game_info.get('position_themes')
+            if position_themes and isinstance(position_themes, (list, tuple)):
+                themes_str = ', '.join(str(t) for t in position_themes)
+                f.write(f"Position Themes: {themes_str}\n")
             # Write reward value (use actual_reward if available, otherwise result)
             actual_reward = game_info.get('actual_reward', None)
             result_value = game_info.get('result', None)
@@ -1680,6 +1706,7 @@ def _load_checkpoint(
                 trainable_params = [p for p in network.parameters() if p.requires_grad]
                 if opt_cfg.type == "Adam":
                     optimizer = optim.Adam(
+                        trainable_params,
                         lr=opt_cfg.learning_rate,
                         weight_decay=opt_cfg.weight_decay,
                     )
