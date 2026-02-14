@@ -67,9 +67,9 @@ class TrainingConfig:
     self_play_workers: int = 0  # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
     use_inference_server: bool = False  # Use a dedicated process for batched GPU inference
     inference_server_device: Optional[str] = None  # Device for inference server (e.g., "cuda:0")
-    inference_server_max_batch_size: Optional[int] = None  # Defaults to mcts.batch_size when None
+    inference_server_min_stacked_requests: Optional[int] = None  # Min requests before processing; None = num_workers // 2
     inference_server_max_wait_ms: int = 2  # Max wait before dispatching a batch
-    inference_queue_maxsize: int = 128  # Max queued inference requests
+    inference_queue_maxsize: Optional[int] = None  # Max queued inference requests; None = num_workers
     enable_thermal_pause: bool = False  # Allow brief thermal throttling pauses during self-play
     manual_pause_seconds: Optional[float] = None  # If set, sleep this many seconds before self-play
     self_play_steps_per_epoch: int = 1024  # Number of steps to collect before moving to training phase

@@ -437,11 +437,16 @@ def continual_self_play_worker(
     inference_request_queue=None,
     inference_reply_queue=None,
     inference_timeout_s: float = 30.0,
-):
+    worker_id: int = -1,
+    ):
+    if isinstance(cfg, dict) and not OmegaConf.is_config(cfg):
+        cfg = OmegaConf.create(cfg)
     initialize_factories_from_cfg(cfg)
     inference_client = None
     if inference_request_queue is not None and inference_reply_queue is not None:
-        inference_client = InferenceClient(inference_request_queue, inference_reply_queue, timeout_s=inference_timeout_s)
+        inference_client = InferenceClient(
+            inference_request_queue, inference_reply_queue, timeout_s=inference_timeout_s, worker_id=worker_id if worker_id >= 0 else None
+        )
 
     if inference_client is not None:
         device = torch.device("cpu")
@@ -497,7 +502,6 @@ def continual_self_play_worker(
         except Exception:
             # Continue on errors to keep the actor alive
             pass
-
         # Modest cleanup to avoid memory growth
         if device.type == 'cuda':
             try:
@@ -1064,6 +1068,7 @@ def run_self_play_game(
                         # board.san() can fail even for legal moves in some edge cases (python-chess limitation)
                         # Fallback to UCI notation if SAN generation fails
                         san_move = move.uci()
+                        # #endregion
                         logging.warning(
                             f"SAN generation failed for action {action_to_take}: "
                             f"move={move.uci()}, root_value={root_value}, "
@@ -1503,15 +1508,23 @@ def _init_self_play_infra(cfg: DictConfig):
     return manager, sp_queue, stop_event, continual_enabled, actors, actor_device_map
 
 
-def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, network_state_dict: dict):
+def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, network_state_dict: dict, reply_queues_by_worker: dict = None):
     if not cfg.training.get("use_inference_server", False):
         return None, None, None, None
+    if reply_queues_by_worker is None:
+        reply_queues_by_worker = {}
 
-    queue_maxsize = int(cfg.training.get("inference_queue_maxsize", 128))
-    max_batch_size = cfg.training.get("inference_server_max_batch_size", None)
-    if max_batch_size in (None, "", "null", 0):
-        max_batch_size = cfg.mcts.batch_size
-    max_batch_size = int(max_batch_size)
+    queue_maxsize = cfg.training.get("inference_queue_maxsize")
+    if queue_maxsize in (None, "", "null"):
+        queue_maxsize = len(reply_queues_by_worker) if reply_queues_by_worker else 128
+    queue_maxsize = int(queue_maxsize)
+    # Max stacked = num workers (each sends 1 request at a time)
+    max_stacked_requests = len(reply_queues_by_worker) if reply_queues_by_worker else cfg.mcts.batch_size
+    max_stacked_requests = int(max_stacked_requests)
+    min_stacked_requests = cfg.training.get("inference_server_min_stacked_requests")
+    if min_stacked_requests in (None, "", "null"):
+        min_stacked_requests = max(1, max_stacked_requests // 2)
+    min_stacked_requests = int(min_stacked_requests)
     max_wait_ms = int(cfg.training.get("inference_server_max_wait_ms", 2))
     device_str = cfg.training.get("inference_server_device", None)
     if not device_str or str(device_str).lower() in ("none", "null", "auto"):
@@ -1522,7 +1535,7 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
         else:
             device_str = "cpu"
 
-    request_queue = manager.Queue(maxsize=queue_maxsize)
+    request_queue = multiprocessing.get_context("spawn").Queue(maxsize=queue_maxsize)
     stop_event = manager.Event()
     cfg_for_worker = OmegaConf.to_container(cfg, resolve=True) if OmegaConf.is_config(cfg) else cfg
     p = multiprocessing.get_context("spawn").Process(
@@ -1533,8 +1546,10 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
             device_str,
             request_queue,
             stop_event,
-            max_batch_size,
+            max_stacked_requests,
+            min_stacked_requests,
             max_wait_ms,
+            reply_queues_by_worker,
             network_state_dict,
         ),
     )
@@ -1817,7 +1832,10 @@ def run_training_loop(cfg: DictConfig) -> None:
     fen_pool_start = time.perf_counter()
     pool_size = cfg.training.get("initial_fen_pool_size", None)
     if pool_size is None and use_multiprocessing_flag:
-        pool_size = 50000
+        # Use much smaller pool when many workers to avoid huge config pickle at spawn (only 1 worker would start)
+        pool_size = 1000 if num_workers >= 4 else 50000
+        if num_workers >= 4:
+            progress.print(f"Using FEN pool size {pool_size} (reduced for {num_workers} workers to avoid spawn bottleneck)")
     pooled_initial_fen_cfg = _build_initial_fen_pool_cfg(
         cfg.training.get("initial_board_fen", None),
         int(pool_size) if pool_size is not None else None,
@@ -1920,20 +1938,27 @@ def run_training_loop(cfg: DictConfig) -> None:
     history = _ensure_mate_success_history(history, mate_labels)
 
     # Optional inference server for batched GPU inference
+    inference_request_queue = None
+    inference_reply_queues = None
     if cfg.training.get("use_inference_server", False):
         checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
         # Move state_dict to CPU before passing to spawned process (GPU tensors cannot be pickled)
         network_state_cpu = {k: v.cpu().clone() if hasattr(v, "cpu") else v for k, v in network.state_dict().items()}
+        desired_processes = max(1, num_workers if num_workers > 0 else 1)
+        inference_reply_queues = [multiprocessing.get_context("spawn").Queue() for _ in range(desired_processes)]
+        reply_queues_by_worker = {i: q for i, q in enumerate(inference_reply_queues)}
         inference_request_queue, inference_stop_event, inference_process, inference_device_str = _start_inference_server(
             cfg,
             manager,
             checkpoint_path_for_actors,
             network_state_cpu,
+            reply_queues_by_worker,
         )
         if inference_process is not None:
+            max_stacked = len(reply_queues_by_worker) if reply_queues_by_worker else cfg.mcts.batch_size
             progress.print(
                 f"Inference server enabled on {inference_device_str} "
-                f"(max_batch={cfg.training.get('inference_server_max_batch_size', None) or cfg.mcts.batch_size}, "
+                f"(max_stacked={max_stacked}, "
                 f"max_wait_ms={cfg.training.get('inference_server_max_wait_ms', 2)})"
             )
 
@@ -1967,18 +1992,21 @@ def run_training_loop(cfg: DictConfig) -> None:
                 device_pool.append('cpu')
         
         checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
-        for dev in device_pool:
-            inference_reply_queue = manager.Queue() if inference_request_queue is not None else None
+        cfg_for_workers = OmegaConf.to_container(cfg, resolve=True)
+        for worker_idx, dev in enumerate(device_pool):
+            inference_reply_queue = inference_reply_queues[worker_idx] if (inference_reply_queues is not None and worker_idx < len(inference_reply_queues)) else None
             p = multiprocessing.get_context("spawn").Process(
                 target=continual_self_play_worker,
                 args=(
                     checkpoint_path_for_actors,
-                    cfg,
+                    cfg_for_workers,
                     dev,
                     sp_queue,
                     stop_event,
                     inference_request_queue,
                     inference_reply_queue,
+                    30.0,
+                    worker_idx,
                 ),
             )
             p.daemon = True
