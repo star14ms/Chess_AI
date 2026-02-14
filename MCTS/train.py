@@ -31,9 +31,9 @@ from inference_server import InferenceClient, inference_server_worker
 from utils.training_utils import (
     RewardComputer,
     freeze_first_n_conv_layers,
-    iter_json_array,
     select_fen_from_dict,
     select_random_fen_from_entries,
+    select_random_fen_from_file,
     select_random_fen_from_json_list,
 )
 from utils.dataset_labels import format_dataset_label, truncate_label
@@ -46,6 +46,7 @@ get_legal_actions = None
 create_board_from_serialized = None
 _INITIAL_FEN_CACHE = {}
 _DATASET_ENTRIES_CACHE = {}
+_LINE_OFFSET_CACHE: dict[str, list[int]] = {}  # per-process cache for random file access
 
 
 def _resolve_json_path(json_path: str) -> str:
@@ -76,31 +77,18 @@ def _select_fen_from_loaded(loaded):
 
 
 def _select_fen_from_json_path(json_path: str):
+    """Select a random FEN from JSON/JSONL file via O(1) random line access (no full-file load)."""
     try:
         resolved = _resolve_json_path(json_path)
-        cache_key = os.path.abspath(resolved)
-        if cache_key in _INITIAL_FEN_CACHE:
-            loaded = _INITIAL_FEN_CACHE[cache_key]
-        else:
-            load_start = time.perf_counter()
-            with open(resolved, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            load_elapsed = time.perf_counter() - load_start
-            loaded_count = None
-            try:
-                loaded_count = len(loaded)
-            except Exception:
-                loaded_count = None
-            _INITIAL_FEN_CACHE[cache_key] = loaded
-        return _select_fen_from_loaded(loaded)
+        return select_random_fen_from_file(resolved, offset_cache=_LINE_OFFSET_CACHE)
     except Exception as e:
-        print(f"Warning: Failed to load initial_board_fen from JSON file {json_path}: {e}")
+        print(f"Warning: Failed to load initial_board_fen from file {json_path}: {e}")
         return None, None, []
 
 
 def _select_fen_from_source(source):
     """Return (fen, quality, themes). Themes are extracted from dataset entries when available."""
-    if isinstance(source, str) and source.endswith('.json'):
+    if isinstance(source, str) and (source.endswith(".json") or source.endswith(".jsonl")):
         return _select_fen_from_json_path(source)
     if isinstance(source, dict):
         result = select_fen_from_dict(source)
@@ -118,89 +106,6 @@ def _dataset_cache_key(value) -> str:
         return json.dumps(value, sort_keys=True)
     except Exception:
         return repr(value)
-
-
-def _extract_fen_from_entry(entry):
-    if isinstance(entry, str):
-        return entry.strip()
-    if isinstance(entry, dict):
-        fen = entry.get("FEN") or entry.get("fen")
-        return str(fen).strip() if fen else None
-    return None
-
-
-def _extract_themes_from_entry(entry) -> list:
-    """Extract themes from JSON entry (Themes or themes field)."""
-    if isinstance(entry, dict):
-        raw = entry.get("Themes") or entry.get("themes")
-        if not raw:
-            return []
-        if isinstance(raw, list):
-            return [str(t).strip() for t in raw if str(t).strip()]
-        if isinstance(raw, str):
-            return [t.strip() for t in raw.split() if t.strip()]
-    return []
-
-
-def _sample_fens_from_json(path: str, max_samples: int) -> tuple[list, int]:
-    """Sample entries from JSON. Each item is a dict with 'fen' and 'themes' for downstream theme extraction."""
-    sample: list = []
-    seen = 0
-    for entry in iter_json_array(path):
-        fen = _extract_fen_from_entry(entry)
-        if not fen:
-            continue
-        seen += 1
-        themes = _extract_themes_from_entry(entry)
-        item = {"fen": fen, "Themes": themes} if themes else fen
-        if len(sample) < max_samples:
-            sample.append(item)
-        else:
-            j = random.randint(1, seen)
-            if j <= max_samples:
-                sample[j - 1] = item
-    return sample, seen
-
-
-def _build_initial_fen_pool_cfg(initial_board_fen_cfg, max_samples: int | None):
-    if max_samples is None:
-        return None
-    if initial_board_fen_cfg is not None:
-        try:
-            if OmegaConf.is_config(initial_board_fen_cfg):
-                initial_board_fen_cfg = OmegaConf.to_container(initial_board_fen_cfg, resolve=True)
-        except Exception:
-            pass
-    if not isinstance(initial_board_fen_cfg, list):
-        return None
-    pooled_entries = []
-    for entry in initial_board_fen_cfg:
-        source, weight = _parse_dataset_entry(entry)
-        if source is None:
-            continue
-        label = None
-        max_game_moves = None
-        if isinstance(entry, dict):
-            label = entry.get("label") or entry.get("name")
-            max_game_moves = entry.get("max_game_moves")
-        if not label:
-            label = _shorten_dataset_label(source)
-        if isinstance(source, str) and source.endswith(".json"):
-            resolved = _resolve_json_path(source)
-            start = time.perf_counter()
-            sample, total = _sample_fens_from_json(resolved, max_samples)
-            elapsed = time.perf_counter() - start
-            pooled_entry = {
-                "entries": sample,
-                "weight": float(weight) if isinstance(weight, (int, float)) else 1.0,
-                "label": label,
-            }
-            if max_game_moves is not None:
-                pooled_entry["max_game_moves"] = max_game_moves
-            pooled_entries.append(pooled_entry)
-        else:
-            pooled_entries.append(entry)
-    return pooled_entries if pooled_entries else None
 
 
 def _get_cached_dataset_entries(initial_board_fen_cfg):
@@ -750,14 +655,16 @@ def run_self_play_game(
                 max_game_moves_override = selected_entry.get("max_game_moves")
                 source_value = selected_entry.get("source")
                 if isinstance(source_value, str):
-                    if source_value.endswith(".json"):
+                    if source_value.endswith(".json") or source_value.endswith(".jsonl"):
                         initial_dataset_source = _resolve_json_path(source_value)
                     else:
                         initial_dataset_source = source_value
                 initial_fen, initial_position_quality, initial_themes = _select_fen_from_source(selected_entry["source"])
         else:
             initial_fen, initial_position_quality, initial_themes = _select_fen_from_source(initial_board_fen_cfg)
-            if isinstance(initial_board_fen_cfg, str) and initial_board_fen_cfg.endswith(".json"):
+            if isinstance(initial_board_fen_cfg, str) and (
+                initial_board_fen_cfg.endswith(".json") or initial_board_fen_cfg.endswith(".jsonl")
+            ):
                 initial_dataset_source = _resolve_json_path(initial_board_fen_cfg)
                 initial_dataset_label = _shorten_dataset_label(initial_board_fen_cfg)
             if isinstance(initial_board_fen_cfg, dict):
@@ -765,7 +672,7 @@ def run_self_play_game(
                 for key in ("path", "file", "dataset"):
                     source_value = initial_board_fen_cfg.get(key)
                     if isinstance(source_value, str):
-                        if source_value.endswith(".json"):
+                        if source_value.endswith(".json") or source_value.endswith(".jsonl"):
                             initial_dataset_source = _resolve_json_path(source_value)
                         else:
                             initial_dataset_source = source_value
@@ -1826,24 +1733,6 @@ def run_training_loop(cfg: DictConfig) -> None:
         cfg, device, progress
     )
     replay_buffer = _init_replay_buffer(cfg, progress)
-
-    # Build a pooled initial FEN list to avoid per-worker JSON loads
-    progress.print("Loading initial FEN datasets (sampling/weighting)...")
-    fen_pool_start = time.perf_counter()
-    pool_size = cfg.training.get("initial_fen_pool_size", None)
-    if pool_size is None and use_multiprocessing_flag:
-        # Use much smaller pool when many workers to avoid huge config pickle at spawn (only 1 worker would start)
-        pool_size = 1000 if num_workers >= 4 else 50000
-        if num_workers >= 4:
-            progress.print(f"Using FEN pool size {pool_size} (reduced for {num_workers} workers to avoid spawn bottleneck)")
-    pooled_initial_fen_cfg = _build_initial_fen_pool_cfg(
-        cfg.training.get("initial_board_fen", None),
-        int(pool_size) if pool_size is not None else None,
-    )
-    if pooled_initial_fen_cfg is not None:
-        cfg.training.initial_board_fen = pooled_initial_fen_cfg
-
-    progress.print(f"Initial FEN pooling completed in {time.perf_counter() - fen_pool_start:.2f}s")
 
     dataset_entries, _weights, source_labels = _get_cached_dataset_entries(cfg.training.get("initial_board_fen", None))
     mate_labels = [label for label in source_labels if isinstance(label, str) and re.match(r"^m\\d+$", label)]

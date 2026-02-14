@@ -185,6 +185,92 @@ def fast_count_jsonl_lines(path: str | Path) -> int:
     return total_lines
 
 
+def build_line_offset_index(path: str | Path, is_json_array: bool = False) -> list[int]:
+    """Build byte offsets of each data line for O(1) random access.
+    For JSON array: skips first line '[' and last line ']'.
+    For JSONL: every line is data."""
+    path = Path(path)
+    offsets: list[int] = []
+    with path.open("rb") as handle:
+        pos = 0
+        line_idx = 0
+        for line in handle:
+            if is_json_array:
+                if line_idx == 0:
+                    line_idx += 1
+                    pos += len(line)
+                    continue
+            # Include this line's start offset
+            offsets.append(pos)
+            pos += len(line)
+            line_idx += 1
+    if is_json_array and len(offsets) >= 2:
+        # Drop last line (closing ']')
+        offsets = offsets[:-1]
+    return offsets
+
+
+def read_line_at_offset(path: str | Path, offset: int) -> str:
+    """Read a single line starting at the given byte offset."""
+    path = Path(path)
+    with path.open("r", encoding="utf-8") as handle:
+        handle.seek(offset)
+        line = handle.readline()
+    return line
+
+
+def select_random_fen_from_file(
+    path: str | Path,
+    offsets: list[int] | None = None,
+    offset_cache: dict[str, list[int]] | None = None,
+) -> tuple[str | None, str | None, list]:
+    """Select a random FEN by reading a random line from JSON/JSONL file.
+    Uses line-offset index for O(1) random access. Supports both .json (array) and .jsonl formats.
+    Returns (fen, quality, themes)."""
+    path = Path(path)
+    resolved = str(path.resolve())
+    is_json_array = resolved.lower().endswith(".json") and not resolved.lower().endswith(".jsonl")
+
+    if offsets is None:
+        cache = offset_cache if offset_cache is not None else {}
+        if resolved in cache:
+            offsets = cache[resolved]
+        else:
+            offsets = build_line_offset_index(path, is_json_array=is_json_array)
+            if offset_cache is not None:
+                offset_cache[resolved] = offsets
+
+    if not offsets:
+        return None, None, []
+
+    idx = random.randint(0, len(offsets) - 1)
+    line = read_line_at_offset(path, offsets[idx])
+    stripped = line.strip()
+    if stripped.endswith(","):
+        stripped = stripped[:-1].rstrip()
+    if not stripped or stripped in ("[", "]"):
+        return None, None, []
+
+    try:
+        entry = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None, None, []
+
+    fen = None
+    if isinstance(entry, str):
+        fen = entry.strip()
+    elif isinstance(entry, dict):
+        fen = entry.get("FEN") or entry.get("fen")
+        fen = str(fen).strip() if fen else None
+
+    if not fen:
+        return None, None, []
+
+    themes = _normalize_themes(entry.get("Themes") or entry.get("themes")) if isinstance(entry, dict) else []
+    quality = entry.get("quality") if isinstance(entry, dict) and isinstance(entry.get("quality"), str) else None
+    return fen, quality, themes
+
+
 def count_dataset_entries(dataset: IterableDataset) -> int:
     return sum(1 for _ in dataset)
 

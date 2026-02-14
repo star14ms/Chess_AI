@@ -89,7 +89,6 @@ training:
   checkpoint_dir: ./checkpoints
   checkpoint_dir_load: null # If set, load checkpoints from here; otherwise use checkpoint_dir
   game_history_dir: ${hydra:runtime.output_dir}/game_history # Directory to save game history files. Set to null to disable.
-  initial_fen_pool_size: null # Max samples per dataset for initial FEN pooling; null uses runtime default
   initial_board_fen:
     - path: data/mate_in_1_flipped.json
       weight: 0.5
