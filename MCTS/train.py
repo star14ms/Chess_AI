@@ -36,7 +36,7 @@ from utils.training_utils import (
     select_random_fen_from_file,
     select_random_fen_from_json_list,
 )
-from utils.dataset_labels import format_dataset_label, truncate_label
+from utils.dataset_labels import format_dataset_label
 
 create_network = None
 create_environment = None
@@ -164,7 +164,7 @@ def _shorten_dataset_label(source) -> str:
     if isinstance(source, str):
         base = os.path.splitext(os.path.basename(source))[0]
         formatted = format_dataset_label(base)
-        return truncate_label(formatted or "data", 24)
+        return formatted or "data"
     return "data"
 
 
@@ -1980,6 +1980,21 @@ def run_training_loop(cfg: DictConfig) -> None:
     previous_total_elapsed_time = 0  # Track previous total elapsed time to calculate iteration duration
     
     # Use num_training_iterations from cfg
+    use_tpu = tpu_lock is not None
+    amp_enabled_for_training = bool(
+        cfg.training.get("amp", False)
+        and (
+            (isinstance(device, torch.device) and device.type in {"cuda", "mps"})
+            or use_tpu
+            or (
+                device == "cpu"
+                and use_multiprocessing_flag
+                and (torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()))
+            )
+        )
+    )
+    if amp_enabled_for_training:
+        progress.print("AMP enabled for training phase.")
     for iteration in range(start_iter, cfg.training.num_training_iterations):
         iteration_start_time = time.time()
         progress.print(f"\n--- Training Iteration {iteration+1}/{cfg.training.num_training_iterations} ---")
@@ -2704,8 +2719,6 @@ def run_training_loop(cfg: DictConfig) -> None:
             )
             amp_device = "xla" if use_tpu else ("cuda" if training_device.type == "cuda" else "mps")
             scaler = GradScaler(amp_device, enabled=cfg.training.get("amp", False) and training_device.type == "cuda" and not use_tpu)
-            if amp_enabled:
-                progress.print("AMP enabled for training phase.")
 
             total_policy_loss = 0.0
             total_value_loss = 0.0
