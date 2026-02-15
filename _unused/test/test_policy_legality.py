@@ -323,7 +323,7 @@ def main(cfg: DictConfig):
     )
     
     # Allow command line argument for checkpoint path (via Hydra override)
-    checkpoint_path = cfg.training.get('checkpoint_dir_load', default_checkpoint)
+    checkpoint_path = cfg.training.get('checkpoint_load', default_checkpoint)
     
     # Determine device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

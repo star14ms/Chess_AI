@@ -1338,11 +1338,16 @@ def _init_replay_buffer(cfg: DictConfig, progress: Progress):
 
 def _init_checkpoint_dirs(cfg: DictConfig, progress: Progress):
     checkpoint_dir = cfg.training.checkpoint_dir
-    checkpoint_dir_load = cfg.training.get("checkpoint_dir_load", None)
-    load_dir = checkpoint_dir_load if checkpoint_dir_load not in (None, "", "null") else checkpoint_dir
+    checkpoint_load = cfg.training.get("checkpoint_load", None)
+    load_base = checkpoint_load if checkpoint_load not in (None, "", "null") else checkpoint_dir
+    # Allow direct file path (e.g. .pth); otherwise treat as directory
+    if load_base.endswith(".pth") or (os.path.exists(load_base) and os.path.isfile(load_base)):
+        load_checkpoint_path = load_base
+    else:
+        load_checkpoint_path = os.path.join(load_base, "model.pth")
     os.makedirs(checkpoint_dir, exist_ok=True)
     progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
-    return checkpoint_dir, load_dir
+    return checkpoint_dir, load_checkpoint_path
 
 
 def _init_game_history_dir(cfg: DictConfig, progress: Progress):
@@ -1776,7 +1781,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     value_loss_fn = nn.MSELoss()
 
     # Checkpoint directories (relative to hydra run dir)
-    checkpoint_dir, load_dir = _init_checkpoint_dirs(cfg, progress)
+    checkpoint_dir, load_checkpoint_path = _init_checkpoint_dirs(cfg, progress)
 
     # Game history directory setup (optional)
     game_history_dir = _init_game_history_dir(cfg, progress)
@@ -1843,8 +1848,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         'mate_success_labels': mate_labels,
     }
 
-    # Check for existing checkpoint
-    checkpoint_path = os.path.join(load_dir, "model.pth")
+    # Check for existing checkpoint (load_checkpoint_path is already resolved dir/model.pth or direct file)
     (
         start_iter,
         total_games_simulated,
@@ -1853,7 +1857,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         history,
     ) = _load_checkpoint(
         cfg=cfg,
-        checkpoint_path=checkpoint_path,
+        checkpoint_path=load_checkpoint_path,
         network=network,
         optimizer=optimizer,
         opt_cfg=opt_cfg,

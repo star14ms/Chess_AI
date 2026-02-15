@@ -147,8 +147,8 @@ def train(cfg: DictConfig):
     use_multiprocessing = cfg.training.get('use_multiprocessing', False)
     # Checkpoint directories
     checkpoint_dir = cfg.training.checkpoint_dir
-    checkpoint_dir_load = cfg.training.get('checkpoint_dir_load', None)
-    load_dir = checkpoint_dir_load if checkpoint_dir_load not in (None, "", "null") else checkpoint_dir
+    checkpoint_load = cfg.training.get('checkpoint_load', None)
+    load_dir = checkpoint_load if checkpoint_load not in (None, "", "null") else checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)  # Ensure save directory exists
     total_training_start_time = time.time()
 
