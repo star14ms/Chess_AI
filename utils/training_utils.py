@@ -6,10 +6,48 @@ import random
 from pathlib import Path
 from typing import Optional
 
+import chess
 import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
 from torch.utils.data import IterableDataset
+
+
+def repair_fen_en_passant(fen: str) -> str:
+    """Repair FEN when en passant was stripped, causing false checkmate.
+
+    Some puzzle datasets store positions after a pawn's two-square move but omit
+    the en passant target. This makes the side to move appear checkmated when
+    they could capture en passant. This function tries to infer and restore the
+    en passant square when the position would otherwise be an incorrect checkmate.
+
+    Returns:
+        Repaired FEN if a valid en passant fix was found, otherwise the original FEN.
+    """
+    try:
+        board = chess.Board(fen)
+    except ValueError:
+        return fen
+    if not board.is_checkmate():
+        return fen
+    parts = fen.split()
+    if len(parts) < 4:
+        return fen
+    # En passant targets: rank 2 (0-indexed) for black pawn that moved up, rank 5 for white
+    for ep_rank in [2, 5]:
+        for ep_file in range(8):
+            ep_square = chess.square(ep_file, ep_rank)
+            ep_str = chess.square_name(ep_square)
+            repaired_parts = parts.copy()
+            repaired_parts[3] = ep_str
+            repaired_fen = " ".join(repaired_parts)
+            try:
+                b = chess.Board(repaired_fen)
+                if not b.is_checkmate() and any(b.generate_legal_moves()):
+                    return repaired_fen
+            except ValueError:
+                pass
+    return fen
 
 
 def select_fen_from_dict(fen_dict):

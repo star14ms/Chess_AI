@@ -31,6 +31,7 @@ from inference_server import InferenceClient, inference_server_worker, inference
 from utils.training_utils import (
     RewardComputer,
     freeze_first_n_conv_layers,
+    repair_fen_en_passant,
     select_fen_from_dict,
     select_random_fen_from_entries,
     select_random_fen_from_file,
@@ -88,17 +89,22 @@ def _select_fen_from_json_path(json_path: str):
 
 def _select_fen_from_source(source):
     """Return (fen, quality, themes). Themes are extracted from dataset entries when available."""
+    fen, quality, themes = None, None, []
     if isinstance(source, str) and (source.endswith(".json") or source.endswith(".jsonl")):
-        return _select_fen_from_json_path(source)
-    if isinstance(source, dict):
+        fen, quality, themes = _select_fen_from_json_path(source)
+    elif isinstance(source, dict):
         result = select_fen_from_dict(source)
-        return result if len(result) >= 3 else (result[0], result[1], [])
-    if isinstance(source, list):
+        fen, quality = (result[0], result[1]) if len(result) >= 2 else (result[0], None)
+        themes = result[2] if len(result) >= 3 else []
+    elif isinstance(source, list):
         result = select_random_fen_from_entries(source)
-        return result if len(result) >= 3 else (result[0], result[1], [])
-    if isinstance(source, str):
-        return source, None, []
-    return None, None, []
+        fen, quality = (result[0], result[1]) if len(result) >= 2 else (result[0], None)
+        themes = result[2] if len(result) >= 3 else []
+    elif isinstance(source, str):
+        fen, quality = source, None
+    if fen is not None:
+        fen = repair_fen_en_passant(fen)
+    return (fen, quality, themes) if fen is not None else (None, None, [])
 
 
 def _dataset_cache_key(value) -> str:
