@@ -1,3 +1,4 @@
+import sys
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -7,6 +8,7 @@ import os
 import gc
 import time
 import logging
+from pathlib import Path
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -2966,6 +2968,36 @@ def run_training_loop(cfg: DictConfig) -> None:
 # Ensure config_path points to the directory containing train_gomoku.yaml
 @hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
 def main(cfg: DictConfig) -> None:
+    # Tee stdout/stderr to BOTH terminal and train.log (duplicate output to both)
+    try:
+        from hydra.core.hydra_config import HydraConfig
+        hydra_cfg = HydraConfig.get()
+        if hydra_cfg is not None:
+            output_dir = Path(hydra_cfg.runtime.output_dir)
+            log_path = output_dir / "train.log"
+            _log_file = open(log_path, "w", encoding="utf-8")
+
+            class _Tee:
+                """Write to both terminal (stream) and train.log (file)."""
+                def __init__(self, stream, file):
+                    self._stream = stream
+                    self._file = file
+                def write(self, data):
+                    self._stream.write(data)   # terminal
+                    self._stream.flush()
+                    self._file.write(data)     # train.log
+                    self._file.flush()
+                def flush(self):
+                    self._stream.flush()
+                    self._file.flush()
+                def fileno(self):
+                    return self._stream.fileno()
+
+            sys.stdout = _Tee(sys.__stdout__, _log_file)
+            sys.stderr = _Tee(sys.__stderr__, _log_file)
+    except Exception:
+        pass  # Fallback: run without tee if Hydra not available
+
     # Initialize factories in the main process
     initialize_factories_from_cfg(cfg)
     
