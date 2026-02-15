@@ -1180,7 +1180,7 @@ def run_self_play_game(
         )
 
     # AlphaZero-style value targets: final outcome from the current player's perspective
-    draw_value = draw_reward if draw_reward is not None else 0.0
+    use_draw_table = draw_reward is None and cfg.training.get("draw_reward_table") and termination_reason and initial_position_quality
 
     def _value_from_winner(board_at_state, outcome_winner, draw_val):
         if outcome_winner is None:
@@ -1188,6 +1188,15 @@ def run_self_play_game(
         if board_at_state.turn == chess.WHITE:
             return 1.0 if outcome_winner == chess.WHITE else -1.0
         return 1.0 if outcome_winner == chess.BLACK else -1.0
+
+    def _draw_reward_for_position(state_obs, board_at_state, mcts_value, term_reason, init_quality):
+        """Use draw_reward_table when available; otherwise fixed draw_reward."""
+        if use_draw_table:
+            is_white_turn = board_at_state.turn == chess.WHITE
+            return reward_computer.compute_draw_reward(
+                state_obs, is_white_turn, term_reason, mcts_value, init_quality
+            )
+        return draw_reward if draw_reward is not None else draw_reward_for_calc
 
     full_game_data = []
     for i, history_item in enumerate(game_history):
@@ -1197,7 +1206,10 @@ def run_self_play_game(
                 f"Invalid game_history item length: expected 4, got {len(history_item)}"
             )
         state_obs, policy_target, board_at_state, _value_target = history_item
-        outcome_value = _value_from_winner(board_at_state, winner, draw_value)
+        if winner is not None:
+            outcome_value = _value_from_winner(board_at_state, winner, 0.0)  # draw_val unused for wins
+        else:
+            outcome_value = _draw_reward_for_position(state_obs, board_at_state, _value_target, termination_reason, initial_position_quality)
         if initial_dataset_id is not None:
             full_game_data.append((state_obs, policy_target, board_at_state, outcome_value, initial_dataset_id))
         else:
@@ -1218,13 +1230,7 @@ def run_self_play_game(
         }
     
     # Store the actual computed reward for the first state (for logging/debugging)
-    actual_reward_for_logging = None
-    if full_game_data:
-        first_state_board = full_game_data[0][2] if len(full_game_data[0]) > 2 else None
-        if first_state_board is not None:
-            actual_reward_for_logging = _value_from_winner(first_state_board, winner, draw_value)
-        else:
-            actual_reward_for_logging = full_game_data[0][3] if len(full_game_data[0]) > 3 else final_value
+    actual_reward_for_logging = full_game_data[0][3] if full_game_data else None
     
     # Return game data, move list in SAN, and termination reason
     game_info = {
