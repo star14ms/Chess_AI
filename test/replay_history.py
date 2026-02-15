@@ -272,7 +272,7 @@ def replay_game_pygame(
     white_perspective: bool = True,
 ):
     """
-    Open a Pygame window. Use ←/→ to move back/forward, Esc to quit, B to go back to selection.
+    Open a Pygame window. Use ←/→ to move back/forward, Esc/Q to quit, B to go back to selection.
     
     Returns:
         str: 'back' if user wants to go back to selection, 'quit' if user wants to exit completely, None otherwise
@@ -344,7 +344,7 @@ def replay_game_pygame(
             screen.blit(line2, (margin, y_offset))
             
             # Show controls hint
-            controls_text = "←/→: Navigate | B/Tab: Back to selection | Esc: Quit"
+            controls_text = "←/→: Navigate | B/Tab: Back to selection | Esc/Q: Quit"
             controls_surface = small_font.render(controls_text, True, (150, 150, 150))
             screen.blit(controls_surface, (margin, y_offset + 25))
 
@@ -375,7 +375,7 @@ def replay_game_pygame(
                     break
                 elif event.type == pygame.KEYDOWN:
                     old_idx = idx
-                    if event.key == pygame.K_ESCAPE:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
                         running = False
                         return_value = 'quit'
                         break
@@ -455,11 +455,11 @@ def select_and_replay_game(
     - ↑/↓ or W/S: Navigate through games
     - ←/→: Page up/down
     - Enter/Space: Select and replay game
-    - Esc: Exit without replaying
+    - Esc or Q: Exit without replaying
     
     In replay view:
     - B or Tab: Go back to game selection
-    - Esc: Exit completely
+    - Esc or Q: Exit completely
     """
     if not games:
         print("No games to display")
@@ -477,10 +477,12 @@ def select_and_replay_game(
         margin = 20
         line_height = 30
         header_height = 100
-        rows_per_page = 15
-        item_height = line_height + 5
-        theme_panel_width = 220
-        list_panel_width = 780
+        rows_per_page = 14
+        item_height = 42  # Fits Game+FEN line + themes/info line
+        theme_panel_width = 120
+        list_panel_width = 1000
+        theme_option_margin = 6
+        theme_option_width = theme_panel_width + margin - theme_option_margin * 2
         window_width = list_panel_width + theme_panel_width + margin * 2
         window_height = header_height + min(len(games), rows_per_page) * item_height + margin * 2
         clock = pygame.time.Clock()
@@ -773,11 +775,11 @@ def select_and_replay_game(
                         theme_state[0] = not theme_state[0]
                     # Theme checkboxes (when dropdown open)
                     elif theme_state[0] and all_themes:
-                        theme_panel_x = list_panel_width + margin
+                        theme_option_x = list_panel_width + theme_option_margin
                         theme_list_y = header_height + margin + 35
                         for ti, theme_name in enumerate(all_themes):
                             cb_y = theme_list_y + ti * theme_checkbox_height
-                            cb_rect = pygame.Rect(theme_panel_x, cb_y, theme_panel_width - margin * 2, theme_checkbox_height)
+                            cb_rect = pygame.Rect(theme_option_x, cb_y, theme_option_width, theme_checkbox_height)
                             if cb_rect.collidepoint(mouse_x, mouse_y):
                                 if theme_name in selected_themes:
                                     selected_themes.discard(theme_name)
@@ -815,10 +817,11 @@ def select_and_replay_game(
                     # Update hovered theme (when dropdown open)
                     hovered_theme_index[0] = None
                     if theme_state[0] and all_themes:
+                        theme_option_x = list_panel_width + theme_option_margin
                         theme_list_y = header_height + margin + 35
                         for ti, theme_name in enumerate(all_themes):
                             cb_y = theme_list_y + ti * theme_checkbox_height
-                            cb_rect = pygame.Rect(list_panel_width + margin, cb_y, theme_panel_width - margin * 2, theme_checkbox_height)
+                            cb_rect = pygame.Rect(theme_option_x, cb_y, theme_option_width, theme_checkbox_height)
                             if cb_rect.collidepoint(mouse_x, mouse_y):
                                 hovered_theme_index[0] = ti
                                 break
@@ -833,7 +836,7 @@ def select_and_replay_game(
                         if 0 <= hover_row < len(menu_rows) and menu_rows[hover_row]["type"] == "game":
                             selected_row = hover_row
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_q):
                         running = False
                         return
                     elif event.key in (
@@ -888,7 +891,7 @@ def select_and_replay_game(
             screen.blit(title_text, (margin, 15))
             
             # Instructions
-            inst_text = small_font.render("↑/↓: Navigate | ←/→: Page | Tabs: Layout/Filter | Hover: Select | Click/Enter: Play | Esc: Exit | In replay: B/Tab to go back", True, (150, 150, 150))
+            inst_text = small_font.render("↑/↓: Navigate | ←/→: Page | Tabs: Layout/Filter | Hover: Select | Click/Enter: Play | Esc/Q: Exit | In replay: B/Tab to go back", True, (150, 150, 150))
             screen.blit(inst_text, (window_width - margin - inst_text.get_width(), header_height - 25))
 
             # Filter tabs
@@ -939,18 +942,19 @@ def select_and_replay_game(
                 theme_btn_text = small_font.render(btn_label, True, text_color)
                 screen.blit(theme_btn_text, (theme_btn_rect.x + 6, theme_btn_rect.y + 6))
                 if theme_state[0]:
+                    theme_option_x = theme_panel_x + theme_option_margin
                     theme_list_y = header_height + margin + 35
                     for ti, theme_name in enumerate(all_themes):
                         row_y = theme_list_y + ti * theme_checkbox_height
                         row_center_y = row_y + theme_checkbox_height // 2
                         is_checked = theme_name in selected_themes
                         is_hovered = ti == hovered_theme_index[0]
-                        row_rect = pygame.Rect(theme_panel_x + margin, row_y, theme_panel_width - margin * 2, theme_checkbox_height)
+                        row_rect = pygame.Rect(theme_option_x, row_y, theme_option_width, theme_checkbox_height)
                         if is_hovered:
                             pygame.draw.rect(screen, (70, 90, 120), row_rect, border_radius=4)
                         cb_size = 16
                         cb_y = row_center_y - cb_size // 2
-                        cb_rect = pygame.Rect(theme_panel_x + margin, cb_y, cb_size, cb_size)
+                        cb_rect = pygame.Rect(theme_option_x, cb_y, cb_size, cb_size)
                         pygame.draw.rect(screen, (60, 60, 65), cb_rect, border_radius=2)
                         if is_checked:
                             pygame.draw.rect(screen, (100, 180, 100), cb_rect.inflate(-4, -4), border_radius=2)
@@ -991,15 +995,23 @@ def select_and_replay_game(
                     # Determine first player from initial FEN
                     first_player = get_first_player_from_fen(game.get('initial_fen'))
                     result_color = get_result_color(result, first_player)
-                    header_text = f"Game {game_num}: {result} ({reason}, {move_count} moves)"
+                    initial_fen = game.get('initial_fen')
+                    fen_display = truncate_fen(initial_fen, max_len=999)
+                    header_text = f"Game {game_num}: {result} ({reason}, {move_count} moves) | FEN: {fen_display}"
                     header_surface = font.render(header_text, True, result_color)
                     screen.blit(header_surface, (margin + 5, y_pos + 3))
                     
-                    # Initial FEN (truncated)
-                    initial_fen = game.get('initial_fen')
-                    fen_display = truncate_fen(initial_fen)
-                    fen_surface = small_font.render(f"FEN: {fen_display}", True, (180, 180, 180))
-                    screen.blit(fen_surface, (margin + 5, y_pos + 20))
+                    # Themes (when available)
+                    themes = game.get('position_themes')
+                    if themes and isinstance(themes, (list, tuple)):
+                        themes_str = ", ".join(str(t) for t in themes[:8])
+                        if len(themes) > 8:
+                            themes_str += "..."
+                    else:
+                        themes_str = ""
+                    if themes_str:
+                        themes_surface = small_font.render(f"Themes: {themes_str}", True, (120, 180, 220))
+                        screen.blit(themes_surface, (margin + 5, y_pos + 20))
                     
                     # Additional info (quality, reward) if available
                     info_parts = []
