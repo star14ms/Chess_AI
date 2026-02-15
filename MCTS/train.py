@@ -1985,7 +1985,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
-            TextColumn("{task.fields[games]} Games (1st: {task.fields[first_wins]}, 2nd: {task.fields[second_wins]}, {task.fields[draw_rate]:.1f}% Draw), {task.fields[steps]} Steps"),
+            TextColumn("{task.fields[steps]} Steps (Games: {task.fields[games]}, 1st: {task.fields[first_wins]}, 2nd: {task.fields[second_wins]}, {task.fields[draw_rate]:.1f}% Draw)"),
         )
         progress.columns = self_play_columns
         
@@ -1997,6 +1997,14 @@ def run_training_loop(cfg: DictConfig) -> None:
 
         games_data_collected = []
         iteration_start_time_selfplay = time.time()
+        # Epoch 1: fill buffer to full before training; later epochs: collect self_play_steps_per_epoch
+        buffer_size = cfg.training.replay_buffer_size
+        if iteration == start_iter and len(replay_buffer) < buffer_size:
+            min_steps = buffer_size // 2 - len(replay_buffer)
+            progress.print(f"Filling buffer before first training: need {min_steps} steps (buffer has {len(replay_buffer)}/{buffer_size//2})")
+        else:
+            min_steps = cfg.training.self_play_steps_per_epoch
+        max_experiences = buffer_size  # Cap collection so we don't replace entire buffer
         # Get draw reward from config (can be None for position-aware)
         draw_reward = cfg.training.get('draw_reward', -0.1)
         # Use sentinel value for draw detection (needed for statistics)
@@ -2088,8 +2096,6 @@ def run_training_loop(cfg: DictConfig) -> None:
             # Strategy: Drain all available games, wait if needed to reach minimum threshold
             # Limit: Stop if new experiences would completely replace the entire replay buffer
             games_data_collected = []
-            min_steps = cfg.training.self_play_steps_per_epoch  # Minimum steps threshold
-            max_experiences = cfg.training.replay_buffer_size  # Maximum experiences to collect
             collected_games = 0
             queue_drain_start = time.time()
             task_id_selfplay = (
@@ -2343,8 +2349,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             if not device_pool:
                 device_pool = ['cpu']
 
-            # Collect games until we have enough steps
-            min_steps = cfg.training.self_play_steps_per_epoch
+            # Collect games until we have enough steps (min_steps set above)
             worker_args_packed = []
             game_num = 0
             
@@ -2454,7 +2459,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                 gc.collect()
 
         else: # Sequential Execution
-            min_steps = cfg.training.self_play_steps_per_epoch
             task_id_selfplay = progress.add_task(
                 "Self-Play",
                 total=min_steps,
