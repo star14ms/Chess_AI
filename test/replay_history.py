@@ -220,6 +220,39 @@ def _boards_from_san(moves_san: List[str], start_fen: Optional[str] = None) -> T
     return boards, sans
 
 
+def _center_pygame_window() -> None:
+    """Move the current pygame window to center of monitor. Call after set_mode."""
+    try:
+        surf = pygame.display.get_surface()
+        if surf is None:
+            return
+        w, h = surf.get_size()
+        if hasattr(pygame.display, 'get_desktop_sizes') and pygame.display.get_desktop_sizes():
+            screen_w, screen_h = pygame.display.get_desktop_sizes()[0]
+        else:
+            info = pygame.display.Info()
+            screen_w = getattr(info, 'current_w', 0) or 1920
+            screen_h = getattr(info, 'current_h', 0) or 1080
+        x = max(0, (screen_w - w) // 2)
+        y = max(0, (screen_h - h) // 2)
+        if sys.platform == 'win32':
+            from ctypes import windll
+            wm_info = pygame.display.get_wm_info()
+            hwnd = wm_info.get('window')
+            if hwnd is not None and isinstance(hwnd, int):
+                windll.user32.MoveWindow(hwnd, x, y, w, h, False)
+        else:
+            try:
+                from pygame._sdl2.video import Window
+                win = Window.from_display_module()
+                if win is not None:
+                    win.position = (x, y)
+            except (ImportError, AttributeError, TypeError):
+                pass
+    except Exception:
+        pass
+
+
 def _board_surface_from_chess_svg(board: chess.Board, size_px: int, flipped: bool) -> pygame.Surface:
     """Render board with python-chess.svg, convert to pygame Surface."""
     if cairosvg is None:
@@ -264,6 +297,7 @@ def replay_game_pygame(
         height = board_px + margin_top + margin
 
         screen = pygame.display.set_mode((width, height))
+        _center_pygame_window()
         clock = pygame.time.Clock()
 
         ui_font = pygame.font.SysFont(None, 24)
@@ -611,7 +645,7 @@ def select_and_replay_game(
                 indices = [
                     idx for idx in indices
                     if games[idx].get("position_themes")
-                    and theme_set & {str(t).strip() for t in games[idx]["position_themes"] if t}
+                    and theme_set <= {str(t).strip() for t in games[idx]["position_themes"] if t}
                 ]
             return indices
 
@@ -636,6 +670,7 @@ def select_and_replay_game(
 
         window_height = header_height + min(len(menu_rows), rows_per_page) * item_height + margin * 2
         screen = pygame.display.set_mode((window_width, window_height))
+        _center_pygame_window()
 
         def _ensure_visible():
             nonlocal scroll_offset
@@ -694,7 +729,8 @@ def select_and_replay_game(
                 selected_row = game_row_indices[-1]
                 scroll_offset = max(0, len(menu_rows) - rows_per_page)
 
-        theme_state = [False]  # [0] = dropdown open (list to allow mutation in nested scope)
+        theme_state = [True]  # [0] = dropdown open (list to allow mutation in nested scope)
+        hovered_theme_index = [None]  # [0] = index of theme under mouse, or None
 
         while running:
             clock.tick(fps)
@@ -769,12 +805,23 @@ def select_and_replay_game(
                             if result == 'back':
                                 pygame.init()
                                 screen = pygame.display.set_mode((window_width, window_height))
+                                _center_pygame_window()
                                 continue
                             elif result == 'quit':
                                 running = False
                                 return
                 elif event.type == pygame.MOUSEMOTION:
                     mouse_x, mouse_y = event.pos
+                    # Update hovered theme (when dropdown open)
+                    hovered_theme_index[0] = None
+                    if theme_state[0] and all_themes:
+                        theme_list_y = header_height + margin + 35
+                        for ti, theme_name in enumerate(all_themes):
+                            cb_y = theme_list_y + ti * theme_checkbox_height
+                            cb_rect = pygame.Rect(list_panel_width + margin, cb_y, theme_panel_width - margin * 2, theme_checkbox_height)
+                            if cb_rect.collidepoint(mouse_x, mouse_y):
+                                hovered_theme_index[0] = ti
+                                break
                     list_start_y = header_height + margin
                     visible_rows = min(rows_per_page, max(0, len(menu_rows) - scroll_offset))
                     list_end_y = list_start_y + visible_rows * item_height
@@ -814,6 +861,7 @@ def select_and_replay_game(
                             # Reinitialize pygame for the selection menu
                             pygame.init()
                             screen = pygame.display.set_mode((window_width, window_height))
+                            _center_pygame_window()
                             continue
                         elif result == 'quit':
                             running = False
@@ -893,14 +941,23 @@ def select_and_replay_game(
                 if theme_state[0]:
                     theme_list_y = header_height + margin + 35
                     for ti, theme_name in enumerate(all_themes):
-                        cb_y = theme_list_y + ti * theme_checkbox_height
+                        row_y = theme_list_y + ti * theme_checkbox_height
+                        row_center_y = row_y + theme_checkbox_height // 2
                         is_checked = theme_name in selected_themes
-                        cb_rect = pygame.Rect(theme_panel_x + margin, cb_y, 16, 16)
+                        is_hovered = ti == hovered_theme_index[0]
+                        row_rect = pygame.Rect(theme_panel_x + margin, row_y, theme_panel_width - margin * 2, theme_checkbox_height)
+                        if is_hovered:
+                            pygame.draw.rect(screen, (70, 90, 120), row_rect, border_radius=4)
+                        cb_size = 16
+                        cb_y = row_center_y - cb_size // 2
+                        cb_rect = pygame.Rect(theme_panel_x + margin, cb_y, cb_size, cb_size)
                         pygame.draw.rect(screen, (60, 60, 65), cb_rect, border_radius=2)
                         if is_checked:
                             pygame.draw.rect(screen, (100, 180, 100), cb_rect.inflate(-4, -4), border_radius=2)
-                        theme_text = small_font.render(theme_name, True, text_color)
-                        screen.blit(theme_text, (cb_rect.right + 6, cb_y - 2))
+                        theme_text_color = selected_text if is_hovered else text_color
+                        theme_text = small_font.render(theme_name, True, theme_text_color)
+                        text_y = row_center_y - theme_text.get_height() // 2
+                        screen.blit(theme_text, (cb_rect.right + 6, text_y))
             
             # Game list
             visible_start = scroll_offset
