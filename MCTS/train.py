@@ -2026,7 +2026,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         iteration_start_time_selfplay = time.time()
         # Epoch 1: fill buffer to full before training; later epochs: collect self_play_steps_per_epoch
         buffer_size = cfg.training.replay_buffer_size
-        if iteration == start_iter and len(replay_buffer) < buffer_size:
+        if iteration == start_iter and len(replay_buffer) < buffer_size // 2:
             min_steps = buffer_size // 2 - len(replay_buffer)
             progress.print(f"Filling buffer before first training: need {min_steps} steps (buffer has {len(replay_buffer)}/{buffer_size//2})")
         else:
