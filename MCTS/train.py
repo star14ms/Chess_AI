@@ -2978,7 +2978,7 @@ def main(cfg: DictConfig) -> None:
             _log_file = open(log_path, "w", encoding="utf-8")
 
             class _Tee:
-                """Write to both terminal (stream) and train.log (file)."""
+                """Write to both terminal (stream) and train.log (file). Preserves isatty so Rich progress bars show."""
                 def __init__(self, stream, file):
                     self._stream = stream
                     self._file = file
@@ -2992,6 +2992,8 @@ def main(cfg: DictConfig) -> None:
                     self._file.flush()
                 def fileno(self):
                     return self._stream.fileno()
+                def isatty(self):
+                    return self._stream.isatty()
 
             sys.stdout = _Tee(sys.__stdout__, _log_file)
             sys.stderr = _Tee(sys.__stderr__, _log_file)

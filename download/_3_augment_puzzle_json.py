@@ -346,7 +346,7 @@ def main() -> None:
     parser.add_argument(
         "--input-glob",
         nargs="*",
-        default=["mate_in_[0-9].json", "endgame_without_mate.json"],
+        default=["mate_in_[0-9].json", "endgame_without_mate.json", "endgame-crushing_without_defensive_move-long-mate-quite_move-very_long.json"],
         metavar="PATTERN",
         help="Glob pattern(s) for input files when --files is not set (default: mate_in_[0-9].json endgame_without_mate.json).",
     )
