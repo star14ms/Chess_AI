@@ -90,10 +90,10 @@ class TrainingConfig:
     ] = None  # Dict mapping FEN->weight or {"weight","quality","max_game_moves"}; string can be FEN or JSON path. JSON path may be dict (weighted) or array of entries (uniform selection, uses "FEN"/"fen" field). List enables multi-dataset selection with weights and optional per-dataset max_game_moves.
     max_training_time_seconds: Optional[int] = None  # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to None to disable.
     draw_reward: Optional[float] = None  # Fixed reward value for draws. If None, uses draw_reward_table based on termination type and position quality
-    draw_reward_table: Optional[Dict[str, Dict[str, float]]] = None  # Nested dictionary: {termination_type: {position_quality: reward}}. Used when draw_reward is None
-    replay_buffer_exclude_terminations: List[str] = field(
-        default_factory=lambda: ["MAX_MOVES", "THREEFOLD_REPETITION"]
-    )  # Draw termination types to exclude from replay buffer (kept for stats only)
+    draw_reward_table: Optional[Dict[str, Dict[str, float]]] = None  # {termination_type: {position_quality: reward}}. Used when draw_reward is None
+    last_n_moves_to_store: Dict[str, int] = field(
+        default_factory=dict
+    )  # Dict: termination -> int. 0 = exclude from buffer; n>0 = store only last n moves; absent = full game
 
 
 @dataclass
