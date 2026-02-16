@@ -1,7 +1,19 @@
 
-def profile_model(model, inputs):
+def profile_model(model, inputs, log_path=None):
+    """Print model summary to terminal. If log_path is provided, also write it to the log file."""
     from torchinfo import summary
-    summary(model, inputs=inputs, verbose=1)
+    result = summary(model, inputs=inputs, verbose=0)
+    summary_str = str(result)
+    print(summary_str)
+    if log_path is not None:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(summary_str)
+                if not summary_str.endswith("\n"):
+                    f.write("\n")
+                f.flush()
+        except Exception:
+            pass
     # from thop import profile
     # from rich import print
     # import sys

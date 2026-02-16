@@ -1307,7 +1307,7 @@ def _init_progress(cfg: DictConfig) -> tuple[Progress, bool]:
 
 
 def _init_network_and_optimizer(
-    cfg: DictConfig, device: torch.device, progress: Progress
+    cfg: DictConfig, device: torch.device, progress: Progress, log_path: str | Path | None = None
 ) -> tuple[nn.Module, optim.Optimizer, DictConfig, float]:
     network = create_network(cfg, device)
     network.eval()
@@ -1323,7 +1323,14 @@ def _init_network_and_optimizer(
     profile_network = create_network(cfg, device)
     profile_network.eval()
     N, C, H, W = cfg.training.batch_size, cfg.network.input_channels, cfg.network.board_size, cfg.network.board_size
-    profile_model(profile_network, (torch.randn(N, C, H, W).to(device),))
+    if log_path is not None:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Using action space size: {cfg.network.action_space_size}\n")
+                f.flush()
+        except Exception:
+            pass
+    profile_model(profile_network, (torch.randn(N, C, H, W).to(device),), log_path=log_path)
     del profile_network
 
     opt_cfg = cfg.optimizer
@@ -1342,6 +1349,13 @@ def _init_network_and_optimizer(
     else:
         raise ValueError(f"Unsupported optimizer: {opt_cfg.type}")
     progress.print(f"Optimizer initialized: {opt_cfg.type}")
+    if log_path is not None:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Optimizer initialized: {opt_cfg.type}\n")
+                f.flush()
+        except Exception:
+            pass
     return network, optimizer, opt_cfg, actual_learning_rate
 
 
@@ -1350,7 +1364,7 @@ def _init_replay_buffer(cfg: DictConfig, progress: Progress):
     return replay_buffer
 
 
-def _init_checkpoint_dirs(cfg: DictConfig, progress: Progress):
+def _init_checkpoint_dirs(cfg: DictConfig, progress: Progress, log_path: str | Path | None = None):
     checkpoint_dir = cfg.training.checkpoint_dir
     checkpoint_load = cfg.training.get("checkpoint_load", None)
     load_base = checkpoint_load if checkpoint_load not in (None, "", "null") else checkpoint_dir
@@ -1360,15 +1374,31 @@ def _init_checkpoint_dirs(cfg: DictConfig, progress: Progress):
     else:
         load_checkpoint_path = os.path.join(load_base, "model.pth")
     os.makedirs(checkpoint_dir, exist_ok=True)
-    progress.print(f"Checkpoints will be saved in: {os.path.abspath(checkpoint_dir)}")
+    abs_path = os.path.abspath(checkpoint_dir)
+    progress.print(f"Checkpoints will be saved in: {abs_path}")
+    if log_path is not None:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Checkpoints will be saved in: {abs_path}\n")
+                f.flush()
+        except Exception:
+            pass
     return checkpoint_dir, load_checkpoint_path
 
 
-def _init_game_history_dir(cfg: DictConfig, progress: Progress):
+def _init_game_history_dir(cfg: DictConfig, progress: Progress, log_path: str | Path | None = None):
     game_history_dir = cfg.training.get("game_history_dir", None)
     if game_history_dir not in (None, "", "null"):
         os.makedirs(game_history_dir, exist_ok=True)
-        progress.print(f"Game histories will be saved in: {os.path.abspath(game_history_dir)}")
+        abs_path = os.path.abspath(game_history_dir)
+        progress.print(f"Game histories will be saved in: {abs_path}")
+        if log_path is not None:
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"Game histories will be saved in: {abs_path}\n")
+                    f.flush()
+            except Exception:
+                pass
     else:
         game_history_dir = None
     return game_history_dir
@@ -1763,6 +1793,16 @@ def run_training_loop(cfg: DictConfig) -> None:
     device = _select_training_device()
     log_str_trining_device = f"{device} for training"
 
+    # Log path for writing model summary etc. (excluded from Tee progress filter)
+    log_path = None
+    try:
+        from hydra.core.hydra_config import HydraConfig
+        hydra_cfg = HydraConfig.get()
+        if hydra_cfg is not None:
+            log_path = Path(hydra_cfg.runtime.output_dir) / "train.log"
+    except Exception:
+        pass
+
     # Print action space size
     progress.print(f"Using action space size: {cfg.network.action_space_size}")
 
@@ -1783,7 +1823,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     # Mode selection will occur after defining checkpoint and queue
 
     network, optimizer, opt_cfg, actual_learning_rate = _init_network_and_optimizer(
-        cfg, device, progress
+        cfg, device, progress, log_path=log_path
     )
     replay_buffer = _init_replay_buffer(cfg, progress)
 
@@ -1795,10 +1835,10 @@ def run_training_loop(cfg: DictConfig) -> None:
     value_loss_fn = nn.MSELoss()
 
     # Checkpoint directories (relative to hydra run dir)
-    checkpoint_dir, load_checkpoint_path = _init_checkpoint_dirs(cfg, progress)
+    checkpoint_dir, load_checkpoint_path = _init_checkpoint_dirs(cfg, progress, log_path=log_path)
 
     # Game history directory setup (optional)
-    game_history_dir = _init_game_history_dir(cfg, progress)
+    game_history_dir = _init_game_history_dir(cfg, progress, log_path=log_path)
 
     env = create_environment(cfg, render=not use_multiprocessing_flag)
 
@@ -1845,6 +1885,13 @@ def run_training_loop(cfg: DictConfig) -> None:
     # --- Main Training Loop ---
     start_iter = 0 # Initialize start_iter
     progress.print("Starting training loop...")
+    if log_path is not None:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("Starting training loop...\n\n")
+                f.flush()
+        except Exception:
+            pass
     total_training_start_time = time.time()
     total_games_simulated = 0
     
@@ -2999,25 +3046,40 @@ def run_training_loop(cfg: DictConfig) -> None:
 # Ensure config_path points to the directory containing train_gomoku.yaml
 @hydra.main(config_path="../config", config_name="train_mcts", version_base=None)
 def main(cfg: DictConfig) -> None:
-    # Tee stdout/stderr to BOTH terminal and train.log (duplicate output to both)
+    # Tee stdout/stderr to terminal and train.log; exclude progress bar and related clutter from log
     try:
+        import re
         from hydra.core.hydra_config import HydraConfig
         hydra_cfg = HydraConfig.get()
         if hydra_cfg is not None:
             output_dir = Path(hydra_cfg.runtime.output_dir)
             log_path = output_dir / "train.log"
             _log_file = open(log_path, "w", encoding="utf-8")
+            _ansi_pattern = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]?")
+
+            def _is_progress_bar_output(data: str) -> bool:
+                """True if data is progress bar / Rich live display output to skip in log."""
+                if not data or data.startswith("\r"):
+                    return True
+                if "━" in data or "╺" in data or "╸" in data:
+                    return True
+                if not _ansi_pattern.sub("", data).strip():
+                    return True
+                return False
 
             class _Tee:
-                """Write to both terminal (stream) and train.log (file). Preserves isatty so Rich progress bars show."""
+                """Write to terminal always; write to train.log excluding progress bar output."""
                 def __init__(self, stream, file):
                     self._stream = stream
                     self._file = file
                 def write(self, data):
-                    self._stream.write(data)   # terminal
+                    self._stream.write(data)
                     self._stream.flush()
-                    self._file.write(data)     # train.log
-                    self._file.flush()
+                    if not _is_progress_bar_output(data):
+                        clean = _ansi_pattern.sub("", data)
+                        if clean:
+                            self._file.write(clean)
+                            self._file.flush()
                 def flush(self):
                     self._stream.flush()
                     self._file.flush()
