@@ -427,16 +427,15 @@ def replay_game_pygame(
         print(f"Error in pygame replay: {e}")
         return_value = 'quit'
     finally:
-        # Cleanup display, but only quit pygame if not going back to selection
+        # Cleanup: when going back, skip display.quit() to avoid macOS segfault.
+        # Parent will call set_mode() which resizes the existing window.
         if pygame_initialized:
             try:
-                if screen is not None:
-                    pygame.display.quit()
-                # Only quit pygame completely if we're not going back to selection
-                # This allows the selection menu to continue running
                 if return_value != 'back':
+                    if screen is not None:
+                        pygame.display.quit()
                     pygame.quit()
-            except:
+            except Exception:
                 pass  # Ignore errors during cleanup
     
     return return_value

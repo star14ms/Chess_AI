@@ -31,7 +31,11 @@ DEFAULT_ENDGAME_EXPAND_REQUIRE_FORCING_THEME = True
 
 
 def _is_mate_puzzle(themes):
-    return "mate" in themes or any(t.startswith("mateIn") for t in themes)
+    return (
+        "mate" in themes
+        or "minimalMate" in themes
+        or any(t.startswith("mateIn") for t in themes)
+    )
 
 
 def _should_expand_endgame(
@@ -715,6 +719,10 @@ def main():
             "data/mate_in_4_flipped.json",
             "data/mate_in_5_flipped.json",
             "data/endgame_without_mate_flipped.json",
+            "data/minimal_endgames_trajectories_K_vs_KQ_flipped.json",
+            "data/minimal_endgames_trajectories_K_vs_KR_flipped.json",
+            "data/minimal_endgames_trajectories_K_vs_KBB_flipped.json",
+            "data/minimal_endgames_trajectories_K_vs_KBN_flipped.json",
         ],
         help="Input JSON array files. Mate files have FEN + Moves; endgame files have FEN + optional Themes, no Moves (one value_target row per entry).",
     )

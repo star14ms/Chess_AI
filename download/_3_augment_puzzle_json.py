@@ -233,6 +233,8 @@ def _iter_json_array_chunk(path: Path, start_idx: int, end_idx: int):
                 continue
             if stripped.endswith(","):
                 stripped = stripped[:-1].rstrip()
+            if not stripped:
+                continue
             if data_idx < start_idx:
                 data_idx += 1
                 continue
@@ -346,7 +348,7 @@ def main() -> None:
     parser.add_argument(
         "--input-glob",
         nargs="*",
-        default=["mate_in_[0-9].json", "endgame_without_mate.json", "endgame-crushing_without_defensive_move-long-mate-quite_move-very_long.json"],
+        default=["mate_in_[0-9].json", "endgame_without_mate.json", "endgame-crushing_without_defensive_move-long-mate-quite_move-very_long.json", "minimal_endgames_trajectories_K_vs_*.json"],
         metavar="PATTERN",
         help="Glob pattern(s) for input files when --files is not set (default: mate_in_[0-9].json endgame_without_mate.json).",
     )
