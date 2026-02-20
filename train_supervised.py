@@ -765,19 +765,18 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
     json_only = True
     if is_main:
         total_rows = 0
+        print("Total lines | Data lines | Invalid | Filename")
         for data_path in supervised_cfg.data_paths:
             lower_path = data_path.lower()
             if lower_path.endswith(".json"):
                 data_lines = fast_count_json_lines(data_path)
-                print(
-                    f"Total lines: {data_lines + 2} | Data lines: {data_lines} | Invalid: 0 (fast count)"
-                )
+                total_lines = data_lines + 2
+                print(f"{total_lines} | {data_lines} | N/A | {os.path.basename(data_path)}")
                 total_rows += data_lines
             elif lower_path.endswith(".jsonl"):
                 data_lines = fast_count_jsonl_lines(data_path)
-                print(
-                    f"Total lines: {data_lines} | Data lines: {data_lines} | Invalid: 0 (fast count)"
-                )
+                total_lines = data_lines
+                print(f"{total_lines} | {data_lines} | N/A | {os.path.basename(data_path)}")
                 total_rows += data_lines
             else:
                 json_only = False

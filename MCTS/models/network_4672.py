@@ -137,6 +137,8 @@ class PolicyHead(nn.Module):
             raise ValueError(f"The last out_features ({linear_out_features[-1]}) must equal action_space_size ({action_space_size})")
         layers = []
         layers.append(nn.Flatten())
+        if dropout > 0.0:
+            layers.append(nn.Dropout(p=dropout))
         prev_features = in_features
         for idx, out_features in enumerate(linear_out_features):
             layers.append(nn.Linear(prev_features, out_features))
