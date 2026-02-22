@@ -834,9 +834,9 @@ def main() -> None:
     parser.add_argument(
         "--max-saved-moves",
         type=int,
-        default=30,
+        default=29,
         metavar="N",
-        help="Max moves to save in output (last N moves only, must be < max-moves, default: 30)",
+        help="Max moves to save in output (last N moves only, must be < max-moves, default: 29). Use odd to avoid reward inversion.",
     )
     parser.add_argument(
         "--depth",
