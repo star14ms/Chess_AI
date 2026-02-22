@@ -137,16 +137,14 @@ class PolicyHead(nn.Module):
             raise ValueError(f"The last out_features ({linear_out_features[-1]}) must equal action_space_size ({action_space_size})")
         layers = []
         layers.append(nn.Flatten())
-        if dropout > 0.0:
-            layers.append(nn.Dropout(p=dropout))
+        layers.append(nn.Dropout(p=dropout))  # Always defined for consistent architecture; p=0 is no-op
         prev_features = in_features
         for idx, out_features in enumerate(linear_out_features):
             layers.append(nn.Linear(prev_features, out_features))
             # Add ReLU between layers, but not after the final output to action space
             if idx < len(linear_out_features) - 1:
                 layers.append(nn.ReLU(inplace=True))
-                if dropout > 0.0:
-                    layers.append(nn.Dropout(p=dropout))
+                layers.append(nn.Dropout(p=dropout))  # Always defined; p=0 is no-op
             prev_features = out_features
         self.fc = nn.Sequential(*layers)
 
