@@ -65,41 +65,43 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     ax.legend(loc='best')
     ax.set_ylim(bottom=0)
     
-    # Plot 2: Mate-in Success Ratios (Train vs Val)
+    # Plot 2: Mate-in Success Ratios
     ax = axes[0, 1]
     mate_labels = history.get('mate_success_labels')
+    mate_success = history.get('mate_success', {})
+    if not mate_labels and mate_success:
+        mate_labels = sorted(mate_success.keys())
     if not mate_labels:
+        # Backward compat: old checkpoints had train/val
         train_mate = history.get('mate_success_train', {})
         val_mate = history.get('mate_success_val', {})
         mate_labels = sorted({*train_mate.keys(), *val_mate.keys()})
     if mate_labels:
         color_cycle = plt.cm.tab10.colors
         for idx, label in enumerate(mate_labels):
-            train_series = history.get('mate_success_train', {}).get(label, [0.0] * len(iterations))
-            val_series = history.get('mate_success_val', {}).get(label, [0.0] * len(iterations))
-            if len(train_series) < len(iterations):
-                train_series = train_series + [0.0] * (len(iterations) - len(train_series))
-            if len(val_series) < len(iterations):
-                val_series = val_series + [0.0] * (len(iterations) - len(val_series))
+            series = mate_success.get(label)
+            if series is None:
+                series = history.get('mate_success_val', {}).get(label, [0.0] * len(iterations))
+            if len(series) < len(iterations):
+                series = series + [0.0] * (len(iterations) - len(series))
             color = color_cycle[idx % len(color_cycle)]
-            ax.plot(iterations, [v * 100 for v in train_series], color=color, linewidth=2, label=f'{label} Train')
-            ax.plot(iterations, [v * 100 for v in val_series], color=color, linewidth=2, linestyle='--', label=f'{label} Val')
+            ax.plot(iterations, [v * 100 for v in series], color=color, linewidth=2, label=label)
         ax.legend(loc='best', fontsize=8)
     else:
         ax.text(0.5, 0.5, 'Mate success ratios unavailable', ha='center', va='center', transform=ax.transAxes)
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Success Ratio (%)')
-    ax.set_title('Mate-in Success Ratios Over Time')
+    ax.set_title('Mate-in Success Ratios')
     ax.grid(True, alpha=0.3)
     ax.set_ylim(bottom=0)
     
-    # Plot 3: Combined Illegal Move Metrics
+    # Plot 3: Illegal Move Metrics (model behavior if argmax used without legal-move filtering)
     ax = axes[1, 0]
-    ax.plot(iterations, [r * 100 for r in history['illegal_move_ratio']], 'orange', linewidth=2, label='Illegal Move Ratio (%)', marker='o', markersize=3)
-    ax.plot(iterations, [p * 100 for p in history['illegal_move_prob']], 'purple', linewidth=2, label='Illegal Move Probability (%)', marker='s', markersize=3)
+    ax.plot(iterations, [r * 100 for r in history['illegal_move_ratio']], 'orange', linewidth=2, label='Top-1 illegal (%) – positions where argmax is illegal', marker='o', markersize=3)
+    ax.plot(iterations, [p * 100 for p in history['illegal_move_prob']], 'purple', linewidth=2, label='Prob on illegal (%) – avg mass assigned to illegal moves', marker='s', markersize=3)
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Percentage (%)')
-    ax.set_title('Illegal Move Metrics Over Time')
+    ax.set_title('Illegal Move Metrics (raw policy, unfiltered)')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best')
     ax.set_ylim(bottom=0)
@@ -141,8 +143,8 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     print("\n=== Training Summary ===")
     print(f"Final Policy Loss: {history['policy_loss'][-1]:.4f}")
     print(f"Final Value Loss: {history['value_loss'][-1]:.4f}")
-    print(f"Final Illegal Move Ratio: {history['illegal_move_ratio'][-1]:.2%}")
-    print(f"Final Illegal Move Prob: {history['illegal_move_prob'][-1]:.2%}")
+    print(f"Final top1_illegal: {history['illegal_move_ratio'][-1]:.2%} (positions where argmax is illegal)")
+    print(f"Final prob_on_illegal: {history['illegal_move_prob'][-1]:.2%} (avg mass on illegal moves)")
     
     # Print draw statistics if available
     if 'non_draw_count' in history and len(history['non_draw_count']) > 0:

@@ -191,6 +191,9 @@ def _collect_dataset_entries(initial_board_fen_cfg):
             max_game_moves = entry.get("max_game_moves")
         if not label:
             label = _shorten_dataset_label(source)
+        source_lower = str(source).lower()
+        if "minimal" in source_lower and isinstance(label, str) and re.match(r"^m\d+(#\d+)?$", label):
+            label = "mm" + label[1:]
         entry_weight = float(weight) if isinstance(weight, (int, float)) else 1.0
         entry_info = {"source": source, "weight": entry_weight, "label": label}
         if max_game_moves is not None:
@@ -221,11 +224,11 @@ def _format_source_accuracy(labels: list[str], correct: list[int], total: list[i
     return " | ".join(parts)
 
 
+
+
 def _ensure_mate_success_history(history: dict, mate_labels: list[str]) -> dict:
-    if "mate_success_train" not in history or not isinstance(history.get("mate_success_train"), dict):
-        history["mate_success_train"] = {}
-    if "mate_success_val" not in history or not isinstance(history.get("mate_success_val"), dict):
-        history["mate_success_val"] = {}
+    if "mate_success" not in history or not isinstance(history.get("mate_success"), dict):
+        history["mate_success"] = {}
     if mate_labels:
         history["mate_success_labels"] = list(mate_labels)
     elif "mate_success_labels" not in history:
@@ -233,17 +236,11 @@ def _ensure_mate_success_history(history: dict, mate_labels: list[str]) -> dict:
 
     expected_len = len(history.get("policy_loss", []))
     for label in mate_labels:
-        train_series = history["mate_success_train"].get(label)
-        if train_series is None:
-            history["mate_success_train"][label] = [0.0] * expected_len
-        elif len(train_series) < expected_len:
-            history["mate_success_train"][label].extend([0.0] * (expected_len - len(train_series)))
-
-        val_series = history["mate_success_val"].get(label)
-        if val_series is None:
-            history["mate_success_val"][label] = [0.0] * expected_len
-        elif len(val_series) < expected_len:
-            history["mate_success_val"][label].extend([0.0] * (expected_len - len(val_series)))
+        series = history["mate_success"].get(label)
+        if series is None:
+            history["mate_success"][label] = [0.0] * expected_len
+        elif len(series) < expected_len:
+            history["mate_success"][label].extend([0.0] * (expected_len - len(series)))
 
     return history
 
@@ -1857,7 +1854,22 @@ def run_training_loop(cfg: DictConfig) -> None:
     replay_buffer = _init_replay_buffer(cfg, progress)
 
     dataset_entries, _weights, source_labels = _get_cached_dataset_entries(cfg.training.get("initial_board_fen", None))
-    mate_labels = [label for label in source_labels if isinstance(label, str) and re.match(r"^m\\d+$", label)]
+    # Mate tracking per datafile: use dataset entry index, include any entry with mate-related label or source path
+    mate_entry_indices: list[int] = []
+    mate_entry_labels: list[str] = []
+    mate_label_to_entry_id: dict[str, int] = {}
+    for idx, entry in enumerate(dataset_entries):
+        label = entry.get("label", "")
+        source = str(entry.get("source", ""))
+        is_mate = bool(
+            (isinstance(label, str) and re.match(r"^m{1,2}\d+(#\d+)?$", label))
+            or ("mate" in source.lower())
+        )
+        if is_mate:
+            mate_entry_indices.append(idx)
+            mate_entry_labels.append(label)
+            mate_label_to_entry_id[label] = idx
+    mate_id_to_idx = {eid: i for i, eid in enumerate(mate_entry_indices)}
 
     # Loss Functions
     policy_loss_fn = nn.CrossEntropyLoss()
@@ -1933,9 +1945,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         'non_draw_count': [],
         'repetition_draw_count': [],
         'other_draw_count': [],
-        'mate_success_train': {label: [] for label in mate_labels},
-        'mate_success_val': {label: [] for label in mate_labels},
-        'mate_success_labels': mate_labels,
+        'mate_success': {label: [] for label in mate_entry_labels},
+        'mate_success_labels': mate_entry_labels,
     }
 
     # Check for existing checkpoint (load_checkpoint_path is already resolved dir/model.pth or direct file)
@@ -1958,9 +1969,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         history=history,
     )
 
-    history = _ensure_mate_success_history(history, mate_labels)
-    if mate_labels:
-        progress.print(f"Mate-in success tracking enabled for: {', '.join(mate_labels)} (see second plot in visualize_learning_curves_RL.py)")
+    history = _ensure_mate_success_history(history, mate_entry_labels)
+    if mate_entry_labels:
+        progress.print(f"Mate-in success tracking enabled per datafile: {', '.join(mate_entry_labels)} (see second plot in visualize_learning_curves_RL.py)")
 
     # Optional inference server for batched GPU/TPU inference
     inference_request_queue = None
@@ -2124,11 +2135,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         num_draws = 0
         num_checkmates = 0
         games_completed_this_iter = 0
-        mate_label_to_idx = {label: idx for idx, label in enumerate(mate_labels)}
-        train_mate_success = [0] * len(mate_labels)
-        train_mate_total = [0] * len(mate_labels)
-        val_mate_success = [0] * len(mate_labels)
-        val_mate_total = [0] * len(mate_labels)
+        val_mate_success = [0] * len(mate_entry_labels)
+        val_mate_total = [0] * len(mate_entry_labels)
         # Track draw reasons and collect game moves
         from collections import defaultdict
         draw_reasons = defaultdict(int)
@@ -2171,13 +2179,16 @@ def run_training_loop(cfg: DictConfig) -> None:
             else:
                 num_second_wins += 1
 
-        def _update_mate_success(game_info, include_in_replay):
-            if not mate_label_to_idx:
+        def _update_mate_success(game_info):
+            if not mate_id_to_idx:
                 return
-            label = game_info.get('initial_dataset_label')
-            if label not in mate_label_to_idx:
+            entry_id = game_info.get('initial_dataset_id')
+            if entry_id is None and mate_label_to_entry_id:
+                label = game_info.get('initial_dataset_label')
+                entry_id = mate_label_to_entry_id.get(label) if label else None
+            if entry_id is None or entry_id not in mate_id_to_idx:
                 return
-            idx = mate_label_to_idx[label]
+            idx = mate_id_to_idx[entry_id]
             val_mate_total[idx] += 1
 
             winner = game_info.get('winner', None)
@@ -2189,10 +2200,6 @@ def run_training_loop(cfg: DictConfig) -> None:
 
             if success:
                 val_mate_success[idx] += 1
-            if include_in_replay:
-                train_mate_total[idx] += 1
-                if success:
-                    train_mate_success[idx] += 1
 
         def _get_draw_buffer_config(termination):
             """Get buffer config for draw termination: None=full game, 0=exclude, n>0=last n moves."""
@@ -2258,7 +2265,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                             games_from_queue += 1
                             if game_data:
                                 include_in_replay = _include_in_replay_buffer(game_info)
-                                _update_mate_success(game_info, include_in_replay)
+                                _update_mate_success(game_info)
                                 data_to_add = _trim_draw_game_data(game_data, game_info) if include_in_replay else []
                                 if include_in_replay:
                                     games_data_collected.extend(data_to_add)
@@ -2323,7 +2330,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                         games_waited_for += 1
                         if game_data:
                             include_in_replay = _include_in_replay_buffer(game_info)
-                            _update_mate_success(game_info, include_in_replay)
+                            _update_mate_success(game_info)
                             data_to_add = _trim_draw_game_data(game_data, game_info) if include_in_replay else []
                             if include_in_replay:
                                 games_data_collected.extend(data_to_add)
@@ -2391,7 +2398,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 games_from_queue += 1
                                 if game_data:
                                     include_in_replay = _include_in_replay_buffer(game_info)
-                                    _update_mate_success(game_info, include_in_replay)
+                                    _update_mate_success(game_info)
                                     data_to_add = _trim_draw_game_data(game_data, game_info) if include_in_replay else []
                                     if include_in_replay:
                                         games_data_collected.extend(data_to_add)
@@ -2535,7 +2542,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     if game_result:  # Check if worker returned valid data
                         game_data, game_info = game_result
                         include_in_replay = _include_in_replay_buffer(game_info)
-                        _update_mate_success(game_info, include_in_replay)
+                        _update_mate_success(game_info)
                         data_to_add = _trim_draw_game_data(game_data, game_info) if include_in_replay else []
                         if include_in_replay:
                             games_data_collected.extend(data_to_add)
@@ -2623,7 +2630,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     inference_client=inference_client,
                 )
                 include_in_replay = _include_in_replay_buffer(game_info)
-                _update_mate_success(game_info, include_in_replay)
+                _update_mate_success(game_info)
                 data_to_add = _trim_draw_game_data(game_data, game_info) if include_in_replay else []
                 if include_in_replay:
                     games_data_collected.extend(data_to_add)
@@ -2784,7 +2791,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             TextColumn("[progress.description]{task.description}"), BarColumn(),
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(), TimeElapsedColumn(),
-            TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f} Ill: {task.fields[illegal_r]:.2%} P: {task.fields[illegal_p]:.2%}]")
+            TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f} top1_ill: {task.fields[illegal_r]:.2%} prob_on_ill: {task.fields[illegal_p]:.2%}]")
         )
         progress.columns = training_columns
 
@@ -2961,12 +2968,22 @@ def run_training_loop(cfg: DictConfig) -> None:
             per_source_acc_str = _format_source_accuracy(
                 source_labels, per_source_correct, per_source_total, digits=2
             )
+            if not per_source_acc_str:
+                per_source_acc_str = "-"
+            mate_success_str = ""
+            if mate_entry_labels:
+                correct = [val_mate_success[i] for i in range(len(mate_entry_labels))]
+                total_list = [val_mate_total[i] for i in range(len(mate_entry_labels))]
+                mate_acc = _format_source_accuracy(mate_entry_labels, correct, total_list, digits=2)
+                mate_success_str = f" | Mate success: {mate_acc}"
             progress.print(
                 f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, "
                 f"Avg Value Loss: {avg_value_loss:.4f}, "
-                f"Avg Illegal Move Ratio: {avg_illegal_ratio:.2%}, "
-                f"Avg Illegal Move Prob: {avg_illegal_prob_mass:.2%} | "
-                f"Policy top-1 by dataset: {per_source_acc_str}"
+                f"top1_illegal: {avg_illegal_ratio:.2%} (positions where argmax is illegal) | prob_on_illegal: {avg_illegal_prob_mass:.2%} (avg mass on illegal moves)"
+            )
+            progress.print(
+                f"  Policy top-1 per dataset: {per_source_acc_str}"
+                f"{mate_success_str}"
             )
             _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
         finally:
@@ -2989,15 +3006,12 @@ def run_training_loop(cfg: DictConfig) -> None:
         history['non_draw_count'].append(non_draw_count)
         history['repetition_draw_count'].append(repetition_draw_count)
         history['other_draw_count'].append(other_draw_count)
-        if mate_label_to_idx:
-            for label, idx in mate_label_to_idx.items():
-                train_total = train_mate_total[idx]
-                val_total = val_mate_total[idx]
-                train_ratio = (train_mate_success[idx] / train_total) if train_total > 0 else 0.0
-                val_ratio = (val_mate_success[idx] / val_total) if val_total > 0 else 0.0
-                history.setdefault('mate_success_train', {}).setdefault(label, []).append(train_ratio)
-                history.setdefault('mate_success_val', {}).setdefault(label, []).append(val_ratio)
-            history["mate_success_labels"] = list(mate_label_to_idx.keys())
+        if mate_entry_labels:
+            for idx, label in enumerate(mate_entry_labels):
+                total = val_mate_total[idx]
+                ratio = (val_mate_success[idx] / total) if total > 0 else 0.0
+                history.setdefault('mate_success', {}).setdefault(label, []).append(ratio)
+            history["mate_success_labels"] = list(mate_entry_labels)
 
         # Save checkpoint after each iteration
         checkpoint = {
