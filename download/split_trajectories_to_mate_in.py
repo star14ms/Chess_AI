@@ -99,9 +99,10 @@ def process_files(
     """
     Process trajectory files and collect mate-in-1..5 positions.
     Returns {k: [records]} for each k.
+    Deduplicates by FEN+Moves to avoid duplicate initial positions.
     """
     collected: dict[int, list[dict]] = {1: [], 2: [], 3: [], 4: [], 5: []}
-    seen: dict[int, set[str]] = {k: set() for k in range(1, 6)}  # dedupe by FEN+Moves
+    seen: dict[int, set[str]] = {k: set() for k in range(1, 6)}
 
     for path in sorted(paths):
         with open(path, "r", encoding="utf-8") as f:
