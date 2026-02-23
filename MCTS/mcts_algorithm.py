@@ -232,6 +232,14 @@ class MCTS:
                     action_id_leading_here=action_id
                 )
                 leaf_node.children[action_id] = child_node
+                # Immediate terminal check: after our move, opponent may have no legal moves (stalemate)
+                # or we delivered checkmate. Set W/N so parent's UCT sees this without needing to select it.
+                if child_board.is_game_over(claim_draw=True):
+                    from MCTS.training_modules.chess import calculate_chess_reward
+                    term_val = calculate_chess_reward(child_board, claim_draw=True, draw_reward=self.draw_reward)
+                    child_node.W = term_val
+                    child_node.N = 1.0
+                    child_node.is_expanded = True
 
         self.env.board.set_fen(original_fen, original_tracker)
         _restore_chess_stack(self.env.board, leaf_board)
@@ -264,6 +272,14 @@ class MCTS:
                         action_id_leading_here=action_id
                     )
                     leaf_node.children[action_id] = child_node
+                    # Immediate terminal check: after our move, opponent may have no legal moves (stalemate)
+                    # or we delivered checkmate. Set W/N so parent's UCT sees this without needing to select it.
+                    if sim_board.is_game_over(claim_draw=True):
+                        from MCTS.training_modules.chess import calculate_chess_reward
+                        term_val = calculate_chess_reward(sim_board, claim_draw=True, draw_reward=self.draw_reward)
+                        child_node.W = term_val
+                        child_node.N = 1.0
+                        child_node.is_expanded = True
                 except Exception as e:
                     print(f"Error during MCTS board.push expansion for action_id {action_id} from FEN {leaf_board.fen()}: {e}")
 
@@ -432,6 +448,11 @@ class MCTS:
 
                 # 5. Mark expanded after attempting expansion
                 leaf_node.is_expanded = True
+        else:
+            # Leaf was already expanded (e.g. terminal child created during parent expansion)
+            leaf_board = leaf_node.get_board()
+            if leaf_board.is_game_over(claim_draw=True) and leaf_node.N > 0:
+                value = leaf_node.W / leaf_node.N  # Use stored terminal value
 
         # Return the value obtained from the network (or terminal state)
         return value
@@ -472,8 +493,8 @@ class MCTS:
         obs_indices = []  # Maps batch index to leaf index
         terminal_values = {}  # leaf_idx -> value
         for i, leaf in enumerate(leaves):
+            leaf_board = leaf.get_board()
             if not leaf.is_expanded:
-                leaf_board = leaf.get_board()
                 if leaf_board.is_game_over(claim_draw=True):
                     terminal_values[i] = self._get_terminal_value(leaf)
                     leaf.is_expanded = True
@@ -482,6 +503,9 @@ class MCTS:
                     if obs_t is not None:
                         obs_tensors.append(obs_t)
                         obs_indices.append(i)
+            elif leaf_board.is_game_over(claim_draw=True) and leaf.N > 0:
+                # Pre-initialized terminal child (stalemate/checkmate found during parent expansion)
+                terminal_values[i] = leaf.W / leaf.N
 
         # Phase 3: EVALUATE - Batched network call for non-terminals
         policy_logits_batch = None
