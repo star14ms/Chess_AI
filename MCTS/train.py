@@ -447,10 +447,28 @@ class ReplayBuffer:
         for experience in game_data:
             self.add(experience)
 
-    def sample(self, batch_size, action_space_size=None):
+    def sample(self, batch_size, action_space_size=None, draw_sample_weight=1.0):
+        """Sample a batch, optionally oversampling draw positions.
+
+        Args:
+            batch_size: Number of experiences to sample
+            action_space_size: Action space size for policy normalization
+            draw_sample_weight: Weight for draw positions (value not ±1). 1.0 = uniform; 2.0 = 2x more likely to sample draws.
+        """
         if len(self.buffer) < batch_size:
             return None
-        batch_indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+        # Build sampling weights: draw experiences get draw_sample_weight, others get 1.0
+        if draw_sample_weight != 1.0:
+            weights = np.ones(len(self.buffer), dtype=np.float64)
+            for i, exp in enumerate(self.buffer):
+                val = float(exp[3])
+                is_draw = abs(val - 1.0) > 1e-6 and abs(val + 1.0) > 1e-6
+                if is_draw:
+                    weights[i] = draw_sample_weight
+            probs = weights / weights.sum()
+            batch_indices = np.random.choice(len(self.buffer), batch_size, replace=False, p=probs)
+        else:
+            batch_indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         batch = [self.buffer[i] for i in batch_indices]
 
         # Pre-allocate states array for better performance
@@ -2837,7 +2855,11 @@ def run_training_loop(cfg: DictConfig) -> None:
             )
             # Use values from cfg
             for epoch in range(cfg.training.num_training_steps):
-                batch = replay_buffer.sample(cfg.training.batch_size, action_space_size=cfg.network.action_space_size)
+                batch = replay_buffer.sample(
+                    cfg.training.batch_size,
+                    action_space_size=cfg.network.action_space_size,
+                    draw_sample_weight=cfg.training.get("draw_sample_weight", 1.0),
+                )
                 if batch is None: continue
 
                 # states_np, policy_targets_np, fens_batch, value_targets_np = batch

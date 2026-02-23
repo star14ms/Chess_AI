@@ -112,6 +112,7 @@ training:
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
   draw_reward: null # Fixed reward value for draws. Set to null to use draw_reward_table
   # Dict: draw_termination -> int. 0 = exclude from buffer; n>0 = store only last n moves; absent = full game
+  draw_sample_weight: 1  # Oversample draw positions (# times) to better learn avoiding stalemate/insufficient material blunders
   last_n_moves_to_store:
     THREEFOLD_REPETITION: 9
     FIVEFOLD_REPETITION: 9

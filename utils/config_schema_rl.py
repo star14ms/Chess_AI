@@ -94,6 +94,7 @@ class TrainingConfig:
     last_n_moves_to_store: Dict[str, int] = field(
         default_factory=dict
     )  # Dict: termination -> int. 0 = exclude from buffer; n>0 = store only last n moves; absent = full game
+    draw_sample_weight: float = 1.0  # Oversample draw positions when building batches. 1.0 = uniform; 2.0 = 2x more likely to sample draws.
 
 
 @dataclass
