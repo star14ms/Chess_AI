@@ -226,7 +226,10 @@ def _ensure_mate_success_history(history: dict, mate_labels: list[str]) -> dict:
         history["mate_success_train"] = {}
     if "mate_success_val" not in history or not isinstance(history.get("mate_success_val"), dict):
         history["mate_success_val"] = {}
-    history.setdefault("mate_success_labels", list(mate_labels))
+    if mate_labels:
+        history["mate_success_labels"] = list(mate_labels)
+    elif "mate_success_labels" not in history:
+        history["mate_success_labels"] = []
 
     expected_len = len(history.get("policy_loss", []))
     for label in mate_labels:
@@ -381,7 +384,15 @@ def continual_self_play_worker(
                 pass
         network.to(device).eval()
     last_mtime = os.path.getmtime(checkpoint_path) if os.path.exists(checkpoint_path) else 0.0
-    while not stop_event.is_set():
+
+    def _should_stop():
+        """Safely check stop_event; treat connection errors (manager shutdown) as stop."""
+        try:
+            return stop_event.is_set()
+        except (BrokenPipeError, ConnectionResetError, EOFError, OSError):
+            return True
+
+    while not _should_stop():
         # Hot-reload if newer checkpoint exists
         try:
             if os.path.exists(checkpoint_path):
@@ -1930,6 +1941,8 @@ def run_training_loop(cfg: DictConfig) -> None:
     )
 
     history = _ensure_mate_success_history(history, mate_labels)
+    if mate_labels:
+        progress.print(f"Mate-in success tracking enabled for: {', '.join(mate_labels)} (see second plot in visualize_learning_curves_RL.py)")
 
     # Optional inference server for batched GPU/TPU inference
     inference_request_queue = None
@@ -2962,6 +2975,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 val_ratio = (val_mate_success[idx] / val_total) if val_total > 0 else 0.0
                 history.setdefault('mate_success_train', {}).setdefault(label, []).append(train_ratio)
                 history.setdefault('mate_success_val', {}).setdefault(label, []).append(val_ratio)
+            history["mate_success_labels"] = list(mate_label_to_idx.keys())
 
         # Save checkpoint after each iteration
         checkpoint = {
@@ -3028,7 +3042,10 @@ def run_training_loop(cfg: DictConfig) -> None:
             stop_event.set()
             for p in actors:
                 if p.is_alive():
-                    p.join(timeout=2.0)
+                    p.join(timeout=10.0)
+                    if p.is_alive():
+                        p.terminate()
+                        p.join(timeout=2.0)
         except Exception:
             pass
     if inference_process is not None:

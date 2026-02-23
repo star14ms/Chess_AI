@@ -3,13 +3,14 @@
 Visualize learning curves from training checkpoint history.
 
 Usage:
-    python utils/visualize_learning_curves.py path/to/checkpoint/model.pth
+    python visualize_learning_curves_RL.py [checkpoint_path] [save_dir]
 """
 
-import torch
-import matplotlib.pyplot as plt
-import sys
+import argparse
 import os
+
+import matplotlib.pyplot as plt
+import torch
 
 
 def plot_learning_curves(checkpoint_path, save_dir=None):
@@ -154,17 +155,22 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python visualize_learning_curves.py <checkpoint_path> [save_dir]")
-        print("\nExample:")
-        print("  python utils/visualize_learning_curves.py outputs/mcts_train/2025-01-01/12-00-00/checkpoints/model.pth")
-        print("  python utils/visualize_learning_curves.py checkpoints/model.pth plots/")
-        sys.exit(1)
-    
-    checkpoint_path = sys.argv[1]
-    save_dir = sys.argv[2] if len(sys.argv) > 2 else None
-    
-    plot_learning_curves(checkpoint_path, save_dir)
+    parser = argparse.ArgumentParser(description="Visualize learning curves from training checkpoint history.")
+    parser.add_argument(
+        "checkpoint_path",
+        nargs="?",
+        default="checkpoints/model.pth",
+        help="Path to the checkpoint file (default: checkpoints/model.pth)",
+    )
+    parser.add_argument(
+        "save_dir",
+        nargs="?",
+        default=None,
+        help="Optional directory to save plots (if omitted, displays interactively)",
+    )
+    args = parser.parse_args()
+
+    plot_learning_curves(args.checkpoint_path, args.save_dir)
 
 
 if __name__ == "__main__":
