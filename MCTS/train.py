@@ -444,26 +444,68 @@ class ReplayBuffer:
         for experience in game_data:
             self.add(experience)
 
-    def sample(self, batch_size, action_space_size=None, draw_sample_weight=1.0):
-        """Sample a batch, optionally oversampling draw positions.
+    def sample(self, batch_size, action_space_size=None, draw_sample_ratio=None):
+        """Sample a batch, optionally controlling draw ratio.
 
         Args:
             batch_size: Number of experiences to sample
             action_space_size: Action space size for policy normalization
-            draw_sample_weight: Weight for draw positions (value not ±1). 1.0 = uniform; 2.0 = 2x more likely to sample draws.
+            draw_sample_ratio: Target fraction of batch from draw positions (0.0–1.0).
+                None = uniform sampling. E.g. 0.4 = 40% draws, 60% wins per batch.
         """
         if len(self.buffer) < batch_size:
             return None
-        # Build sampling weights: draw experiences get draw_sample_weight, others get 1.0
-        if draw_sample_weight != 1.0:
-            weights = np.ones(len(self.buffer), dtype=np.float64)
+
+        # Stratified sampling when draw_sample_ratio is set (0.0 = no draws, 1.0 = all draws)
+        if draw_sample_ratio is not None and 0 <= draw_sample_ratio <= 1:
+            draw_indices = []
+            win_indices = []
             for i, exp in enumerate(self.buffer):
                 val = float(exp[3])
                 is_draw = abs(val - 1.0) > 1e-6 and abs(val + 1.0) > 1e-6
                 if is_draw:
-                    weights[i] = draw_sample_weight
-            probs = weights / weights.sum()
-            batch_indices = np.random.choice(len(self.buffer), batch_size, replace=False, p=probs)
+                    draw_indices.append(i)
+                else:
+                    win_indices.append(i)
+
+            n_draw_target = int(batch_size * draw_sample_ratio)
+            n_win_target = batch_size - n_draw_target
+
+            n_draw_actual = min(n_draw_target, len(draw_indices))
+            n_win_actual = min(n_win_target, len(win_indices))
+
+            # If one pool can't supply enough, fill from the other
+            if n_draw_actual + n_win_actual < batch_size:
+                if not draw_indices:
+                    n_draw_actual = 0
+                    n_win_actual = min(batch_size, len(win_indices))
+                elif not win_indices:
+                    n_win_actual = 0
+                    n_draw_actual = min(batch_size, len(draw_indices))
+                else:
+                    shortfall = batch_size - (n_draw_actual + n_win_actual)
+                    n_draw_add = min(shortfall, len(draw_indices) - n_draw_actual)
+                    n_draw_actual += n_draw_add
+                    shortfall -= n_draw_add
+                    n_win_actual += min(shortfall, len(win_indices) - n_win_actual)
+
+            batch_indices_list = []
+            if n_draw_actual > 0 and draw_indices:
+                draw_arr = np.array(draw_indices)
+                batch_indices_list.append(
+                    np.random.choice(draw_arr, size=n_draw_actual, replace=False)
+                )
+            if n_win_actual > 0 and win_indices:
+                win_arr = np.array(win_indices)
+                batch_indices_list.append(
+                    np.random.choice(win_arr, size=n_win_actual, replace=False)
+                )
+
+            if batch_indices_list:
+                batch_indices = np.concatenate(batch_indices_list)
+                np.random.shuffle(batch_indices)
+            else:
+                batch_indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         else:
             batch_indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         batch = [self.buffer[i] for i in batch_indices]
@@ -2865,7 +2907,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 batch = replay_buffer.sample(
                     cfg.training.batch_size,
                     action_space_size=cfg.network.action_space_size,
-                    draw_sample_weight=cfg.training.get("draw_sample_weight", 1.0),
+                    draw_sample_ratio=cfg.training.get("draw_sample_ratio"),
                 )
                 if batch is None: continue
 
@@ -2979,7 +3021,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             progress.print(
                 f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, "
                 f"Avg Value Loss: {avg_value_loss:.4f}, "
-                f"top1_illegal: {avg_illegal_ratio:.2%} (positions where argmax is illegal) | prob_on_illegal: {avg_illegal_prob_mass:.2%} (avg mass on illegal moves)"
+                f"top1_illegal: {avg_illegal_ratio:.2%} | prob_on_illegal: {avg_illegal_prob_mass:.2%}"
             )
             progress.print(
                 f"  Policy top-1 per dataset: {per_source_acc_str}"

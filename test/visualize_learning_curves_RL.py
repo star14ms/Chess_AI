@@ -97,8 +97,8 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     
     # Plot 3: Illegal Move Metrics (model behavior if argmax used without legal-move filtering)
     ax = axes[1, 0]
-    ax.plot(iterations, [r * 100 for r in history['illegal_move_ratio']], 'orange', linewidth=2, label='Top-1 illegal (%) – positions where argmax is illegal', marker='o', markersize=3)
-    ax.plot(iterations, [p * 100 for p in history['illegal_move_prob']], 'purple', linewidth=2, label='Prob on illegal (%) – avg mass assigned to illegal moves', marker='s', markersize=3)
+    ax.plot(iterations, [r * 100 for r in history['illegal_move_ratio']], 'orange', linewidth=2, label='Top-1 illegal (%)', marker='o', markersize=3)
+    ax.plot(iterations, [p * 100 for p in history['illegal_move_prob']], 'purple', linewidth=2, label='Prob on illegal (%)', marker='s', markersize=3)
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Percentage (%)')
     ax.set_title('Illegal Move Metrics (raw policy, unfiltered)')
@@ -143,8 +143,8 @@ def plot_learning_curves(checkpoint_path, save_dir=None):
     print("\n=== Training Summary ===")
     print(f"Final Policy Loss: {history['policy_loss'][-1]:.4f}")
     print(f"Final Value Loss: {history['value_loss'][-1]:.4f}")
-    print(f"Final top1_illegal: {history['illegal_move_ratio'][-1]:.2%} (positions where argmax is illegal)")
-    print(f"Final prob_on_illegal: {history['illegal_move_prob'][-1]:.2%} (avg mass on illegal moves)")
+    print(f"Final top1_illegal: {history['illegal_move_ratio'][-1]:.2%}")
+    print(f"Final prob_on_illegal: {history['illegal_move_prob'][-1]:.2%}")
     
     # Print draw statistics if available
     if 'non_draw_count' in history and len(history['non_draw_count']) > 0:
