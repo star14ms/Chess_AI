@@ -657,13 +657,13 @@ class RewardComputer:
         # This threshold can be adjusted, but 10 pieces (excluding kings) is a reasonable cutoff
         return piece_count < 12  # 2 kings + 10 other pieces = 12 total
     
-    def evaluate_position_quality(self, state_obs, is_first_player: bool, 
+    def evaluate_position_quality(self, state_obs, is_white_turn: bool, 
                                   precomputed_value: Optional[float] = None) -> str:
         """Evaluate position quality using network or precomputed value.
         
         Args:
             state_obs: Observation vector for the position
-            is_first_player: Whether position is from first player's perspective
+            is_white_turn: True when White is to move (quality is from White's perspective)
             precomputed_value: Optional pre-computed value from MCTS
         
         Returns:
@@ -697,7 +697,7 @@ class RewardComputer:
             return 'equal'
         
         # Adjust predicted value to current player's perspective
-        if not is_first_player:
+        if not is_white_turn:
             predicted_value = -predicted_value
         
         # Determine position quality category
@@ -708,7 +708,7 @@ class RewardComputer:
         else:
             return 'losing'
     
-    def compute_draw_reward(self, state_obs, is_first_player: bool,
+    def compute_draw_reward(self, state_obs, is_white_turn: bool,
                            termination_type: Optional[str] = None,
                            precomputed_value: Optional[float] = None,
                            initial_position_quality: Optional[str] = None) -> float:
@@ -716,18 +716,20 @@ class RewardComputer:
         
         Args:
             state_obs: Observation vector for the position
-            is_first_player: Whether position is from first player's perspective
-            termination_type: Optional termination type (e.g., "THREEFOLD_REPETITION", "STALEMATE")
+            is_white_turn: True when White is to move (used to map quality from White's perspective
+                to current player's perspective). Caller passes board_at_state.turn == chess.WHITE.
+            termination_type: Optional termination type (e.g., "INSUFFICIENT_MATERIAL", "STALEMATE")
             precomputed_value: Optional pre-computed value from MCTS
-            initial_position_quality: Optional initial position quality (from white's perspective) - used for endgames
+            initial_position_quality: Initial position quality from White's perspective ('winning',
+                'losing', 'equal'). E.g. 'winning' = White had advantage at game start.
         
         Returns:
-            float: Position-aware draw reward
+            float: Position-aware draw reward for the player to move at this position
         """
-        # Adjust quality for current player's perspective
-        # initial_position_quality is from White's perspective, so we need to flip it for Black
+        # Map quality from White's perspective to current player's perspective.
+        # When White to move: use as-is. When Black to move: flip (winning<->losing).
         if initial_position_quality is not None:
-            if is_first_player:
+            if is_white_turn:
                 # White's turn: use quality as-is (already from White's perspective)
                 quality = initial_position_quality
             else:
@@ -755,12 +757,12 @@ class RewardComputer:
         else:
             return self.default_draw_reward if self.default_draw_reward is not None else -0.1
     
-    def evaluate_initial_position(self, initial_obs, is_first_player: bool) -> Optional[str]:
+    def evaluate_initial_position(self, initial_obs, is_white_turn: bool) -> Optional[str]:
         """Evaluate initial board position and return quality.
         
         Args:
             initial_obs: Initial observation vector
-            is_first_player: Whether the first player is to move
+            is_white_turn: True when White is to move (quality returned from White's perspective)
         
         Returns:
             Optional[str]: Position quality ('winning', 'equal', 'losing') or None if network unavailable
@@ -789,8 +791,8 @@ class RewardComputer:
                 _, initial_value_pred = self.inference_client.predict(obs_tensor)
                 initial_value = float(initial_value_pred.item())
         
-        # Determine initial position quality from first player's perspective
-        if not is_first_player:
+        # Determine initial position quality from White's perspective
+        if not is_white_turn:
             initial_value = -initial_value
         
         # Categorize initial position quality
@@ -809,14 +811,14 @@ def is_endgame_position(fen: Optional[str]) -> bool:
 
 
 def compute_position_aware_draw_reward(network: nn.Module, board_state, state_obs, 
-                                       is_first_player: bool, cfg: OmegaConf, device: torch.device,
+                                       is_white_turn: bool, cfg: OmegaConf, device: torch.device,
                                        precomputed_value: float | None = None,
                                        termination_type: str | None = None,
                                        initial_position_quality: str | None = None) -> float:
     """Compute draw reward (backward compatibility wrapper)."""
     reward_computer = RewardComputer(cfg, network, device)
     return reward_computer.compute_draw_reward(
-        state_obs, is_first_player, termination_type,
+        state_obs, is_white_turn, termination_type,
         precomputed_value, initial_position_quality
     )
 

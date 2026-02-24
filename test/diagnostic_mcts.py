@@ -10,6 +10,8 @@ Diagnostic test for mating positions (mate-in-1, mate-in-2, etc.):
 import sys
 import os
 import json
+import gc
+from pathlib import Path
 import multiprocessing
 import torch
 import chess
@@ -191,6 +193,7 @@ def _diagnostic_worker(
         network.load_state_dict(checkpoint["model_state_dict"])
         network.eval()
 
+    positions_processed = 0
     while True:
         try:
             item = positions_queue.get(timeout=1.0)
@@ -209,6 +212,9 @@ def _diagnostic_worker(
             max_game_moves=max_game_moves,
         )
         results_queue.put((fen_position, result))
+        positions_processed += 1
+        if positions_processed % 25 == 0:
+            gc.collect()
 
 
 def _get_best_action_by_visits(root_node: MCTSNode):
@@ -274,8 +280,9 @@ def test_single_position(
         while not board.is_game_over(claim_draw=True) and move_count < max_game_moves:
             root_node = MCTSNode(board.copy(stack=False))
             mcts_player.search(root_node, iterations=mcts_iterations, batch_size=cfg.mcts.batch_size, progress=None)
-            
+
             action_id = _get_best_action_by_visits(root_node)
+            del root_node  # Free MCTS tree immediately (can be large)
             if action_id is None:
                 legal = list(board.legal_actions)
                 if not legal:
@@ -294,7 +301,10 @@ def test_single_position(
             move = board.action_id_to_move(action_id)
             board.push(move)
             move_count += 1
-        
+            # Periodic GC to free MCTS tree (circular refs delay collection)
+            if move_count % 10 == 0:
+                gc.collect()
+
         result['move_count'] = move_count
         result['first_move_was_mating'] = first_move_was_mating
         
@@ -311,7 +321,8 @@ def test_single_position(
         
     except Exception as e:
         result['error'] = str(e)
-    
+    finally:
+        gc.collect()  # Free MCTS tree and player from this position
     return result
 
 
@@ -342,28 +353,40 @@ def run_batch_diagnostic_test(
         else:
             device = torch.device('cpu')
     
-    positions_to_test = list(mate_positions.keys())
-    if max_positions:
-        if positions_file and os.path.exists(positions_file):
-            # Random sample using select_random_fen_from_file (matches training distribution)
-            from utils.training_utils import select_random_fen_from_file
-            seen = set()
-            offset_cache = {}
-            max_attempts = max_positions * 4  # Avoid infinite loop on small files
-            attempts = 0
-            while len(seen) < max_positions and attempts < max_attempts:
-                fen, _, _ = select_random_fen_from_file(positions_file, offset_cache=offset_cache)
-                if fen:
-                    seen.add(fen)
-                attempts += 1
-            positions_to_test = list(seen)[:max_positions]
-        else:
-            # Fallback: shuffle and take first N
+    # Use file-based sampling (same as train.py): read random lines via offset index, no full JSON parse
+    from utils.training_utils import select_random_fen_from_file, build_line_offset_index
+
+    if positions_file and os.path.exists(positions_file):
+        path = Path(positions_file)
+        resolved = str(path.resolve())
+        is_json_array = resolved.lower().endswith(".json") and not resolved.lower().endswith(".jsonl")
+        offset_cache = {}
+        offsets = build_line_offset_index(path, is_json_array=is_json_array)
+        total_in_file = len(offsets)
+        n_sample = min(max_positions or total_in_file, total_in_file)
+        if n_sample <= 0:
+            raise ValueError(f"No positions in file: {positions_file}")
+        seen = set()
+        mate_positions_meta = {}  # {fen: {"Themes": themes}} for summary
+        max_attempts = n_sample * 4
+        attempts = 0
+        while len(seen) < n_sample and attempts < max_attempts:
+            fen, _, themes = select_random_fen_from_file(positions_file, offset_cache=offset_cache)
+            if fen:
+                seen.add(fen)
+                mate_positions_meta[fen] = {"Themes": themes or []}
+            attempts += 1
+        positions_to_test = list(seen)[:n_sample]
+        mate_positions = mate_positions_meta
+    else:
+        positions_to_test = list(mate_positions.keys())
+        if max_positions:
             import random
             positions_to_test = random.sample(
                 positions_to_test,
                 min(max_positions, len(positions_to_test))
             )
+        total_in_file = len(mate_positions)
     total_positions = len(positions_to_test)
 
     print("=" * 80)
@@ -376,7 +399,7 @@ def run_batch_diagnostic_test(
         print(f"Device: {device}")
     print(f"Checkpoint: {checkpoint_path}")
     print(f"MCTS iterations per position: {mcts_iterations}")
-    print(f"Total positions in file: {len(mate_positions)}")
+    print(f"Total positions in file: {total_in_file}")
     if max_positions:
         print(f"Testing {total_positions} random positions (limited)")
     if use_inference_server:
@@ -508,7 +531,19 @@ def run_batch_diagnostic_test(
                 if played_count > 0:
                     parts.append(f"Won: {side_won_count} ({100*side_won_count/played_count:.0f}%)")
                 progress.update(task, advance=1, description="[cyan]" + " | ".join(parts))
-    
+                if idx % 25 == 0:
+                    gc.collect()
+                    if device.type == "cuda":
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                    elif device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+                        try:
+                            torch.mps.empty_cache()
+                        except Exception:
+                            pass
+
     elapsed_time = time.time() - start_time
     
     # Calculate statistics
@@ -610,11 +645,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Diagnostic test for mate-in-one positions")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint file (default: checkpoints/model.pth)")
-    parser.add_argument("--iterations", type=int, default=512, help="MCTS iterations per position (default: 1000)")
-    parser.add_argument("--max-positions", type=int, default=None, help="Maximum number of positions to test (default: all)")
+    parser.add_argument("--iterations", type=int, default=256, help="MCTS iterations per position (default: 1000)")
+    parser.add_argument("--max-positions", type=int, default=1000, help="Maximum number of positions to test (default: all)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed output for each position")
     parser.add_argument("--positions-file", type=str, default=None, help="Path to positions JSON file (default: data/mate_in_one_positions.json)")
-    parser.add_argument("--max-game-moves", type=int, default=8, help="Maximum moves per game before truncation")
+    parser.add_argument("--max-game-moves", type=int, default=9, help="Maximum moves per game before truncation")
     parser.add_argument("--use-inference-server", action="store_true", help="Use inference server (default: from train_mcts.yaml)")
     parser.add_argument("--no-inference-server", action="store_true", help="Disable inference server")
     parser.add_argument("--workers", type=int, default=None, help=f"Parallel workers when using inference server (default: {default_workers} from config)")
@@ -645,10 +680,11 @@ if __name__ == "__main__":
     if not os.path.exists(mate_positions_file):
         print(f"ERROR: Positions file not found: {mate_positions_file}")
         sys.exit(1)
-    
-    with open(mate_positions_file, 'r') as f:
-        mate_positions = _load_positions(json.load(f))
-    
+
+    # Use file-based sampling (read random lines via offset index, no full JSON parse).
+    # Same method as train.py - avoids loading 230MB+ files into memory.
+    mate_positions = {}  # Built from file in run_batch_diagnostic_test
+
     # Run batch test
     results = run_batch_diagnostic_test(
         checkpoint_path=checkpoint_path,
