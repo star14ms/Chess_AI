@@ -862,6 +862,9 @@ def run_self_play_game(
             draw_reward = cfg.training.get('draw_reward', -0.0)
             # MCTS needs a numeric draw_reward value (use default if None for position-aware)
             draw_reward_for_mcts = draw_reward if draw_reward is not None else -0.0
+            draw_reward_table = cfg.training.get('draw_reward_table')
+            if draw_reward_table is not None and OmegaConf.is_config(draw_reward_table):
+                draw_reward_table = OmegaConf.to_container(draw_reward_table, resolve=True)
             mcts_player = MCTS(
                 network,
                 device=device,
@@ -874,6 +877,8 @@ def run_self_play_game(
                 draw_reward=draw_reward_for_mcts,
                 pre_init_draws=getattr(cfg.mcts, 'pre_init_draws', False),
                 inference_client=inference_client,
+                draw_reward_table=draw_reward_table,
+                initial_position_quality=initial_position_quality,
             )
             mcts_start = time.perf_counter()
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)

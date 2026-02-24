@@ -91,6 +91,47 @@ def calculate_chess_reward(board: BaseChessBoard, claim_draw: bool = True, draw_
         # Draw: use draw_reward for all draws
         return draw_reward
 
+
+def get_terminal_value_for_mcts(
+    board: BaseChessBoard,
+    claim_draw: bool = True,
+    draw_reward: float = -0.1,
+    draw_reward_table: dict | None = None,
+    initial_position_quality: str | None = None,
+) -> float:
+    """Terminal value for MCTS: wins as +1/-1; draws use draw_reward_table when available.
+    
+    When draw_reward_table and initial_position_quality are provided, draws (e.g. INSUFFICIENT_MATERIAL)
+    use position-aware values. E.g. opponent capturing to salvage → losing: 1.0 → triggers
+    high-prior pre-init (term_val >= 0.99) so MCTS strongly favors that capture.
+    
+    Returns value from the previous player's perspective (who just moved).
+    """
+    result_str = board.result(claim_draw=claim_draw)
+    previous_turn = not board.turn
+    
+    if result_str == "1-0":
+        return 1.0 if previous_turn == chess.WHITE else -1.0
+    elif result_str == "0-1":
+        return 1.0 if previous_turn == chess.BLACK else -1.0
+    else:
+        # Draw: use position-aware value if table and quality available
+        if draw_reward_table and initial_position_quality:
+            outcome = board.outcome(claim_draw=claim_draw)
+            if outcome and outcome.winner is None:
+                term_name = getattr(outcome.termination, "name", None) or str(outcome.termination)
+                term_rewards = draw_reward_table.get(term_name)
+                if term_rewards:
+                    is_white = previous_turn == chess.WHITE
+                    quality = initial_position_quality if is_white else (
+                        "losing" if initial_position_quality == "winning" else
+                        "winning" if initial_position_quality == "losing" else "equal"
+                    )
+                    val = term_rewards.get(quality)
+                    if val is not None:
+                        return float(val)
+        return draw_reward
+
 def get_chess_game_result(board: BaseChessBoard, draw_reward: float = -0.1) -> float:
     """Get the game result from a chess board."""
     return calculate_chess_reward(board, claim_draw=True, draw_reward=draw_reward)

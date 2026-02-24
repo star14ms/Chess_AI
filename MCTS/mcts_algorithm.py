@@ -60,9 +60,12 @@ class MCTS:
                  dirichlet_epsilon: float = 0.25,
                  action_space_size: int = 1700,
                  history_steps: int = 8,  # Number of history planes to use when env is None
-                 draw_reward: float = -0.1,  # Reward value for draws
+                 draw_reward: float = -0.1,  # Reward value for draws (fallback when no table)
                  pre_init_draws: bool = False,  # Pre-init draw terminals (stalemate, insufficient material, etc.). False = revert to only checkmate pre-init.
-                 inference_client: Optional["InferenceClient"] = None):
+                 inference_client: Optional["InferenceClient"] = None,
+                 draw_reward_table: Optional[dict] = None,  # {termination: {quality: reward}} for position-aware term_val
+                 initial_position_quality: Optional[str] = None,  # 'winning'|'losing'|'equal' from White's perspective
+                 ):
         self.network = network
         self.device = torch.device(device)
         self.env = env # If None, board.push() will be used for expansion
@@ -74,6 +77,8 @@ class MCTS:
         self.draw_reward = draw_reward
         self.pre_init_draws = pre_init_draws
         self.inference_client = inference_client
+        self.draw_reward_table = draw_reward_table
+        self.initial_position_quality = initial_position_quality
         if self.network is None and self.inference_client is None:
             raise ValueError("MCTS requires either a network or an inference client.")
         if self.network is not None:
@@ -236,9 +241,8 @@ class MCTS:
                 leaf_node.children[action_id] = child_node
                 # Pre-initialize terminals: checkmate always; draws when pre_init_draws is True.
                 if child_board.is_game_over(claim_draw=True):
-                    from MCTS.training_modules.chess import calculate_chess_reward
-                    term_val = calculate_chess_reward(child_board, claim_draw=True, draw_reward=self.draw_reward)
-                    if term_val >= 0.99:  # Checkmate: pre-init with high prior so it dominates
+                    term_val = self._get_term_val(child_board)
+                    if term_val >= 0.99:  # Checkmate or salvaged draw (e.g. opponent capture): high prior
                         prior_n = getattr(self, '_search_iterations', 1)
                         child_node.W = term_val * prior_n
                         child_node.N = float(prior_n)
@@ -281,9 +285,8 @@ class MCTS:
                     leaf_node.children[action_id] = child_node
                     # Pre-initialize terminals: checkmate always; draws when pre_init_draws is True.
                     if sim_board.is_game_over(claim_draw=True):
-                        from MCTS.training_modules.chess import calculate_chess_reward
-                        term_val = calculate_chess_reward(sim_board, claim_draw=True, draw_reward=self.draw_reward)
-                        if term_val >= 0.99:  # Checkmate: pre-init with high prior so it dominates
+                        term_val = self._get_term_val(sim_board)
+                        if term_val >= 0.99:  # Checkmate or salvaged draw (e.g. opponent capture): high prior
                             prior_n = getattr(self, '_search_iterations', 1)
                             child_node.W = term_val * prior_n
                             child_node.N = float(prior_n)
@@ -297,12 +300,21 @@ class MCTS:
 
     # --- Helper Methods for Batched MCTS ---
 
+    def _get_term_val(self, board) -> float:
+        """Terminal value from previous player's perspective. Uses draw_reward_table when available."""
+        from MCTS.training_modules.chess import get_terminal_value_for_mcts
+        return get_terminal_value_for_mcts(
+            board,
+            claim_draw=True,
+            draw_reward=self.draw_reward,
+            draw_reward_table=self.draw_reward_table,
+            initial_position_quality=self.initial_position_quality,
+        )
+
     def _get_terminal_value(self, leaf_node: MCTSNode) -> float:
         """Returns value for terminal node from the previous player's perspective (who just moved)."""
         leaf_board = leaf_node.get_board()
-        from MCTS.training_modules.chess import calculate_chess_reward
-        # Get reward from the perspective of the previous player (who just moved to reach this terminal state)
-        return calculate_chess_reward(leaf_board, claim_draw=True, draw_reward=self.draw_reward)
+        return self._get_term_val(leaf_board)
 
     def _prepare_observation(self, leaf_node: MCTSNode, reuse_buffer: bool = True) -> torch.Tensor:
         """Prepares observation tensor for a leaf node. Returns None if terminal."""
@@ -388,9 +400,7 @@ class MCTS:
 
             # 1. Handle Terminal Node
             if leaf_board.is_game_over(claim_draw=True):
-                # Get reward from the perspective of the previous player (who just moved to reach this terminal state)
-                from MCTS.training_modules.chess import calculate_chess_reward
-                value = calculate_chess_reward(leaf_board, claim_draw=True, draw_reward=self.draw_reward)
+                value = self._get_term_val(leaf_board)
                 leaf_node.is_expanded = True
                 # No expansion needed for terminal nodes
             else:
