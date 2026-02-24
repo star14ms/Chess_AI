@@ -27,7 +27,7 @@ from torch.amp import autocast, GradScaler
 from mcts_node import MCTSNode
 from mcts_algorithm import MCTS
 from utils.profile_model import get_optimal_worker_count, profile_model, format_time
-from utils.progress import NullProgress
+from utils.progress import LoggingProgressWrapper, NullProgress
 from utils.thermal import maybe_pause_for_thermal_throttle
 from inference_server import InferenceClient, inference_server_worker, inference_server_worker_tpu
 from utils.training_utils import (
@@ -1272,7 +1272,13 @@ def run_self_play_game(
         return 1.0 if outcome_winner == chess.BLACK else -1.0
 
     def _draw_reward_for_position(state_obs, board_at_state, mcts_value, term_reason, init_quality):
-        """Use draw_reward_table when available; otherwise fixed draw_reward."""
+        """Use draw_reward_table when available; otherwise fixed draw_reward.
+        
+        Value is assigned for the player to move at board_at_state (AlphaZero convention).
+        init_quality is from White's perspective; we flip for Black's positions.
+        E.g. when opponent captures → insufficient material: last stored position has opponent
+        to move; opponent had 'losing' → reward 0.0 or 1.0 (salvaged draw).
+        """
         if use_draw_table:
             is_white_turn = board_at_state.turn == chess.WHITE
             return reward_computer.compute_draw_reward(
@@ -1876,6 +1882,11 @@ def run_training_loop(cfg: DictConfig) -> None:
             log_path = Path(hydra_cfg.runtime.output_dir) / "train.log"
     except Exception:
         pass
+
+    # Rich's Live display bypasses sys.stdout, so tee cannot capture progress.print().
+    # Wrap progress to also write progress.print() output to train.log.
+    if log_path is not None:
+        progress = LoggingProgressWrapper(progress, log_path)
 
     # Print action space size
     progress.print(f"Using action space size: {cfg.network.action_space_size}")
@@ -3159,14 +3170,20 @@ def main(cfg: DictConfig) -> None:
             _ansi_pattern = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]?")
 
             def _is_progress_bar_output(data: str) -> bool:
-                """True if data is progress bar / Rich live display output to skip in log."""
-                if not data or data.startswith("\r"):
+                """True if data is progress bar / Rich live display output to skip in log.
+                progress.print() outputs real messages (with letters) and should be logged."""
+                if not data:
                     return True
-                if "━" in data or "╺" in data or "╸" in data:
+                if data.startswith("\r"):
+                    return True  # Carriage return = overwrite line = progress bar
+                clean = _ansi_pattern.sub("", data).strip()
+                if not clean:
                     return True
-                if not _ansi_pattern.sub("", data).strip():
-                    return True
-                return False
+                # progress.print() outputs lines with letters (words). Progress bar is only
+                # bar chars (━╺╸█▓▒░●), digits, %, spaces. If it has letters, log it.
+                if any(c.isalpha() for c in clean):
+                    return False  # Has letters -> progress.print or regular print
+                return True  # No letters -> progress bar visual only
 
             class _Tee:
                 """Write to terminal always; write to train.log excluding progress bar output."""
