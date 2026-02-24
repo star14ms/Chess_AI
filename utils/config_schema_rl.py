@@ -35,6 +35,7 @@ class MCTSConfig:
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
     batch_size: int = 1  # Number of leaves to evaluate in one batched network call
+    pre_init_draws: bool = False  # Pre-initialize draw terminals (stalemate, insufficient material, etc.) with term_val. False = only checkmate pre-init.
 
 
 @dataclass

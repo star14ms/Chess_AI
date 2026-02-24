@@ -61,6 +61,7 @@ class MCTS:
                  action_space_size: int = 1700,
                  history_steps: int = 8,  # Number of history planes to use when env is None
                  draw_reward: float = -0.1,  # Reward value for draws
+                 pre_init_draws: bool = False,  # Pre-init draw terminals (stalemate, insufficient material, etc.). False = revert to only checkmate pre-init.
                  inference_client: Optional["InferenceClient"] = None):
         self.network = network
         self.device = torch.device(device)
@@ -71,6 +72,7 @@ class MCTS:
         self.action_space_size = action_space_size  # Store action space size
         self.history_steps = max(1, int(history_steps))
         self.draw_reward = draw_reward
+        self.pre_init_draws = pre_init_draws
         self.inference_client = inference_client
         if self.network is None and self.inference_client is None:
             raise ValueError("MCTS requires either a network or an inference client.")
@@ -232,14 +234,19 @@ class MCTS:
                     action_id_leading_here=action_id
                 )
                 leaf_node.children[action_id] = child_node
-                # Immediate terminal check: after our move, opponent may have no legal moves (stalemate)
-                # or we delivered checkmate. Set W/N so parent's UCT sees this without needing to select it.
+                # Pre-initialize terminals: checkmate always; draws when pre_init_draws is True.
                 if child_board.is_game_over(claim_draw=True):
                     from MCTS.training_modules.chess import calculate_chess_reward
                     term_val = calculate_chess_reward(child_board, claim_draw=True, draw_reward=self.draw_reward)
-                    child_node.W = term_val
-                    child_node.N = 1.0
-                    child_node.is_expanded = True
+                    if term_val >= 0.99:  # Checkmate: pre-init with high prior so it dominates
+                        prior_n = getattr(self, '_search_iterations', 1)
+                        child_node.W = term_val * prior_n
+                        child_node.N = float(prior_n)
+                        child_node.is_expanded = True
+                    elif self.pre_init_draws:  # Draws (stalemate, insufficient material, etc.): pre-init with term_val when enabled
+                        child_node.W = term_val
+                        child_node.N = 1.0
+                        child_node.is_expanded = True
 
         self.env.board.set_fen(original_fen, original_tracker)
         _restore_chess_stack(self.env.board, leaf_board)
@@ -272,14 +279,19 @@ class MCTS:
                         action_id_leading_here=action_id
                     )
                     leaf_node.children[action_id] = child_node
-                    # Immediate terminal check: after our move, opponent may have no legal moves (stalemate)
-                    # or we delivered checkmate. Set W/N so parent's UCT sees this without needing to select it.
+                    # Pre-initialize terminals: checkmate always; draws when pre_init_draws is True.
                     if sim_board.is_game_over(claim_draw=True):
                         from MCTS.training_modules.chess import calculate_chess_reward
                         term_val = calculate_chess_reward(sim_board, claim_draw=True, draw_reward=self.draw_reward)
-                        child_node.W = term_val
-                        child_node.N = 1.0
-                        child_node.is_expanded = True
+                        if term_val >= 0.99:  # Checkmate: pre-init with high prior so it dominates
+                            prior_n = getattr(self, '_search_iterations', 1)
+                            child_node.W = term_val * prior_n
+                            child_node.N = float(prior_n)
+                            child_node.is_expanded = True
+                        elif self.pre_init_draws:  # Draws: pre-init with term_val when enabled
+                            child_node.W = term_val
+                            child_node.N = 1.0
+                            child_node.is_expanded = True
                 except Exception as e:
                     print(f"Error during MCTS board.push expansion for action_id {action_id} from FEN {leaf_board.fen()}: {e}")
 
@@ -540,7 +552,8 @@ class MCTS:
 
     # --- Main Search Function ---
     def search(self, root_node: MCTSNode, iterations: int, batch_size: int = 1, progress: Progress | None = None):
-        
+        self._search_iterations = iterations  # Used when pre-initializing terminal children (checkmate/stalemate)
+
         if self.env is not None:
             root_fen = self.env.board.fen()
             if isinstance(self.env.board, FullyTrackedBoard):

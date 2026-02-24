@@ -872,6 +872,7 @@ def run_self_play_game(
                 action_space_size=action_space_size,
                 history_steps=cfg.env.history_steps,
                 draw_reward=draw_reward_for_mcts,
+                pre_init_draws=getattr(cfg.mcts, 'pre_init_draws', False),
                 inference_client=inference_client,
             )
             mcts_start = time.perf_counter()
