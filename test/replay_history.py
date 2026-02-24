@@ -5,7 +5,6 @@
 import re
 import io
 import os
-import os
 import sys
 import pygame
 import chess
@@ -222,6 +221,8 @@ def _boards_from_san(moves_san: List[str], start_fen: Optional[str] = None) -> T
 
 def _center_pygame_window() -> None:
     """Move the current pygame window to center of monitor. Call after set_mode."""
+    if sys.platform == "darwin":
+        return  # SDL2 Window positioning can segfault on macOS
     try:
         surf = pygame.display.get_surface()
         if surf is None:
@@ -270,9 +271,14 @@ def replay_game_pygame(
     board_px: int = 768,
     fps: int = 60,
     white_perspective: bool = True,
+    shared_screen: Optional[pygame.Surface] = None,
 ):
     """
     Open a Pygame window. Use ←/→ to move back/forward, Esc/Q to quit, B to go back to selection.
+    
+    Args:
+        shared_screen: If provided, use this surface instead of creating a new window.
+            Avoids set_mode() which can cause SIGBUS on macOS when switching views repeatedly.
     
     Returns:
         str: 'back' if user wants to go back to selection, 'quit' if user wants to exit completely, None otherwise
@@ -283,21 +289,25 @@ def replay_game_pygame(
 
     pygame_initialized = False
     screen = None
+    owns_display = shared_screen is None
 
     try:
-        pygame.init()
-        pygame_initialized = True
-        pygame.display.set_caption("Chess replay")
-
         # Adjust margin_top based on whether we have metadata and controls hint
         has_metadata = game_data.get('initial_quality') or game_data.get('reward') is not None
         margin_top = 120 if has_metadata else 96  # Extra space for controls hint
         margin = 16
-        width = board_px + margin * 2
-        height = board_px + margin_top + margin
 
-        screen = pygame.display.set_mode((width, height))
-        _center_pygame_window()
+        if shared_screen is not None:
+            screen = shared_screen
+            pygame.display.set_caption("Chess replay")
+        else:
+            pygame.init()
+            pygame_initialized = True
+            pygame.display.set_caption("Chess replay")
+            width = board_px + margin * 2
+            height = board_px + margin_top + margin
+            screen = pygame.display.set_mode((width, height))
+            _center_pygame_window()
         clock = pygame.time.Clock()
 
         ui_font = pygame.font.SysFont(None, 24)
@@ -427,9 +437,14 @@ def replay_game_pygame(
         print(f"Error in pygame replay: {e}")
         return_value = 'quit'
     finally:
-        # Cleanup: when going back, skip display.quit() to avoid macOS segfault.
-        # Parent will call set_mode() which resizes the existing window.
-        if pygame_initialized:
+        # Reset key repeat when leaving (avoids stale state when reusing display)
+        try:
+            pygame.key.set_repeat(0)
+        except Exception:
+            pass
+        # Cleanup: only quit if we own the display (standalone mode).
+        # When using shared_screen, parent owns the display - never quit.
+        if pygame_initialized and owns_display:
             try:
                 if return_value != 'back':
                     if screen is not None:
@@ -472,7 +487,8 @@ def select_and_replay_game(
         pygame_initialized = True
         pygame.display.set_caption("Chess Game Selector")
         
-        # Calculate window size
+        # Calculate window size - use single size for both selection and replay to avoid
+        # repeated set_mode() which causes SIGBUS on macOS when switching views
         margin = 20
         line_height = 30
         header_height = 100
@@ -482,8 +498,13 @@ def select_and_replay_game(
         list_panel_width = 1000
         theme_option_margin = 6
         theme_option_width = theme_panel_width + margin - theme_option_margin * 2
-        window_width = list_panel_width + theme_panel_width + margin * 2
-        window_height = header_height + min(len(games), rows_per_page) * item_height + margin * 2
+        selection_width = list_panel_width + theme_panel_width + margin * 2
+        selection_height = header_height + min(len(games), rows_per_page) * item_height + margin * 2
+        # Replay needs 800x904 (board_px=768 + margins)
+        replay_height = board_px + 120 + 16  # max margin_top + margin
+        replay_width = board_px + 32
+        window_width = max(selection_width, replay_width)
+        window_height = max(selection_height, replay_height)
         clock = pygame.time.Clock()
         
         # Hold-to-repeat settings for navigation keys
@@ -669,7 +690,9 @@ def select_and_replay_game(
             print("No selectable games to display")
             return
 
-        window_height = header_height + min(len(menu_rows), rows_per_page) * item_height + margin * 2
+        # Use max of selection and replay heights so we never need set_mode() when switching
+        selection_height = header_height + min(len(menu_rows), rows_per_page) * item_height + margin * 2
+        window_height = max(selection_height, replay_height)
         screen = pygame.display.set_mode((window_width, window_height))
         _center_pygame_window()
 
@@ -802,11 +825,10 @@ def select_and_replay_game(
                                 board_px,
                                 fps,
                                 white_perspective,
+                                shared_screen=screen,
                             )
                             if result == 'back':
-                                pygame.init()
-                                screen = pygame.display.set_mode((window_width, window_height))
-                                _center_pygame_window()
+                                pygame.display.set_caption("Chess Game Selector")
                                 continue
                             elif result == 'quit':
                                 running = False
@@ -851,19 +873,16 @@ def select_and_replay_game(
                                 "last_repeat": now_ms,
                             }
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        # Select and replay
+                        # Select and replay (shared_screen avoids set_mode which causes SIGBUS on macOS)
                         result = replay_game_pygame(
                             games[menu_rows[selected_row]["game_idx"]],
                             board_px,
                             fps,
                             white_perspective,
+                            shared_screen=screen,
                         )
-                        # If user wants to go back, continue the loop (don't return)
                         if result == 'back':
-                            # Reinitialize pygame for the selection menu
-                            pygame.init()
-                            screen = pygame.display.set_mode((window_width, window_height))
-                            _center_pygame_window()
+                            pygame.display.set_caption("Chess Game Selector")
                             continue
                         elif result == 'quit':
                             running = False
