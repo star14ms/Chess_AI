@@ -37,6 +37,22 @@ def format_dataset_label(base: str) -> str:
     return format_theme_group(base)
 
 
+def abbreviate_dataset_label(label: str) -> str:
+    """Shorten dataset labels for display. Shared by train.py and replay_history.py.
+    E.g. 'minimal endgames K vs KQ easy' -> 'endgame_KQ_easy', 'minimal_endgames_mate_in_2' -> 'mm2'."""
+    if not label:
+        return label
+    normalized = label.replace("_", " ")
+    m = re.search(r"K\s+vs\s+K(Q|R|BB|BN|B|N)\b", normalized, re.I)
+    if m:
+        suffix = "_easy" if re.search(r"\beasy\b", normalized, re.I) else ""
+        return f"endgame_K{m.group(1).upper()}{suffix}"
+    for n in (2, 3, 4, 5):
+        if re.search(rf"mate[_\s]in[_\s]?{n}\b", normalized, re.I) or f"mate_in_{n}" in label:
+            return f"mm{n}"
+    return label
+
+
 def truncate_label(label: str, max_len: int) -> str:
     if len(label) <= max_len:
         return label

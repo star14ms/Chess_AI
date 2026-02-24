@@ -39,7 +39,7 @@ from utils.training_utils import (
     select_random_fen_from_file,
     select_random_fen_from_json_list,
 )
-from utils.dataset_labels import format_dataset_label
+from utils.dataset_labels import abbreviate_dataset_label, format_dataset_label
 
 create_network = None
 create_environment = None
@@ -211,16 +211,17 @@ def _collect_dataset_entries(initial_board_fen_cfg):
     return entries
 
 
-def _format_source_accuracy(labels: list[str], correct: list[int], total: list[int], digits: int = 2) -> str:
+def _format_source_accuracy(labels: list[str], correct: list[int], total: list[int], digits: int = 2, abbreviate: bool = True) -> str:
     if not labels:
         return "-"
     parts: list[str] = []
     for label, c, t in zip(labels, correct, total):
+        disp = abbreviate_dataset_label(label) if abbreviate else label
         if t > 0:
             acc = c / t * 100
-            parts.append(f"{label}={acc:.{digits}f}%")
+            parts.append(f"{disp}={acc:.{digits}f}%")
         else:
-            parts.append(f"{label}=N/A")
+            parts.append(f"{disp}=N/A")
     return " | ".join(parts)
 
 
@@ -2196,6 +2197,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         games_completed_this_iter = 0
         val_mate_success = [0] * len(mate_entry_labels)
         val_mate_total = [0] * len(mate_entry_labels)
+        val_mate_success_per_source = [0] * len(source_labels)
+        val_mate_total_per_source = [0] * len(source_labels)
         # Track draw reasons and collect game moves
         from collections import defaultdict
         draw_reasons = defaultdict(int)
@@ -2239,26 +2242,28 @@ def run_training_loop(cfg: DictConfig) -> None:
                 num_second_wins += 1
 
         def _update_mate_success(game_info):
-            if not mate_id_to_idx:
-                return
             entry_id = game_info.get('initial_dataset_id')
             if entry_id is None and mate_label_to_entry_id:
                 label = game_info.get('initial_dataset_label')
                 entry_id = mate_label_to_entry_id.get(label) if label else None
-            if entry_id is None or entry_id not in mate_id_to_idx:
+            if entry_id is None:
                 return
-            idx = mate_id_to_idx[entry_id]
-            val_mate_total[idx] += 1
-
+            first_player = _first_player_from_game_info(game_info)
             winner = game_info.get('winner', None)
             success = False
             if winner is not None and game_info.get('termination') == "CHECKMATE":
                 winner_color = 'w' if winner == chess.WHITE else 'b' if winner == chess.BLACK else None
-                if winner_color is not None and winner_color == _first_player_from_game_info(game_info):
+                if winner_color is not None and winner_color == first_player:
                     success = True
-
-            if success:
-                val_mate_success[idx] += 1
+            if 0 <= entry_id < len(source_labels):
+                val_mate_total_per_source[entry_id] += 1
+                if success:
+                    val_mate_success_per_source[entry_id] += 1
+            if mate_id_to_idx and entry_id in mate_id_to_idx:
+                idx = mate_id_to_idx[entry_id]
+                val_mate_total[idx] += 1
+                if success:
+                    val_mate_success[idx] += 1
 
         def _get_draw_buffer_config(termination):
             """Get buffer config for draw termination: None=full game, 0=exclude, n>0=last n moves."""
@@ -3030,10 +3035,10 @@ def run_training_loop(cfg: DictConfig) -> None:
             if not per_source_acc_str:
                 per_source_acc_str = "-"
             mate_success_str = ""
-            if mate_entry_labels:
-                correct = [val_mate_success[i] for i in range(len(mate_entry_labels))]
-                total_list = [val_mate_total[i] for i in range(len(mate_entry_labels))]
-                mate_acc = _format_source_accuracy(mate_entry_labels, correct, total_list, digits=2)
+            if source_labels:
+                mate_acc = _format_source_accuracy(
+                    source_labels, val_mate_success_per_source, val_mate_total_per_source, digits=2
+                )
                 mate_success_str = f" | Mate success: {mate_acc}"
             progress.print(
                 f"Training finished: Avg Policy Loss: {avg_policy_loss:.4f}, "

@@ -11,6 +11,11 @@ import chess
 import chess.svg
 from typing import List, Optional, Tuple, Dict
 
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+from utils.dataset_labels import abbreviate_dataset_label
+
 try:
     import cairosvg  # SVG -> PNG
 except Exception:
@@ -770,7 +775,8 @@ def select_and_replay_game(
                     if filter_tabs and tab_y <= mouse_y <= tab_y + tab_height:
                         tab_x = margin
                         for idx, label in enumerate(filter_tabs):
-                            tab_w = max(40, font.size(label)[0])
+                            disp_label = abbreviate_dataset_label(label)
+                            tab_w = max(40, font.size(disp_label)[0])
                             tab_rect = pygame.Rect(tab_x, tab_y, tab_w, tab_height)
                             if tab_rect.collidepoint(mouse_x, mouse_y):
                                 selected_filter = idx
@@ -912,18 +918,19 @@ def select_and_replay_game(
             inst_text = small_font.render("↑/↓: Navigate | ←/→: Page | Tabs: Layout/Filter | Hover: Select | Click/Enter: Play | Esc/Q: Exit | In replay: B/Tab to go back", True, (150, 150, 150))
             screen.blit(inst_text, (window_width - margin - inst_text.get_width(), header_height - 25))
 
-            # Filter tabs
+            # Filter tabs (use abbreviated labels for display)
             if filter_tabs:
                 tab_y = 36
                 tab_height = 26
                 tab_x = margin
                 for idx, label in enumerate(filter_tabs):
-                    tab_w = max(40, font.size(label)[0])
+                    disp_label = abbreviate_dataset_label(label)
+                    tab_w = max(40, font.size(disp_label)[0])
                     tab_rect = pygame.Rect(tab_x, tab_y, tab_w, tab_height)
                     is_active = idx == selected_filter
                     tab_bg = selected_bg if is_active else header_row_bg
                     pygame.draw.rect(screen, tab_bg, tab_rect, border_radius=4)
-                    tab_text = font.render(label, True, selected_text if is_active else text_color)
+                    tab_text = font.render(disp_label, True, selected_text if is_active else text_color)
                     text_x = tab_x + (tab_w - tab_text.get_width()) // 2
                     text_y = tab_y + (tab_height - tab_text.get_height()) // 2
                     screen.blit(tab_text, (text_x, text_y))
