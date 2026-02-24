@@ -116,6 +116,23 @@ def _dataset_cache_key(value) -> str:
         return repr(value)
 
 
+def _empty_device_cache(device=None):
+    """Clear GPU cache for CUDA and/or MPS to reduce memory fragmentation (like diagnostic_mcts)."""
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        torch.cuda.empty_cache()
+    if device is None or (isinstance(device, torch.device) and device.type == "mps"):
+        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            if hasattr(torch.mps, "empty_cache"):
+                try:
+                    torch.mps.empty_cache()
+                except Exception:
+                    pass
+
+
 def _get_cached_dataset_entries(initial_board_fen_cfg):
     if initial_board_fen_cfg is not None:
         try:
@@ -425,12 +442,7 @@ def continual_self_play_worker(
             # Continue on errors to keep the actor alive
             pass
         # Modest cleanup to avoid memory growth
-        if device.type == 'cuda':
-            try:
-                torch.cuda.synchronize()
-            except Exception:
-                pass
-            torch.cuda.empty_cache()
+        _empty_device_cache(device)
         gc.collect()
 
 # --- Replay Buffer (Keep as is) ---
@@ -801,7 +813,7 @@ def run_self_play_game(
 
     # Track MCTS tree statistics
     tree_stats_list = []  # Store stats for each move
-    gpu_cleanup_interval = 15  # Clean GPU memory every N moves (increased from 5 to reduce overhead)
+    gpu_cleanup_interval = 8  # Clean GPU memory every N moves (8 ensures cleanup within short mate-in-2/3/4 games)
 
     # Manual position tracking for repetition detection (fallback if board's move_stack is corrupted)
     # This tracks positions independently of the board's move_stack, making it robust even when
@@ -924,13 +936,9 @@ def run_self_play_game(
             mcts_policy = None  # Help GC
             mcts_policy = mcts_policy_copy  # Restore for game_history
             
-            # Periodic GPU memory cleanup
-            if device.type == 'cuda' and (move_count + 1) % gpu_cleanup_interval == 0:
-                try:
-                    torch.cuda.synchronize(device)
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
+            # Periodic GPU memory cleanup (CUDA + MPS)
+            if device.type in ('cuda', 'mps') and (move_count + 1) % gpu_cleanup_interval == 0:
+                _empty_device_cache(device)
         else:
             mcts_policy = np.zeros(cfg.network.action_space_size)
             legal_actions = get_legal_actions(env.board)
@@ -1338,6 +1346,11 @@ def run_self_play_game(
         'initial_dataset_source': initial_dataset_source,
         'position_themes': initial_themes if initial_themes else None,
     }
+
+    # Final cleanup before return (helps with memory when using large datasets)
+    if device is not None and device.type in ('cuda', 'mps'):
+        _empty_device_cache(device)
+    gc.collect()
 
     return (full_game_data, game_info)
 
@@ -2526,12 +2539,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             # Record games completed for logging/checkpoint
             games_completed_this_iter = collected_games
             # Quick cleanup
-            if torch.cuda.is_available():
-                try:
-                    torch.cuda.synchronize()
-                except Exception:
-                    pass
-                torch.cuda.empty_cache()
+            _empty_device_cache()
             gc.collect()
         elif use_multiprocessing_flag:
             # Prepare arguments for workers
@@ -2658,12 +2666,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     pool.join()
 
                 # Cleanup GPU caches after self-play workers
-                if torch.cuda.is_available():
-                    try:
-                        torch.cuda.synchronize()
-                    except Exception:
-                        pass
-                    torch.cuda.empty_cache()
+                _empty_device_cache()
                 gc.collect()
 
         else: # Sequential Execution
@@ -2726,12 +2729,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             progress.update(task_id_selfplay, visible=False)
 
             # Cleanup GPU caches after sequential self-play
-            if torch.cuda.is_available():
-                try:
-                    torch.cuda.synchronize()
-                except Exception:
-                    pass
-                torch.cuda.empty_cache()
+            _empty_device_cache()
             gc.collect()
 
         # Add collected data to replay buffer (outside the conditional block)
@@ -2803,12 +2801,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         
         # --- Training Phase ---
         # Cleanup and prep GPU before training
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.synchronize()
-            except Exception:
-                pass
-            torch.cuda.empty_cache()
+        _empty_device_cache()
         gc.collect()
         if len(replay_buffer) < cfg.training.batch_size:
             progress.print("Not enough data in buffer to start training. Skipping phase.")
