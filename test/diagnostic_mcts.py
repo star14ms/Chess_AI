@@ -326,6 +326,7 @@ def run_batch_diagnostic_test(
     use_inference_server: bool = False,
     num_workers: int = 4,
     inference_device: Optional[str] = None,
+    positions_file: Optional[str] = None,
 ):
     """Run diagnostic test on all positions in batch."""
     
@@ -343,7 +344,26 @@ def run_batch_diagnostic_test(
     
     positions_to_test = list(mate_positions.keys())
     if max_positions:
-        positions_to_test = positions_to_test[:max_positions]
+        if positions_file and os.path.exists(positions_file):
+            # Random sample using select_random_fen_from_file (matches training distribution)
+            from utils.training_utils import select_random_fen_from_file
+            seen = set()
+            offset_cache = {}
+            max_attempts = max_positions * 4  # Avoid infinite loop on small files
+            attempts = 0
+            while len(seen) < max_positions and attempts < max_attempts:
+                fen, _, _ = select_random_fen_from_file(positions_file, offset_cache=offset_cache)
+                if fen:
+                    seen.add(fen)
+                attempts += 1
+            positions_to_test = list(seen)[:max_positions]
+        else:
+            # Fallback: shuffle and take first N
+            import random
+            positions_to_test = random.sample(
+                positions_to_test,
+                min(max_positions, len(positions_to_test))
+            )
     total_positions = len(positions_to_test)
 
     print("=" * 80)
@@ -358,7 +378,7 @@ def run_batch_diagnostic_test(
     print(f"MCTS iterations per position: {mcts_iterations}")
     print(f"Total positions in file: {len(mate_positions)}")
     if max_positions:
-        print(f"Testing first {max_positions} positions (limited)")
+        print(f"Testing {total_positions} random positions (limited)")
     if use_inference_server:
         print(f"Inference server: enabled on {_get_inference_device_str(inference_device)} ({num_workers} workers)")
     print("=" * 80)
@@ -501,6 +521,28 @@ def run_batch_diagnostic_test(
     for r in no_error:
         t = r.get('termination') or 'unknown'
         termination_counts[t] += 1
+
+    # Per-piece-type accuracy (KQ, KR, KBB, KBN)
+    PIECE_TYPES = ("K_vs_KQ", "K_vs_KR", "K_vs_KBB", "K_vs_KBN")
+
+    def _get_piece_type(fen: str) -> Optional[str]:
+        """Extract piece type from mate_positions Themes (e.g. K_vs_KBB)."""
+        entry = mate_positions.get(fen) if isinstance(mate_positions.get(fen), dict) else None
+        if not entry:
+            return None
+        themes = entry.get("Themes") or entry.get("themes") or []
+        for pt in PIECE_TYPES:
+            if pt in themes:
+                return pt
+        return None
+
+    by_piece = defaultdict(lambda: {"won": 0, "total": 0})
+    for r in no_error:
+        pt = _get_piece_type(r.get("fen", ""))
+        if pt:
+            by_piece[pt]["total"] += 1
+            if r.get("side_to_move_won", False):
+                by_piece[pt]["won"] += 1
     
     # Print summary
     print("\n" + "=" * 80)
@@ -521,6 +563,15 @@ def run_batch_diagnostic_test(
     for term, count in sorted(termination_counts.items(), key=lambda x: -x[1]):
         pct = 100 * count / total_positions
         print(f"   {term}: {count} ({pct:.1f}%)")
+
+    # Per-piece-type accuracy
+    if by_piece:
+        print(f"\n--- Accuracy by piece type (K+pieces vs K) ---")
+        for pt in PIECE_TYPES:
+            if pt in by_piece:
+                d = by_piece[pt]
+                pct = 100 * d["won"] / d["total"] if d["total"] > 0 else 0
+                print(f"   {pt}: {d['won']}/{d['total']} ({pct:.1f}%)")
     
     print(f"\n✗ Errors: {len(errors)} ({100*len(errors)/total_positions:.1f}%)")
     if errors:
@@ -559,11 +610,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Diagnostic test for mate-in-one positions")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint file (default: checkpoints/model.pth)")
-    parser.add_argument("--iterations", type=int, default=1000, help="MCTS iterations per position (default: 1000)")
+    parser.add_argument("--iterations", type=int, default=512, help="MCTS iterations per position (default: 1000)")
     parser.add_argument("--max-positions", type=int, default=None, help="Maximum number of positions to test (default: all)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed output for each position")
     parser.add_argument("--positions-file", type=str, default=None, help="Path to positions JSON file (default: data/mate_in_one_positions.json)")
-    parser.add_argument("--max-game-moves", type=int, default=8, help="Maximum moves per game before truncation (default: 200)")
+    parser.add_argument("--max-game-moves", type=int, default=8, help="Maximum moves per game before truncation")
     parser.add_argument("--use-inference-server", action="store_true", help="Use inference server (default: from train_mcts.yaml)")
     parser.add_argument("--no-inference-server", action="store_true", help="Disable inference server")
     parser.add_argument("--workers", type=int, default=None, help=f"Parallel workers when using inference server (default: {default_workers} from config)")
@@ -609,5 +660,6 @@ if __name__ == "__main__":
         use_inference_server=use_inference_server,
         num_workers=num_workers,
         inference_device=inference_device,
+        positions_file=mate_positions_file,
     )
 
