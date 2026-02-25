@@ -57,21 +57,39 @@ class MCTSNode:
         parent_N = self.parent.N if self.parent else 1
         return C_puct * self.prior_p * (math.sqrt(parent_N) / (1 + self.N))
 
-    def select_child_uct(self, C_puct: float) -> 'MCTSNode':
-        """Selects the child with the highest UCT score (by action_id)."""
+    def select_child_uct(self, C_puct: float, winning_terminal_threshold: float = 0.99) -> 'MCTSNode':
+        """Selects the child with the highest UCT score (by action_id).
+        
+        Force-selects winning terminals (checkmate or good INSUFFICIENT_MATERIAL) before PUCT.
+        This ensures the opponent's salvaging capture (INSUFFICIENT_MATERIAL) is always explored
+        when it's the opponent's turn. Bad INSUFFICIENT_MATERIAL (our blunder) is 2 steps ahead
+        so we cannot detect it at expansion; it relies on normal search and backprop.
+        """
+        current_board = self.get_board()
+        # Force-select winning terminals (checkmate or opponent's salvaging INSUFFICIENT_MATERIAL)
+        # If multiple qualify, choose uniformly so all mating moves get equal visit chances
+        winning_terminals = []
+        for action_id in current_board.legal_actions:
+            child = self.children.get(action_id)
+            if child and child.is_terminal() and child.N > 0:
+                q = child.Q()
+                if q >= winning_terminal_threshold:
+                    winning_terminals.append(child)
+        if winning_terminals:
+            return random.choice(winning_terminals)
+
         best_score = -float('inf')
         best_child = None
         best_action_id = None
-
-        current_board = self.get_board()
         for action_id in current_board.legal_actions:
             child = self.children.get(action_id)
-            if child: # Only consider expanded children
-                score = child.Q() + child.U(C_puct)
-                if score > best_score:
-                    best_score = score
-                    best_child = child
-                    best_action_id = action_id
+            if not child:
+                continue
+            score = child.Q() + child.U(C_puct)
+            if score > best_score:
+                best_score = score
+                best_child = child
+                best_action_id = action_id
         if best_child is None:
             print(f"Warning: No best child found via UCT for node {self.board.fen()}. Actions considered: {list(current_board.legal_actions)}. Children keys: {list(self.children.keys())}")
             legal_children = [self.children.get(aid) for aid in current_board.legal_actions if aid in self.children]

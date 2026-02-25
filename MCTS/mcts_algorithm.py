@@ -243,8 +243,11 @@ class MCTS:
                 term_type, term_name = self._get_terminal_type(child_board)
                 high_prior = term_type == 'checkmate' or (term_type == 'draw' and term_name == 'INSUFFICIENT_MATERIAL')
                 if high_prior:
-                    term_val = self._get_term_val(child_board)
                     prior_n = getattr(self, '_search_iterations', 1)
+                    if term_name == 'INSUFFICIENT_MATERIAL':
+                        term_val = 1.0  # Explicitly ensure opponent's salvaging move is force-selected
+                    else:
+                        term_val = self._get_term_val(child_board)
                     child_node.W = term_val * prior_n
                     child_node.N = float(prior_n)
                     child_node.is_expanded = True
@@ -289,8 +292,11 @@ class MCTS:
                     term_type, term_name = self._get_terminal_type(sim_board)
                     high_prior = term_type == 'checkmate' or (term_type == 'draw' and term_name == 'INSUFFICIENT_MATERIAL')
                     if high_prior:
-                        term_val = self._get_term_val(sim_board)
                         prior_n = getattr(self, '_search_iterations', 1)
+                        if term_name == 'INSUFFICIENT_MATERIAL':
+                            term_val = 1.0  # Explicitly ensure opponent's salvaging move is force-selected
+                        else:
+                            term_val = self._get_term_val(sim_board)
                         child_node.W = term_val * prior_n
                         child_node.N = float(prior_n)
                         child_node.is_expanded = True
