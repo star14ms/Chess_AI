@@ -745,11 +745,20 @@ class MCTS:
             return policy_pi
         
         if temperature == 0:
-            max_visits = np.max(visit_counts)
-            if max_visits == 0:
-                best_action_ids = children_action_ids
+            # When winning terminals exist (mate in one), use uniform over them so multiple mating moves get equal weight
+            winning_action_ids = []
+            for aid in children_action_ids:
+                c = legal_children[aid]
+                if c.is_terminal() and c.N > 0 and c.Q() >= 0.99:
+                    winning_action_ids.append(aid)
+            if winning_action_ids:
+                best_action_ids = winning_action_ids
             else:
-                best_action_ids = [aid for aid, count in zip(children_action_ids, visit_counts) if count == max_visits]
+                max_visits = np.max(visit_counts)
+                if max_visits == 0:
+                    best_action_ids = children_action_ids
+                else:
+                    best_action_ids = [aid for aid, count in zip(children_action_ids, visit_counts) if count == max_visits]
             prob = 1.0 / len(best_action_ids) if best_action_ids else 0.0
             for action_id in best_action_ids:
                 if action_id is not None and 1 <= action_id <= self.action_space_size:

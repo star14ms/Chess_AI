@@ -894,7 +894,15 @@ def run_self_play_game(
             mcts_start = time.perf_counter()
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
             mcts_elapsed = time.perf_counter() - mcts_start
-            mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=temperature)
+            # Use temperature=0 when any root child is a winning terminal (mate in one available)
+            # Ensures we always pick the mating move regardless of initial FEN
+            move_temp = temperature
+            if root_node.children:
+                for child in root_node.children.values():
+                    if child.is_terminal() and child.N > 0 and child.Q() >= 0.99:
+                        move_temp = 0.0
+                        break
+            mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=move_temp)
             
             # Get value prediction from root node (MCTS value estimate, better than raw network value)
             # This is the value from the current player's perspective
