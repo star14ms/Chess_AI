@@ -774,7 +774,7 @@ def run_self_play_game(
     if network is not None:
         network.eval()
 
-    # Initialize reward computer
+    # Initialize reward computer (for position-aware draw rewards during training)
     reward_computer = RewardComputer(cfg, network, device, inference_client=inference_client)
 
     # If we don't have a hardcoded quality from config, assume side-to-move is winning.
@@ -872,9 +872,7 @@ def run_self_play_game(
             # Repetition detection is handled in the actual game board, not in MCTS tree nodes.
             root_node = MCTSNode(env.board.copy(stack=False))
             mcts_env = env if cfg.env.render_mode == 'human' and not cfg.training.get('use_multiprocessing', False) else None
-            draw_reward = cfg.training.get('draw_reward', -0.0)
-            # MCTS needs a numeric draw_reward value (use default if None for position-aware)
-            draw_reward_for_mcts = draw_reward if draw_reward is not None else -0.0
+            draw_reward = cfg.training.get('draw_reward')
             draw_reward_table = cfg.training.get('draw_reward_table')
             if draw_reward_table is not None and OmegaConf.is_config(draw_reward_table):
                 draw_reward_table = OmegaConf.to_container(draw_reward_table, resolve=True)
@@ -887,7 +885,7 @@ def run_self_play_game(
                 dirichlet_epsilon=dirichlet_epsilon,
                 action_space_size=action_space_size,
                 history_steps=cfg.env.history_steps,
-                draw_reward=draw_reward_for_mcts,
+                draw_reward=draw_reward,
                 pre_init_draws=getattr(cfg.mcts, 'pre_init_draws', False),
                 inference_client=inference_client,
                 draw_reward_table=draw_reward_table,
@@ -1281,13 +1279,7 @@ def run_self_play_game(
         return 1.0 if outcome_winner == chess.BLACK else -1.0
 
     def _draw_reward_for_position(state_obs, board_at_state, mcts_value, term_reason, init_quality):
-        """Use draw_reward_table when available; otherwise fixed draw_reward.
-        
-        Value is assigned for the player to move at board_at_state (AlphaZero convention).
-        init_quality is from White's perspective; we flip for Black's positions.
-        E.g. when opponent captures → insufficient material: last stored position has opponent
-        to move; opponent had 'losing' → reward 0.0 or 1.0 (salvaged draw).
-        """
+        """Use draw_reward_table when available; otherwise fixed draw_reward."""
         if use_draw_table:
             is_white_turn = board_at_state.turn == chess.WHITE
             return reward_computer.compute_draw_reward(

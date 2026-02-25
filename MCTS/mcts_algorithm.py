@@ -60,7 +60,7 @@ class MCTS:
                  dirichlet_epsilon: float = 0.25,
                  action_space_size: int = 1700,
                  history_steps: int = 8,  # Number of history planes to use when env is None
-                 draw_reward: float = -0.1,  # Reward value for draws (fallback when no table)
+                 draw_reward: float | None = None,  # If set, use for all draws; else use draw_reward_table when available
                  pre_init_draws: bool = False,  # Pre-init draw terminals (stalemate, insufficient material, etc.). False = revert to only checkmate pre-init.
                  inference_client: Optional["InferenceClient"] = None,
                  draw_reward_table: Optional[dict] = None,  # {termination: {quality: reward}} for position-aware term_val
@@ -239,18 +239,20 @@ class MCTS:
                     action_id_leading_here=action_id
                 )
                 leaf_node.children[action_id] = child_node
-                # Pre-initialize terminals: checkmate always; draws when pre_init_draws is True.
-                if child_board.is_game_over(claim_draw=True):
+                # Pre-initialize terminals by actual result type (checkmate vs draw), not by value.
+                term_type, term_name = self._get_terminal_type(child_board)
+                high_prior = term_type == 'checkmate' or (term_type == 'draw' and term_name == 'INSUFFICIENT_MATERIAL')
+                if high_prior:
                     term_val = self._get_term_val(child_board)
-                    if term_val >= 0.99:  # Checkmate or salvaged draw (e.g. opponent capture): high prior
-                        prior_n = getattr(self, '_search_iterations', 1)
-                        child_node.W = term_val * prior_n
-                        child_node.N = float(prior_n)
-                        child_node.is_expanded = True
-                    elif self.pre_init_draws:  # Draws (stalemate, insufficient material, etc.): pre-init with term_val when enabled
-                        child_node.W = term_val
-                        child_node.N = 1.0
-                        child_node.is_expanded = True
+                    prior_n = getattr(self, '_search_iterations', 1)
+                    child_node.W = term_val * prior_n
+                    child_node.N = float(prior_n)
+                    child_node.is_expanded = True
+                elif term_type == 'draw' and self.pre_init_draws:
+                    term_val = self._get_term_val(child_board)
+                    child_node.W = term_val
+                    child_node.N = 1.0
+                    child_node.is_expanded = True
 
         self.env.board.set_fen(original_fen, original_tracker)
         _restore_chess_stack(self.env.board, leaf_board)
@@ -283,22 +285,36 @@ class MCTS:
                         action_id_leading_here=action_id
                     )
                     leaf_node.children[action_id] = child_node
-                    # Pre-initialize terminals: checkmate always; draws when pre_init_draws is True.
-                    if sim_board.is_game_over(claim_draw=True):
+                    # Pre-initialize terminals by actual result type (checkmate vs draw), not by value.
+                    term_type, term_name = self._get_terminal_type(sim_board)
+                    high_prior = term_type == 'checkmate' or (term_type == 'draw' and term_name == 'INSUFFICIENT_MATERIAL')
+                    if high_prior:
                         term_val = self._get_term_val(sim_board)
-                        if term_val >= 0.99:  # Checkmate or salvaged draw (e.g. opponent capture): high prior
-                            prior_n = getattr(self, '_search_iterations', 1)
-                            child_node.W = term_val * prior_n
-                            child_node.N = float(prior_n)
-                            child_node.is_expanded = True
-                        elif self.pre_init_draws:  # Draws: pre-init with term_val when enabled
-                            child_node.W = term_val
-                            child_node.N = 1.0
-                            child_node.is_expanded = True
+                        prior_n = getattr(self, '_search_iterations', 1)
+                        child_node.W = term_val * prior_n
+                        child_node.N = float(prior_n)
+                        child_node.is_expanded = True
+                    elif term_type == 'draw' and self.pre_init_draws:
+                        term_val = self._get_term_val(sim_board)
+                        child_node.W = term_val
+                        child_node.N = 1.0
+                        child_node.is_expanded = True
                 except Exception as e:
                     print(f"Error during MCTS board.push expansion for action_id {action_id} from FEN {leaf_board.fen()}: {e}")
 
     # --- Helper Methods for Batched MCTS ---
+
+    def _get_terminal_type(self, board) -> Tuple[Optional[str], Optional[str]]:
+        """Returns (term_type, termination_name): 'checkmate'|'draw'|None, and outcome.termination.name for draws."""
+        if not board.is_game_over(claim_draw=True):
+            return None, None
+        outcome = board.outcome(claim_draw=True)
+        if outcome is None:
+            return None, None
+        if outcome.winner is not None:
+            return 'checkmate', None  # Game ended with a winner (1-0 or 0-1)
+        term_name = getattr(outcome.termination, 'name', None) or str(outcome.termination)
+        return 'draw', term_name
 
     def _get_term_val(self, board) -> float:
         """Terminal value from previous player's perspective. Uses draw_reward_table when available."""

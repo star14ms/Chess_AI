@@ -95,15 +95,15 @@ def calculate_chess_reward(board: BaseChessBoard, claim_draw: bool = True, draw_
 def get_terminal_value_for_mcts(
     board: BaseChessBoard,
     claim_draw: bool = True,
-    draw_reward: float = -0.1,
+    draw_reward: float | None = None,
     draw_reward_table: dict | None = None,
     initial_position_quality: str | None = None,
 ) -> float:
-    """Terminal value for MCTS: wins as +1/-1; draws use draw_reward_table when available.
+    """Terminal value for MCTS: wins as +1/-1; draws use same logic as training.
     
-    When draw_reward_table and initial_position_quality are provided, draws (e.g. INSUFFICIENT_MATERIAL)
-    use position-aware values. E.g. opponent capturing to salvage → losing: 1.0 → triggers
-    high-prior pre-init (term_val >= 0.99) so MCTS strongly favors that capture.
+    Prioritize draw_reward: if set (not None), use it for all draws.
+    Else use draw_reward_table when available (position-aware).
+    Fallback: -0.0 when both are null/unavailable.
     
     Returns value from the previous player's perspective (who just moved).
     """
@@ -115,7 +115,9 @@ def get_terminal_value_for_mcts(
     elif result_str == "0-1":
         return 1.0 if previous_turn == chess.BLACK else -1.0
     else:
-        # Draw: use position-aware value if table and quality available
+        # Draw: prioritize draw_reward; else use draw_reward_table when available
+        if draw_reward is not None:
+            return float(draw_reward)
         if draw_reward_table and initial_position_quality:
             outcome = board.outcome(claim_draw=claim_draw)
             if outcome and outcome.winner is None:
@@ -130,7 +132,7 @@ def get_terminal_value_for_mcts(
                     val = term_rewards.get(quality)
                     if val is not None:
                         return float(val)
-        return draw_reward
+        return -0.0
 
 def get_chess_game_result(board: BaseChessBoard, draw_reward: float = -0.1) -> float:
     """Get the game result from a chess board."""
