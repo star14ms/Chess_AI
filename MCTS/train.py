@@ -21,6 +21,7 @@ import json
 import chess
 import random
 import re
+import shutil
 from torch.amp import autocast, GradScaler
 
 # Assuming files are in the MCTS directory relative to the project root
@@ -2035,6 +2036,25 @@ def run_training_loop(cfg: DictConfig) -> None:
         history=history,
     )
 
+    # Early termination if already reached target iterations (e.g. resumed from checkpoint)
+    if start_iter >= cfg.training.num_training_iterations:
+        progress.print(
+            f"\nTraining already complete: reached {cfg.training.num_training_iterations} iterations. Exiting without saving."
+        )
+        env.close()
+        try:
+            from hydra.core.hydra_config import HydraConfig
+            hydra_cfg = HydraConfig.get()
+            if hydra_cfg is not None:
+                output_dir = Path(hydra_cfg.runtime.output_dir)
+                if output_dir.exists():
+                    shutil.rmtree(output_dir)
+                    progress.print(f"Removed empty Hydra output dir: {output_dir}")
+        except Exception:
+            pass
+        progress.print("\nTraining loop finished.")
+        return
+
     history = _ensure_mate_success_history(history, mate_entry_labels)
     if mate_entry_labels:
         progress.print(f"Mate-in success tracking enabled per datafile: {', '.join(mate_entry_labels)} (see second plot in visualize_learning_curves_RL.py)")
@@ -2158,6 +2178,7 @@ def run_training_loop(cfg: DictConfig) -> None:
     )
     if amp_enabled_for_training:
         progress.print("AMP enabled for training phase.")
+
     for iteration in range(start_iter, cfg.training.num_training_iterations):
         iteration_start_time = time.time()
         progress.print(f"\n--- Training Iteration {iteration+1}/{cfg.training.num_training_iterations} ---")
