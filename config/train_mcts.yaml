@@ -48,27 +48,28 @@ env:
 
 mcts:
   _target_: utils.config_schema_rl.MCTSConfig
-  iterations: 256  # More search to find mate
-  c_puct: 2.0      # Moderate (not too high!)
+  iterations: 512  # More search to find mate
+  c_puct: 1.41     # Moderate (not too high!)
   temperature_start: 1.0  # Some randomness early
-  temperature_end: 0.0
-  temperature_decay_moves: 30  # Quick transition
-  temperature_custom_start: 0.0
+  temperature_end: 0.3
+  temperature_decay_moves: 10  # Quick transition
+  temperature_custom_start: 1.0
   dirichlet_alpha: 0.3
-  dirichlet_epsilon: 0.25
+  dirichlet_epsilon: 0.0
   batch_size: 16  # Per-game batch (keep small to avoid MCTS variance)
+  pre_init_draws: true  # Pre-init draw terminals (stalemate, insufficient material, etc.). Set true to enable; false to revert.
   
 
 optimizer:
   _target_: utils.config_schema_rl.OptimizerConfig
   type: Adam
-  learning_rate: 1e-4
+  learning_rate: 1e-5
   # momentum: 0.9 # Not needed for Adam default
   weight_decay: 1e-4
 
 training:
   _target_: utils.config_schema_rl.TrainingConfig
-  replay_buffer_size: 8192
+  replay_buffer_size: 16384
   device: auto # If device is cpu and multiprocessing is false and render_mode is not null, you can see the pygame window
   amp: true # Enable CUDA AMP (mixed precision) during training
   num_training_iterations: 20
@@ -76,7 +77,7 @@ training:
   batch_size: 64
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
-  use_inference_server: false # Use a dedicated GPU/TPU inference process (or thread for TPU)
+  use_inference_server: true # Use a dedicated GPU/TPU inference process (or thread for TPU)
   inference_server_device: null # Example: "cuda:0", "xla" for TPU v5e
   inference_server_max_wait_ms: 0  # Longer wait to collect requests from multiple workers
   inference_server_min_stacked_requests: 0 # Min requests before processing; extends wait when below this (0 is emperically proven to be the best)
@@ -90,27 +91,57 @@ training:
   checkpoint_load: null # Dir (e.g. ./checkpoints) or direct file path (e.g. ./checkpoints/model.pth)
   game_history_dir: ${hydra:runtime.output_dir}/game_history # Directory to save game history files. Set to null to disable.
   initial_board_fen:
-    # - path: data/mate_in_1.json
-    #   weight: 0.3
-    #   max_game_moves: 6
-    # - path: data/mate_in_2.json
-    #   weight: 0.2
-    #   max_game_moves: 8
+    - path: data/mate_in_1.json
+      weight: 0.2
+      max_game_moves: 1
+    - path: data/mate_in_2.json
+      weight: 0.3
+      max_game_moves: 10
     # - path: data/mate_in_3.json
-    #   weight: 0.2
-    #   max_game_moves: 10
-    # - path: data/mate_in_4.json
-    #   weight: 0.2
+    #   weight: 0.4
     #   max_game_moves: 12
+    # - path: data/mate_in_4.json
+    #   weight: 0.1
+    #   max_game_moves: 14
     # - path: data/mate_in_5.json
     #   weight: 0.3
-    #   max_game_moves: 14
-    - path: data/endgame-crushing_without_defensive_move-long-mate-quite_move-very_long.json
+    #   max_game_moves: 16
+
+    - path: data/minimal_endgames_mate_in_1.json
+      weight: 0.2
+      max_game_moves: 1
+    - path: data/minimal_endgames_mate_in_2.json
       weight: 0.3
-      max_game_moves: 50
+      max_game_moves: 7
+    # - path: data/minimal_endgames_mate_in_3.json
+    #   weight: 0.4
+    #   max_game_moves: 9
+    # - path: data/minimal_endgames_mate_in_4.json
+    #   weight: 0.1
+    #   max_game_moves: 11
+    # - path: data/minimal_endgames_mate_in_5.json
+    #   weight: 0.0
+    #   max_game_moves: 13
+
+    # - path: data/endgame-crushing_without_defensive_move-long-mate-quite_move-very_long.json
+    #   weight: 0.3
+    #   max_game_moves: 100
+    # - path: data/minimal_endgames_K_vs_KQ_easy.json
+    #   weight: 0.2
+    #   max_game_moves: 19
+    # - path: data/minimal_endgames_K_vs_KR_easy.json
+    #   weight: 0.2
+    #   max_game_moves: 19
+    # - path: data/minimal_endgames_K_vs_KBB_easy.json
+    #   weight: 0.1
+    #   max_game_moves: 19
+    # - path: data/minimal_endgames_K_vs_KBN_easy.json
+    #   weight: 0.0
+    #   max_game_moves: 19
+
   progress_bar: true
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
-  draw_reward: null # Fixed reward value for draws. Set to null to use draw_reward_table
+  draw_reward: 0.0 # Fixed reward value for draws. Set to null to use draw_reward_table
   # Dict: draw_termination -> int. 0 = exclude from buffer; n>0 = store only last n moves; absent = full game
   draw_sample_ratio: null  # null = uniform. 0.4 = 40% draws per batch. Control draw ratio directly.
   last_n_moves_to_store:
@@ -121,32 +152,32 @@ training:
     SEVENTYFIVE_MOVES: 0
     MAX_MOVES: 0
     INSUFFICIENT_MATERIAL: 2
-  draw_reward_table:
-    THREEFOLD_REPETITION:
-      winning: -0.9
-      equal: -0.5
-      losing: 0.0
-    FIVEFOLD_REPETITION:
-      winning: -0.9
-      equal: -0.5
-      losing: 0.0
-    STALEMATE:
-      winning: -0.9
-      equal: -0.5
-      losing: 0.0
-    FIFTY_MOVES:
-      winning: -0.9
-      equal: -0.5
-      losing: 0.0
-    SEVENTYFIVE_MOVES:
-      winning: -0.9
-      equal: -0.5
-      losing: 0.0
-    MAX_MOVES:
-      winning: -0.9
-      equal: -0.5
-      losing: 0.0
-    INSUFFICIENT_MATERIAL:
-      winning: -0.9
-      equal: -0.05
-      losing: 0.0
+  # draw_reward_table:
+  #   THREEFOLD_REPETITION:
+  #     winning: -0.9
+  #     equal: -0.5
+  #     losing: 0.0
+  #   FIVEFOLD_REPETITION:
+  #     winning: -0.9
+  #     equal: -0.5
+  #     losing: 0.0
+  #   STALEMATE:
+  #     winning: -0.9
+  #     equal: -0.5
+  #     losing: 0.0
+  #   FIFTY_MOVES:
+  #     winning: -0.9
+  #     equal: -0.5
+  #     losing: 0.0
+  #   SEVENTYFIVE_MOVES:
+  #     winning: -0.9
+  #     equal: -0.5
+  #     losing: 0.0
+  #   MAX_MOVES:
+  #     winning: -0.9
+  #     equal: -0.5
+  #     losing: 0.0
+  #   INSUFFICIENT_MATERIAL:
+  #     winning: -0.9
+  #     equal: -0.05
+  #     losing: 0.0
