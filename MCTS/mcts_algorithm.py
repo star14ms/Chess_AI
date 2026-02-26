@@ -642,7 +642,66 @@ class MCTS:
             _restore_chess_stack(self.env.board, root_board)
 
     # --- Get Best Move / Policy --- 
-    # Returns Action ID corresponding to the best move
+    # Shared logic for winning terminals (checkmate, opponent salvaging INSUFFICIENT_MATERIAL) and max-visits selection
+    def get_best_action_ids(
+        self,
+        root_node: MCTSNode,
+        winning_terminal_threshold: float = 0.99,
+    ) -> List[int]:
+        """
+        Returns the list of action_ids considered best for selection.
+        When winning terminals exist (Q >= threshold): returns those (checkmate or opponent salvaging).
+        Otherwise returns action_ids with max visit count.
+        Used by get_policy_distribution (temperature=0) and get_best_action_deterministic.
+        """
+        legal = list(root_node.board.legal_actions)
+        if not legal:
+            return []
+        if not root_node.children:
+            return legal
+
+        legal_children = {
+            aid: root_node.children[aid]
+            for aid in root_node.board.legal_actions
+            if aid in root_node.children
+        }
+        if not legal_children:
+            return legal
+
+        # Winning terminals (checkmate or opponent salvaging INSUFFICIENT_MATERIAL)
+        winning_action_ids = [
+            aid
+            for aid, c in legal_children.items()
+            if c.is_terminal() and c.N > 0 and c.Q() >= winning_terminal_threshold
+        ]
+        if winning_action_ids:
+            return winning_action_ids
+
+        # Max visits
+        max_visits = max(int(c.N) for c in legal_children.values())
+        if max_visits < 0:
+            return list(legal_children.keys())
+        best_action_ids = [
+            aid for aid, c in legal_children.items()
+            if int(c.N) == max_visits
+        ]
+        return best_action_ids if best_action_ids else list(legal_children.keys())
+
+    def get_best_action_deterministic(
+        self,
+        root_node: MCTSNode,
+        winning_terminal_threshold: float = 0.99,
+    ) -> int | None:
+        """
+        Returns the best action_id deterministically (smallest action_id among best).
+        Ensures mating move and opponent's salvaging INSUFFICIENT_MATERIAL when available.
+        Used by diagnostic tests for reproducible evaluation.
+        """
+        best_ids = self.get_best_action_ids(root_node, winning_terminal_threshold)
+        if not best_ids:
+            return None
+        return min(best_ids)
+
     def get_best_action(self, root_node: MCTSNode, temperature=0.0) -> int | None:
         """
         Selects the best **action ID** corresponding to a legal move from the
@@ -673,15 +732,11 @@ class MCTS:
             return selected_action_id
 
         if temperature == 0:
-            max_visits = -1
-            best_action_id = None
-            for aid, child in children_to_consider.items():
-                if child.N > max_visits:
-                    max_visits = child.N
-                    best_action_id = aid
-            if best_action_id is None:
-                best_action_id = random.choice(list(children_to_consider.keys()))
-            return best_action_id
+            best_ids = self.get_best_action_ids(root_node, winning_terminal_threshold=0.99)
+            best_ids = [aid for aid in best_ids if aid in children_to_consider]
+            if not best_ids:
+                best_ids = list(children_to_consider.keys())
+            return min(best_ids) if best_ids else random.choice(list(children_to_consider.keys()))
         else:
             action_ids = list(children_to_consider.keys())
             visit_counts = np.array([children_to_consider[aid].N for aid in action_ids], dtype=float)
@@ -745,20 +800,11 @@ class MCTS:
             return policy_pi
         
         if temperature == 0:
-            # When winning terminals exist (mate in one), use uniform over them so multiple mating moves get equal weight
-            winning_action_ids = []
-            for aid in children_action_ids:
-                c = legal_children[aid]
-                if c.is_terminal() and c.N > 0 and c.Q() >= 0.99:
-                    winning_action_ids.append(aid)
-            if winning_action_ids:
-                best_action_ids = winning_action_ids
-            else:
-                max_visits = np.max(visit_counts)
-                if max_visits == 0:
-                    best_action_ids = children_action_ids
-                else:
-                    best_action_ids = [aid for aid, count in zip(children_action_ids, visit_counts) if count == max_visits]
+            best_action_ids = self.get_best_action_ids(root_node, winning_terminal_threshold=0.99)
+            # Restrict to explored legal children (get_best_action_ids may return from full legal set)
+            best_action_ids = [aid for aid in best_action_ids if aid in legal_children]
+            if not best_action_ids:
+                best_action_ids = children_action_ids
             prob = 1.0 / len(best_action_ids) if best_action_ids else 0.0
             for action_id in best_action_ids:
                 if action_id is not None and 1 <= action_id <= self.action_space_size:

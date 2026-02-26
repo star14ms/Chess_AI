@@ -1839,19 +1839,12 @@ def _load_checkpoint(
                 history["repetition_draw_count"] = [0] * len(history["policy_loss"])
             if "other_draw_count" not in history:
                 history["other_draw_count"] = [0] * len(history["policy_loss"])
-            progress.print(
-                f"Loaded training history with {len(history['policy_loss'])} recorded iterations"
-            )
 
         buffer_loaded = False
         if "replay_buffer_state" in checkpoint:
             try:
                 replay_buffer_state = checkpoint["replay_buffer_state"]
                 replay_buffer.load_state(replay_buffer_state, create_board_from_serialized)
-
-                progress.print(
-                    f"Loaded replay buffer from checkpoint: {len(replay_buffer)} experiences"
-                )
                 buffer_loaded = True
             except Exception as e:
                 progress.print(f"Warning: Failed to load replay buffer from checkpoint: {e}")

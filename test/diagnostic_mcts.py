@@ -261,6 +261,9 @@ def test_single_position(
             mating_action_id = board.move_to_action_id(mating_move)
             result['mating_action_id'] = mating_action_id
         
+        draw_reward = cfg.training.get('draw_reward', 0.0) if hasattr(cfg, 'training') else 0.0
+        if draw_reward is not None and OmegaConf.is_config(draw_reward):
+            draw_reward = float(OmegaConf.to_container(draw_reward, resolve=True))
         mcts_player = MCTS(
             network=network,
             device=device,
@@ -270,7 +273,8 @@ def test_single_position(
             dirichlet_epsilon=0.0,  # Zero exploration for evaluation: deterministic best-move selection
             action_space_size=cfg.network.action_space_size,
             history_steps=cfg.env.history_steps,
-            draw_reward=-0.1,
+            draw_reward=draw_reward,
+            pre_init_draws=getattr(cfg.mcts, 'pre_init_draws', False),
             inference_client=inference_client,
         )
         
@@ -281,7 +285,8 @@ def test_single_position(
             root_node = MCTSNode(board.copy(stack=False))
             mcts_player.search(root_node, iterations=mcts_iterations, batch_size=cfg.mcts.batch_size, progress=None)
 
-            action_id = _get_best_action_by_visits(root_node)
+            # Shared logic with training: winning terminals first, else max visits (deterministic)
+            action_id = mcts_player.get_best_action_deterministic(root_node)
             del root_node  # Free MCTS tree immediately (can be large)
             if action_id is None:
                 legal = list(board.legal_actions)
@@ -645,8 +650,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Diagnostic test for mate-in-one positions")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint file (default: checkpoints/model.pth)")
-    parser.add_argument("--iterations", type=int, default=256, help="MCTS iterations per position (default: 1000)")
-    parser.add_argument("--max-positions", type=int, default=1000, help="Maximum number of positions to test (default: all)")
+    parser.add_argument("--iterations", type=int, default=512, help="MCTS iterations per position (default: 512)")
+    parser.add_argument("--max-positions", type=int, default=500, help="Maximum number of positions to test (default: 500)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed output for each position")
     parser.add_argument("--positions-file", type=str, default=None, help="Path to positions JSON file (default: data/mate_in_one_positions.json)")
     parser.add_argument("--max-game-moves", type=int, default=9, help="Maximum moves per game before truncation")
