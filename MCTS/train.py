@@ -1444,13 +1444,6 @@ def _init_network_and_optimizer(
     else:
         raise ValueError(f"Unsupported optimizer: {opt_cfg.type}")
     progress.print(f"Optimizer initialized: {opt_cfg.type}")
-    if log_path is not None:
-        try:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"Optimizer initialized: {opt_cfg.type}\n")
-                f.flush()
-        except Exception:
-            pass
     return network, optimizer, opt_cfg, actual_learning_rate
 
 
@@ -1471,13 +1464,6 @@ def _init_checkpoint_dirs(cfg: DictConfig, progress: Progress, log_path: str | P
     os.makedirs(checkpoint_dir, exist_ok=True)
     abs_path = os.path.abspath(checkpoint_dir)
     progress.print(f"Checkpoints will be saved in: {abs_path}")
-    if log_path is not None:
-        try:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"Checkpoints will be saved in: {abs_path}\n")
-                f.flush()
-        except Exception:
-            pass
     return checkpoint_dir, load_checkpoint_path
 
 
@@ -1487,13 +1473,6 @@ def _init_game_history_dir(cfg: DictConfig, progress: Progress, log_path: str | 
         os.makedirs(game_history_dir, exist_ok=True)
         abs_path = os.path.abspath(game_history_dir)
         progress.print(f"Game histories will be saved in: {abs_path}")
-        if log_path is not None:
-            try:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"Game histories will be saved in: {abs_path}\n")
-                    f.flush()
-            except Exception:
-                pass
     else:
         game_history_dir = None
     return game_history_dir
@@ -1993,13 +1972,6 @@ def run_training_loop(cfg: DictConfig) -> None:
     # --- Main Training Loop ---
     start_iter = 0 # Initialize start_iter
     progress.print("Starting training loop...")
-    if log_path is not None:
-        try:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write("Starting training loop...\n\n")
-                f.flush()
-        except Exception:
-            pass
     total_training_start_time = time.time()
     total_games_simulated = 0
     
@@ -2800,7 +2772,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     count = label_stats[label]['count']
                     avg_nodes_label = label_stats[label]['sum_nodes'] / max(1, count)
                     label_parts.append(f"{label}={avg_nodes_label:.0f} ({count})")
-                tree_stats_by_label_info = " | MCTS avg nodes by dataset (# games): " + ", ".join(label_parts)
+                tree_stats_by_label_info = "MCTS avg nodes by dataset (# games): " + ", ".join(label_parts)
         
         buffer_info = f", buffer={len(replay_buffer)}"
         
@@ -2810,7 +2782,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             f"steps={len(games_data_collected)}{buffer_info} | W Wins: {num_wins}, "
             f"B Wins: {num_losses}, 1st Wins: {num_first_wins}, 2nd Wins: {num_second_wins}, "
             f"Draws: {num_draws} ({draw_rate_iter:.1f}% Draw)"
-            f"{draw_info}{device_info}{tree_stats_info}{tree_stats_by_label_info} | {format_time(self_play_duration)}"
+            f"\n{draw_info}{device_info}{tree_stats_info}\n{tree_stats_by_label_info} | {format_time(self_play_duration)}"
         )
         
         # --- Training Phase ---
