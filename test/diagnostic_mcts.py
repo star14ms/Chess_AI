@@ -31,6 +31,27 @@ from MCTS.mcts_algorithm import MCTS
 from MCTS.mcts_node import MCTSNode
 
 
+def _ci95_proportion(wins: int, total: int) -> Tuple[float, float]:
+    """Compute 95% confidence interval for a proportion (Wald interval). Returns (lo, hi) as 0-100 percentages."""
+    if total <= 0:
+        return (0.0, 0.0)
+    p = wins / total
+    se = (p * (1 - p) / total) ** 0.5
+    z = 1.96
+    lo = max(0.0, p - z * se)
+    hi = min(1.0, p + z * se)
+    return (100 * lo, 100 * hi)
+
+
+def _format_won_with_ci(side_won_count: int, played_count: int) -> str:
+    """Format 'Won: X (pct% [lo%, hi%])' with 95% CI."""
+    if played_count <= 0:
+        return "Won: 0"
+    pct = 100 * side_won_count / played_count
+    lo, hi = _ci95_proportion(side_won_count, played_count)
+    return f"Won: {side_won_count} ({pct:.0f}% [{lo:.0f}%, {hi:.0f}%])"
+
+
 def _load_positions(data) -> dict:
     """Normalize positions from JSON: dict (FEN -> meta) or list of {FEN: ...} objects."""
     if isinstance(data, dict):
@@ -481,7 +502,7 @@ def run_batch_diagnostic_test(
                         side_won_count += 1
                 parts = [f"Played: {played_count}"]
                 if played_count > 0:
-                    parts.append(f"Won: {side_won_count} ({100*side_won_count/played_count:.0f}%)")
+                    parts.append(_format_won_with_ci(side_won_count, played_count))
                 progress.update(task, advance=1, description="[cyan]" + " | ".join(parts))
 
         for p in workers:
@@ -534,7 +555,7 @@ def run_batch_diagnostic_test(
                         side_won_count += 1
                 parts = [f"Played: {played_count}"]
                 if played_count > 0:
-                    parts.append(f"Won: {side_won_count} ({100*side_won_count/played_count:.0f}%)")
+                    parts.append(_format_won_with_ci(side_won_count, played_count))
                 progress.update(task, advance=1, description="[cyan]" + " | ".join(parts))
                 if idx % 25 == 0:
                     gc.collect()
@@ -598,7 +619,14 @@ def run_batch_diagnostic_test(
     
     # Game-outcome stats (all played games)
     print("--- Game outcomes (all positions) ---")
-    print(f"✓ Side-to-move won: {len(side_won)} / {len(no_error)} ({100*len(side_won)/len(no_error):.1f}%)" if no_error else "✓ Side-to-move won: N/A")
+    if no_error:
+        n_won = len(side_won)
+        n_played = len(no_error)
+        pct = 100 * n_won / n_played
+        lo, hi = _ci95_proportion(n_won, n_played)
+        print(f"✓ Side-to-move won: {n_won} / {n_played} ({pct:.1f}%, 95% CI [{lo:.1f}%, {hi:.1f}%])")
+    else:
+        print("✓ Side-to-move won: N/A")
     print(f"\nTermination breakdown:")
     for term, count in sorted(termination_counts.items(), key=lambda x: -x[1]):
         pct = 100 * count / total_positions
@@ -654,7 +682,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-positions", type=int, default=500, help="Maximum number of positions to test (default: 500)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed output for each position")
     parser.add_argument("--positions-file", type=str, default=None, help="Path to positions JSON file (default: data/mate_in_one_positions.json)")
-    parser.add_argument("--max-game-moves", type=int, default=9, help="Maximum moves per game before truncation")
+    parser.add_argument("--max-game-moves", type=int, default=7, help="Maximum moves per game before truncation")
     parser.add_argument("--use-inference-server", action="store_true", help="Use inference server (default: from train_mcts.yaml)")
     parser.add_argument("--no-inference-server", action="store_true", help="Disable inference server")
     parser.add_argument("--workers", type=int, default=None, help=f"Parallel workers when using inference server (default: {default_workers} from config)")
