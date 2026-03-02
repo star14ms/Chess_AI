@@ -798,7 +798,6 @@ def run_self_play_game(
     temp_start = cfg.mcts.temperature_start
     temp_end = cfg.mcts.temperature_end
     temp_decay_moves = cfg.mcts.temperature_decay_moves
-    temp_custom_start = cfg.mcts.get('temperature_custom_start', 0.1)
     dirichlet_alpha = cfg.mcts.dirichlet_alpha
     dirichlet_epsilon = cfg.mcts.dirichlet_epsilon
     action_space_size = cfg.network.action_space_size
@@ -806,12 +805,6 @@ def run_self_play_game(
     if isinstance(max_game_moves_override, (int, float)) and max_game_moves_override > 0:
         max_moves = int(max_game_moves_override)
     
-    # Check if we started from a non-standard position
-    # Standard starting position board part: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-    initial_board_fen = env.board.fen()
-    standard_starting_position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-    is_custom_start = not initial_board_fen.startswith(standard_starting_position)
-
     # Track MCTS tree statistics
     tree_stats_list = []  # Store stats for each move
     gpu_cleanup_interval = 8  # Clean GPU memory every N moves (8 ensures cleanup within short mate-in-2/3/4 games)
@@ -841,12 +834,8 @@ def run_self_play_game(
     cached_fen = env.board.fen()
 
     while not terminated and not truncated and move_count < max_moves:
-        # Use custom temperature for non-standard starting positions (endgames, custom positions, etc.)
-        if is_custom_start:
-            temperature = temp_custom_start
-        else:
-            # Normal temperature decay for standard starting positions
-            temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
+        # Temperature decay: same formula for all positions (standard and custom start)
+        temperature = temp_start * ((temp_end / temp_start) ** min(1.0, move_count / temp_decay_moves))
         fen = cached_fen  # Use cached FEN instead of calling env.board.fen()
         
         # Backup position tracking before MCTS (in case board gets modified during exploration)

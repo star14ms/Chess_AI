@@ -53,7 +53,6 @@ mcts:
   temperature_start: 1.0  # Some randomness early
   temperature_end: 0.3
   temperature_decay_moves: 10  # Quick transition
-  temperature_custom_start: 1.0
   dirichlet_alpha: 0.3
   dirichlet_epsilon: 0.0
   batch_size: 16  # Per-game batch (keep small to avoid MCTS variance)
