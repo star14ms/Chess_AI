@@ -18,6 +18,7 @@ import chess
 from omegaconf import OmegaConf
 from typing import Optional, Tuple, List, Dict, Any
 from collections import defaultdict
+import random
 import time
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 
@@ -222,7 +223,7 @@ def _diagnostic_worker(
                 break
         except Exception:
             continue
-        fen_position = item
+        index, fen_position = item
         result = test_single_position(
             cfg=cfg,
             fen_position=fen_position,
@@ -232,7 +233,7 @@ def _diagnostic_worker(
             inference_client=inference_client,
             max_game_moves=max_game_moves,
         )
-        results_queue.put((fen_position, result))
+        results_queue.put((index, result))
         positions_processed += 1
         if positions_processed % 25 == 0:
             gc.collect()
@@ -403,15 +404,17 @@ def run_batch_diagnostic_test(
                 mate_positions_meta[fen] = {"Themes": themes or []}
             attempts += 1
         positions_to_test = list(seen)[:n_sample]
+        random.shuffle(positions_to_test)
         mate_positions = mate_positions_meta
     else:
         positions_to_test = list(mate_positions.keys())
         if max_positions:
-            import random
             positions_to_test = random.sample(
                 positions_to_test,
                 min(max_positions, len(positions_to_test))
             )
+        else:
+            random.shuffle(positions_to_test)
         total_in_file = len(mate_positions)
     total_positions = len(positions_to_test)
 
@@ -424,6 +427,8 @@ def run_batch_diagnostic_test(
     else:
         print(f"Device: {device}")
     print(f"Checkpoint: {checkpoint_path}")
+    print(f"Positions file: {positions_file or '(in-memory)'}")
+    print(f"Max game moves: {max_game_moves}")
     print(f"MCTS iterations per position: {mcts_iterations}")
     print(f"Total positions in file: {total_in_file}")
     if max_positions:
@@ -451,8 +456,8 @@ def run_batch_diagnostic_test(
 
         positions_queue = multiprocessing.get_context("spawn").Queue()
         results_queue = multiprocessing.get_context("spawn").Queue()
-        for fen in positions_to_test:
-            positions_queue.put(fen)
+        for i, fen in enumerate(positions_to_test):
+            positions_queue.put((i, fen))
         for _ in range(num_workers):
             positions_queue.put(None)
 
@@ -493,17 +498,23 @@ def run_batch_diagnostic_test(
             task = progress.add_task("[cyan]Testing positions...", total=total_positions)
             side_won_count = 0
             played_count = 0
+            results_ordered = [None] * total_positions
+            next_to_display = 0
             for _ in range(total_positions):
-                _, result = results_queue.get()
-                results.append(result)
-                if result["error"] is None:
-                    played_count += 1
-                    if result.get("side_to_move_won", False):
-                        side_won_count += 1
-                parts = [f"Played: {played_count}"]
-                if played_count > 0:
-                    parts.append(_format_won_with_ci(side_won_count, played_count))
-                progress.update(task, advance=1, description="[cyan]" + " | ".join(parts))
+                index, result = results_queue.get()
+                results_ordered[index] = result
+                while next_to_display < total_positions and results_ordered[next_to_display] is not None:
+                    r = results_ordered[next_to_display]
+                    results.append(r)
+                    if r["error"] is None:
+                        played_count += 1
+                        if r.get("side_to_move_won", False):
+                            side_won_count += 1
+                    parts = [f"Played: {played_count}"]
+                    if played_count > 0:
+                        parts.append(_format_won_with_ci(side_won_count, played_count))
+                    progress.update(task, advance=1, description="[cyan]" + " | ".join(parts))
+                    next_to_display += 1
 
         for p in workers:
             p.join(timeout=5.0)
