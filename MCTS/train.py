@@ -338,7 +338,7 @@ def self_play_worker(
 
 # Wrapper for imap_unordered (module scope for pickling)
 def worker_wrapper(args):
-    """Unpacks arguments for self_play_worker when using imap."""
+    """Unpacks arguments for self_play_worker when using imap. Returns (game_id, game_data, game_info) for submission-order stats."""
     (
         game_id,
         network_state_dict,
@@ -349,7 +349,7 @@ def worker_wrapper(args):
         inference_timeout_s,
     ) = args
     # Call the original worker function with unpacked args
-    return self_play_worker(
+    game_data, game_info = self_play_worker(
         game_id,
         network_state_dict,
         cfg,
@@ -358,6 +358,7 @@ def worker_wrapper(args):
         inference_reply_queue=inference_reply_queue,
         inference_timeout_s=inference_timeout_s,
     )
+    return (game_id, game_data, game_info)
 
 # Persistent continual self-play actor
 def continual_self_play_worker(
@@ -2574,7 +2575,10 @@ def run_training_loop(cfg: DictConfig) -> None:
                 # Use imap_unordered to get results as they complete
                 results_iterator = pool.imap_unordered(worker_wrapper, worker_args_packed)
 
-                # Process results with a progress bar
+                # Process results with a progress bar (buffer by game_id for submission-order stats)
+                total_games_submitted = len(worker_args_packed)
+                results_buffer = [None] * total_games_submitted
+                next_to_display = 0
                 task_id_selfplay = progress.add_task(
                     "Self-Play",
                     total=min_steps,
@@ -2584,10 +2588,15 @@ def run_training_loop(cfg: DictConfig) -> None:
                 )
                 # Iterate over results as they become available
                 for game_result in results_iterator:
-                    include_in_replay = False
-                    data_to_add = []
                     if game_result:  # Check if worker returned valid data
-                        game_data, game_info = game_result
+                        game_id, game_data, game_info = game_result
+                        if 0 <= game_id < total_games_submitted:
+                            results_buffer[game_id] = (game_data, game_info)
+                    # Consume in-order results for submission-order draw rate
+                    prev_next = next_to_display
+                    total_advance = 0
+                    while next_to_display < total_games_submitted and results_buffer[next_to_display] is not None:
+                        game_data, game_info = results_buffer[next_to_display]
                         include_in_replay = _include_in_replay_buffer(game_info)
                         _update_mate_success(game_info)
                         data_to_add = _trim_draw_game_data(game_data, game_info) if include_in_replay else []
@@ -2597,30 +2606,25 @@ def run_training_loop(cfg: DictConfig) -> None:
                         game_moves_list.append(game_info)
                         if game_info.get('termination') == "CHECKMATE":
                             num_checkmates += 1
-                        # Update game outcome counters
                         try:
                             _update_outcome_stats(game_info)
                         except Exception:
-                            # If unexpected structure, skip counting for this game
                             pass
-                    # Update progress with steps collected (trimmed count only)
-                    steps_in_game = len(data_to_add)
-                    draw_rate = (num_draws / games_completed_this_iter * 100.0) if games_completed_this_iter > 0 else 0.0
-                    progress.update(
-                        task_id_selfplay,
-                        advance=steps_in_game,
-                        games=games_completed_this_iter,
-                        steps=len(games_data_collected),
-                        draw_rate=draw_rate,
-                        first_wins=num_first_wins,
-                        second_wins=num_second_wins,
-                        refresh=True,
-                    )
-                    
-                    # Check if we've collected enough steps
-                    # Note: We continue processing remaining results in the pool, but we've reached our threshold
+                        total_advance += len(data_to_add)
+                        next_to_display += 1
+                    if next_to_display > prev_next:
+                        draw_rate = (num_draws / games_completed_this_iter * 100.0) if games_completed_this_iter > 0 else 0.0
+                        progress.update(
+                            task_id_selfplay,
+                            advance=total_advance,
+                            games=games_completed_this_iter,
+                            steps=len(games_data_collected),
+                            draw_rate=draw_rate,
+                            first_wins=num_first_wins,
+                            second_wins=num_second_wins,
+                            refresh=True,
+                        )
                     if len(games_data_collected) >= min_steps:
-                        # Mark that we've reached threshold (remaining games will still complete)
                         pass
                 progress.update(task_id_selfplay, visible=False)
                 # Explicitly close and join the pool after processing results
