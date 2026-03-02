@@ -13,6 +13,9 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, Ti
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import multiprocessing # Keep for potential parallel execution
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 import queue
 from torch import nn
 import pickle
@@ -371,7 +374,8 @@ def continual_self_play_worker(
     inference_reply_queue=None,
     inference_timeout_s: float = 30.0,
     worker_id: int = -1,
-    ):
+    games_per_worker: int = 1,
+):
     if isinstance(cfg, dict) and not OmegaConf.is_config(cfg):
         cfg = OmegaConf.create(cfg)
     initialize_factories_from_cfg(cfg)
@@ -401,6 +405,7 @@ def continual_self_play_worker(
                 pass
         network.to(device).eval()
     last_mtime = os.path.getmtime(checkpoint_path) if os.path.exists(checkpoint_path) else 0.0
+    reload_lock = threading.Lock() if (games_per_worker > 1 and network is not None) else None
 
     def _should_stop():
         """Safely check stop_event; treat connection errors (manager shutdown) as stop."""
@@ -409,43 +414,56 @@ def continual_self_play_worker(
         except (BrokenPipeError, ConnectionResetError, EOFError, OSError):
             return True
 
-    while not _should_stop():
-        # Hot-reload if newer checkpoint exists
-        try:
-            if os.path.exists(checkpoint_path):
-                mtime = os.path.getmtime(checkpoint_path)
-                if mtime > last_mtime and network is not None:
-                    try:
-                        ckpt = torch.load(checkpoint_path, map_location=device)
-                        network.load_state_dict(ckpt['model_state_dict'])
-                        network.to(device).eval()
-                        last_mtime = mtime
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    def _run_game_loop():
+        nonlocal last_mtime
+        while not _should_stop():
+            # Hot-reload if newer checkpoint exists
+            try:
+                if os.path.exists(checkpoint_path):
+                    mtime = os.path.getmtime(checkpoint_path)
+                    if mtime > last_mtime and network is not None:
+                        lock_ctx = reload_lock if reload_lock is not None else nullcontext()
+                        with lock_ctx:
+                            if mtime > last_mtime and network is not None:
+                                try:
+                                    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+                                    network.load_state_dict(ckpt['model_state_dict'])
+                                    network.to(device).eval()
+                                    last_mtime = mtime
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
 
-        # Play one game and enqueue (include device info so we know which GPU finished)
-        try:
-            game_data, game_info = run_self_play_game(
-                cfg,
-                network if cfg.mcts.iterations > 0 else None,
-                env=None,
-                progress=None,
-                device=device,
-                inference_client=inference_client,
-            )
-            if game_data:
-                # Include device string in game_info so we can track which GPU finished
-                game_info_with_device = game_info.copy()
-                game_info_with_device['device'] = device_str
-                out_queue.put((game_data, game_info_with_device))
-        except Exception:
-            # Continue on errors to keep the actor alive
-            pass
-        # Modest cleanup to avoid memory growth
-        _empty_device_cache(device)
-        gc.collect()
+            # Play one game and enqueue (include device info so we know which GPU finished)
+            try:
+                game_data, game_info = run_self_play_game(
+                    cfg,
+                    network if cfg.mcts.iterations > 0 else None,
+                    env=None,
+                    progress=None,
+                    device=device,
+                    inference_client=inference_client,
+                )
+                if game_data:
+                    game_info_with_device = game_info.copy()
+                    game_info_with_device['device'] = device_str
+                    out_queue.put((game_data, game_info_with_device))
+            except Exception:
+                pass
+            _empty_device_cache(device)
+            gc.collect()
+
+    if games_per_worker <= 1:
+        _run_game_loop()
+    else:
+        with ThreadPoolExecutor(max_workers=games_per_worker) as executor:
+            futures = [executor.submit(_run_game_loop) for _ in range(games_per_worker)]
+            for f in futures:
+                try:
+                    f.result()
+                except Exception:
+                    pass
 
 # --- Replay Buffer (Keep as is) ---
 class ReplayBuffer:
@@ -1544,8 +1562,10 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
     if queue_maxsize in (None, "", "null"):
         queue_maxsize = len(reply_queues_by_worker) if reply_queues_by_worker else 128
     queue_maxsize = int(queue_maxsize)
-    max_stacked_requests = len(reply_queues_by_worker) if reply_queues_by_worker else cfg.mcts.batch_size
-    max_stacked_requests = int(max_stacked_requests)
+    training_batch_size = int(cfg.training.get("batch_size", 64))
+    num_workers = len(reply_queues_by_worker) if reply_queues_by_worker else 1
+    games_per_worker = max(1, int(cfg.training.get("games_per_worker", 1)))
+    max_stacked_requests = min(training_batch_size, num_workers * games_per_worker)
     min_stacked_requests = cfg.training.get("inference_server_min_stacked_requests")
     if min_stacked_requests in (None, "", "null"):
         min_stacked_requests = max(1, max_stacked_requests // 2)
@@ -2040,11 +2060,17 @@ def run_training_loop(cfg: DictConfig) -> None:
             reply_queues_by_worker,
         )
         if inference_process is not None:
-            max_stacked = len(reply_queues_by_worker) if reply_queues_by_worker else cfg.mcts.batch_size
+            training_batch_size = int(cfg.training.get("batch_size", 64))
+            nw = len(reply_queues_by_worker) if reply_queues_by_worker else 1
+            gpw = max(1, int(cfg.training.get("games_per_worker", 1)))
+            max_stacked = min(training_batch_size, nw * gpw)
+            eff_wait = int(cfg.training.get("inference_server_max_wait_ms", 2))
+            gpw = max(1, int(cfg.training.get("games_per_worker", 1)))
+            if gpw > 1 and eff_wait < 10:
+                eff_wait = max(eff_wait, min(25, gpw * 5))
             progress.print(
                 f"Inference server enabled on {inference_device_str} "
-                f"(max_stacked={max_stacked}, "
-                f"max_wait_ms={cfg.training.get('inference_server_max_wait_ms', 2)})"
+                f"(max_stacked={max_stacked}, max_wait_ms={eff_wait})"
             )
 
     # --- Launch continual self-play actors (after checkpoint loading) ---
@@ -2078,6 +2104,7 @@ def run_training_loop(cfg: DictConfig) -> None:
         
         checkpoint_path_for_actors = os.path.join(cfg.training.checkpoint_dir, "model.pth")
         cfg_for_workers = OmegaConf.to_container(cfg, resolve=True)
+        games_per_worker = max(1, int(cfg.training.get("games_per_worker", 1)))
         for worker_idx, dev in enumerate(device_pool):
             inference_reply_queue = inference_reply_queues[worker_idx] if (inference_reply_queues is not None and worker_idx < len(inference_reply_queues)) else None
             p = multiprocessing.get_context("spawn").Process(
@@ -2092,6 +2119,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     inference_reply_queue,
                     30.0,
                     worker_idx,
+                    games_per_worker,
                 ),
             )
             p.daemon = True
@@ -2118,7 +2146,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                 progress.print(
                     f"Buffer too small ({len(replay_buffer)} < {cfg.training.batch_size}), using all {accelerator_slots} accelerator(s) for self-play"
                 )
-        progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}")
+        games_info = f" ({games_per_worker} games/worker)" if games_per_worker > 1 else ""
+        progress.print(f"Continual self-play: launched {len(actors)} actor(s): {device_pool}{games_info}")
 
     # Track iteration durations for time prediction
     iteration_durations = []  # List to store duration of each completed iteration

@@ -78,7 +78,8 @@ def inference_server_worker(
     max_wait_s = max(0.001, max_wait_ms / 1000.0)
     batch_count = 0
     total_inferences = 0
-    log_interval = 100
+    total_inferences_at_last_log = 0
+    log_interval = 1000
     log_interval_start = time.monotonic() if INFERENCE_SERVER_LOGGING_ENABLED else 0.0
 
     if INFERENCE_SERVER_LOGGING_ENABLED:
@@ -188,11 +189,14 @@ def inference_server_worker(
             unique_workers = len(set(worker_ids)) if worker_ids else "?"
             if batch_count % log_interval == 0:
                 elapsed_s = time.monotonic() - log_interval_start
+                obs_in_interval = total_inferences - total_inferences_at_last_log
+                obs_per_s = obs_in_interval / elapsed_s if elapsed_s > 0 else 0
                 batches_per_s = log_interval / elapsed_s if elapsed_s > 0 else 0
+                total_inferences_at_last_log = total_inferences
                 log_interval_start = time.monotonic()
                 logger.info(
                     f"InferenceServer: obs={combined_obs} (from {num_requests} requests, {unique_workers} workers), "
-                    f"avg_obs={avg_obs:.1f} | last {log_interval} batches in {elapsed_s:.2f}s (~{batches_per_s:.1f} batch/s)"
+                    f"avg_batch={avg_obs:.1f} | last {log_interval} batches in {elapsed_s:.2f}s (~{batches_per_s:.1f} batch/s, ~{obs_per_s:.1f} obs/s)"
                 )
 
         if device.type == "cuda":
@@ -339,11 +343,15 @@ def inference_server_worker_tpu(
 
 
 class InferenceClient:
+    """Client for sending inference requests to the server. Thread-safe for concurrent predict() calls."""
+
     def __init__(self, request_queue, reply_queue, timeout_s: float = 30.0, worker_id: Optional[int] = None):
         self.request_queue = request_queue
         self.reply_queue = reply_queue
         self.timeout_s = timeout_s
         self.worker_id = worker_id
+        self._lock = threading.Lock()
+        self._reply_stash = {}  # request_id -> (pol_np, val_np) for out-of-order replies
 
     def predict(self, obs_batch: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         obs_np = obs_batch.detach().cpu().numpy()
@@ -356,9 +364,16 @@ class InferenceClient:
             req["worker_id"] = self.worker_id
         self.request_queue.put(req)
         while True:
+            with self._lock:
+                if request_id in self._reply_stash:
+                    pol_np, val_np = self._reply_stash.pop(request_id)
+                    policy_logits = torch.from_numpy(pol_np)
+                    value_preds = torch.from_numpy(val_np)
+                    return policy_logits, value_preds
             resp_id, pol_np, val_np = self.reply_queue.get(timeout=self.timeout_s)
-            if resp_id == request_id:
-                break
-        policy_logits = torch.from_numpy(pol_np)
-        value_preds = torch.from_numpy(val_np)
-        return policy_logits, value_preds
+            with self._lock:
+                if resp_id == request_id:
+                    policy_logits = torch.from_numpy(pol_np)
+                    value_preds = torch.from_numpy(val_np)
+                    return policy_logits, value_preds
+                self._reply_stash[resp_id] = (pol_np, val_np)

@@ -134,7 +134,10 @@ def _start_inference_server(
 
     use_tpu = str(device_str).lower() in ("xla", "tpu")
     batch_size = cfg.mcts.batch_size
-    max_stacked = num_workers if num_workers else batch_size
+    training_batch_size = int(cfg.training.get("batch_size", 64))
+    nw = num_workers if num_workers else 1
+    gpw = max(1, int(cfg.training.get("games_per_worker", 1)))
+    max_stacked = min(training_batch_size, nw * gpw)
     min_stacked = cfg.training.get("inference_server_min_stacked_requests")
     if min_stacked in (None, "", "null"):
         min_stacked = max(1, max_stacked // 2)

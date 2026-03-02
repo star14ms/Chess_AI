@@ -447,7 +447,7 @@ def get_action_id_for_piece_abs(
 
 def create_piece_instance_map(
     board: chess.Board,
-    instance_map: Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]] = {}
+    instance_map: Optional[Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]] = None,
 ) -> Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]:
     """
     Populates a given map from square to (color, piece_type, instance_index)
@@ -456,12 +456,16 @@ def create_piece_instance_map(
 
     Args:
         board: The current chess.Board object.
-        instance_map: The dictionary to populate. It will be cleared first.
+        instance_map: Optional dict to populate (cleared first). If None, a new dict is created.
+            Use None (default) for thread safety when games_per_worker > 1.
 
     Returns:
         The populated instance_map dictionary.
     """
-    instance_map.clear()
+    if instance_map is None:
+        instance_map = {}
+    else:
+        instance_map.clear()
     counters: Dict[Tuple[chess.Color, chess.PieceType], int] = {}
     for square in chess.SQUARES:
         piece = board.piece_at(square)
@@ -938,7 +942,7 @@ def get_action_id_for_piece_abs_4672(
 
 def create_piece_instance_map_4672(
     board: chess.Board,
-    instance_map: Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]] = {}
+    instance_map: Optional[Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]] = None,
 ) -> Dict[chess.Square, Tuple[chess.Color, chess.PieceType, int]]:
     """
     Creates a map from square to (color, piece_type, instance_index) for the 4672-action space.
@@ -947,12 +951,16 @@ def create_piece_instance_map_4672(
     
     Args:
         board: The current chess.Board object.
-        instance_map: The dictionary to populate. It will be cleared first.
+        instance_map: Optional dict to populate (cleared first). If None, a new dict is created.
+            Use None (default) for thread safety when games_per_worker > 1.
         
     Returns:
         The populated instance_map dictionary.
     """
-    instance_map.clear()
+    if instance_map is None:
+        instance_map = {}
+    else:
+        instance_map.clear()
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece:

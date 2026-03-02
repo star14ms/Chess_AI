@@ -65,9 +65,10 @@ class TrainingConfig:
     batch_size: int = 128
     use_multiprocessing: bool = True  # Flag to enable/disable multiprocessing for self-play
     self_play_workers: int = 0  # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
+    games_per_worker: int = 1  # Number of concurrent games per worker. >1 increases parallelism when using inference server.
     use_inference_server: bool = False  # Use a dedicated process/thread for batched GPU/TPU inference
     inference_server_device: Optional[str] = None  # Device for inference server (e.g., "cuda:0", "xla" for TPU)
-    inference_server_min_stacked_requests: Optional[int] = None  # Min requests before processing; None = num_workers // 2
+    inference_server_min_stacked_requests: Optional[int] = None  # Min requests before processing; None = max_stacked // 2
     inference_server_max_wait_ms: int = 2  # Max wait before dispatching a batch
     inference_queue_maxsize: Optional[int] = None  # Max queued inference requests; None = num_workers
     enable_thermal_pause: bool = False  # Allow brief thermal throttling pauses during self-play
