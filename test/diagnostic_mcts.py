@@ -20,6 +20,7 @@ from typing import Optional, Tuple, List, Dict, Any
 from collections import defaultdict
 import random
 import time
+import numpy as np
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 
 # Add project root to path
@@ -226,7 +227,7 @@ def _diagnostic_worker(
                 break
         except Exception:
             continue
-        index, fen_position = item
+        index, fen_position, meta, collect_hist = (item[0], item[1], item[2] if len(item) > 2 else {}, item[3] if len(item) > 3 else False)
         result = test_single_position(
             cfg=cfg,
             fen_position=fen_position,
@@ -235,6 +236,8 @@ def _diagnostic_worker(
             network=network,
             inference_client=inference_client,
             max_game_moves=max_game_moves,
+            collect_game_history=collect_hist,
+            position_metadata=meta,
         )
         results_queue.put((index, result))
         positions_processed += 1
@@ -248,6 +251,20 @@ def _get_best_action_by_visits(root_node: MCTSNode):
     return top[0][0] if top else None
 
 
+def _extract_solution_moves(entry: dict | None) -> list[str] | None:
+    """Extract solution moves from a dataset entry. Returns list of move strings (UCI or SAN), or None."""
+    if not entry or not isinstance(entry, dict):
+        return None
+    moves_field = entry.get("Moves") or entry.get("moves")
+    if not moves_field:
+        return None
+    if isinstance(moves_field, str):
+        return [m.strip() for m in moves_field.split() if m.strip()]
+    if isinstance(moves_field, list):
+        return [str(m).strip() for m in moves_field if str(m).strip()]
+    return None
+
+
 def test_single_position(
     cfg: OmegaConf,
     fen_position: str,
@@ -257,6 +274,8 @@ def test_single_position(
     inference_client: Optional[Any] = None,
     verbose: bool = False,
     max_game_moves: int = 200,
+    collect_game_history: bool = False,
+    position_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """Play from the given position until game termination (self-play with MCTS)."""
     
@@ -305,13 +324,70 @@ def test_single_position(
         
         move_count = 0
         first_move_was_mating = False
-        
+        moves_san_list: List[str] = []
+        policy_details_list: List[Dict[str, Any]] = []
+        init_fen = fen_position
+        meta = position_metadata or {}
+        solution_moves = _extract_solution_moves(meta.get("full_entry"))
+        dirichlet_alpha = getattr(cfg.mcts, "dirichlet_alpha", 0.3)
+        dirichlet_epsilon = 0.0  # Diagnostic uses deterministic play
+
         while not board.is_game_over(claim_draw=True) and move_count < max_game_moves:
             root_node = MCTSNode(board.copy(stack=False))
             mcts_player.search(root_node, iterations=mcts_iterations, batch_size=cfg.mcts.batch_size, progress=None)
 
             # Shared logic with training: winning terminals first, else max visits (deterministic)
             action_id = mcts_player.get_best_action_deterministic(root_node)
+
+            if collect_game_history:
+                raw_mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=1.0)
+                converted_policy = mcts_player.get_policy_distribution(root_node, temperature=0.0)
+                legal_actions = list(root_node.board.legal_actions)
+                if action_id is None:
+                    action_id = legal_actions[0] if legal_actions else None
+                if action_id not in legal_actions and legal_actions:
+                    action_id = legal_actions[0]
+                # Ground truth: solution move at this index (if we're following solution)
+                ground_truth_action = None
+                if solution_moves and move_count < len(solution_moves):
+                    sol_str = solution_moves[move_count]
+                    try:
+                        mv = board.parse_san(sol_str) if sol_str else None
+                        if mv and mv in board.legal_moves:
+                            ground_truth_action = board.move_to_action_id(mv)
+                    except Exception:
+                        try:
+                            mv = chess.Move.from_uci(sol_str)
+                            if mv in board.legal_moves:
+                                ground_truth_action = board.move_to_action_id(mv)
+                        except Exception:
+                            pass
+                sorted_indices = np.argsort(converted_policy)[::-1]
+                top_actions = [
+                    int(idx + 1) for idx in sorted_indices
+                    if converted_policy[idx] > 1e-9
+                ][:3]
+                sig_actions = {int(action_id), ground_truth_action or -1}
+                sig_actions.update(top_actions[:3])
+                sig_actions.discard(-1)
+                raw_probs = {aid: float(raw_mcts_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(raw_mcts_policy)}
+                conv_probs = {aid: float(converted_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(converted_policy)}
+                sel_probs = {aid: (1.0 if aid == action_id else 0.0) for aid in sig_actions}
+                policy_details_list.append({
+                    "temperature": 0.0,
+                    "move_temp": 0.0,
+                    "dirichlet_alpha": dirichlet_alpha,
+                    "dirichlet_epsilon": dirichlet_epsilon,
+                    "selected_action": int(action_id),
+                    "top1_action": top_actions[0] if len(top_actions) >= 1 else None,
+                    "top2_action": top_actions[1] if len(top_actions) >= 2 else None,
+                    "top3_action": top_actions[2] if len(top_actions) >= 3 else None,
+                    "ground_truth_action": ground_truth_action,
+                    "raw_probs": raw_probs,
+                    "converted_probs": conv_probs,
+                    "selection_probs": sel_probs,
+                })
+
             del root_node  # Free MCTS tree immediately (can be large)
             if action_id is None:
                 legal = list(board.legal_actions)
@@ -329,6 +405,8 @@ def test_single_position(
                 first_move_was_mating = True
             
             move = board.action_id_to_move(action_id)
+            if collect_game_history:
+                moves_san_list.append(board.san(move))
             board.push(move)
             move_count += 1
             # Periodic GC to free MCTS tree (circular refs delay collection)
@@ -348,6 +426,22 @@ def test_single_position(
             result['side_to_move_won'] = False
         
         result['success'] = first_move_was_mating if result['has_mate_in_one'] else result['side_to_move_won']
+
+        if collect_game_history:
+            winner = result.get('winner')
+            result['game_info'] = {
+                'winner': chess.WHITE if winner == 'white' else (chess.BLACK if winner == 'black' else None),
+                'termination': result.get('termination', 'unknown'),
+                'move_count': result['move_count'],
+                'moves_san': ' '.join(moves_san_list),
+                'initial_fen': init_fen,
+                'initial_position_quality': meta.get('quality'),
+                'initial_dataset_source': meta.get('source'),
+                'initial_dataset_label': meta.get('label'),
+                'position_themes': meta.get('themes'),
+                'actual_reward': 1.0 if result.get('side_to_move_won') else (0.0 if result.get('termination') == 'max_moves' else 0.5),
+                'policy_details': policy_details_list,
+            }
         
     except Exception as e:
         result['error'] = str(e)
@@ -368,6 +462,7 @@ def run_batch_diagnostic_test(
     num_workers: int = 4,
     inference_device: Optional[str] = None,
     positions_file: Optional[str] = None,
+    game_history_dir: Optional[str] = None,
 ):
     """Run diagnostic test on all positions in batch."""
     
@@ -397,14 +492,23 @@ def run_batch_diagnostic_test(
         if n_sample <= 0:
             raise ValueError(f"No positions in file: {positions_file}")
         seen = set()
-        mate_positions_meta = {}  # {fen: {"Themes": themes}} for summary
+        mate_positions_meta = {}  # {fen: {themes, quality, full_entry, source, label}}
+        resolved_path = str(path.resolve())
+        dataset_label = os.path.splitext(os.path.basename(resolved_path))[0] or "data"
         max_attempts = n_sample * 4
         attempts = 0
         while len(seen) < n_sample and attempts < max_attempts:
-            fen, _, themes, _ = select_random_fen_from_file(positions_file, offset_cache=offset_cache)
+            fen, quality, themes, full_entry = select_random_fen_from_file(positions_file, offset_cache=offset_cache)
             if fen:
                 seen.add(fen)
-                mate_positions_meta[fen] = {"Themes": themes or []}
+                mate_positions_meta[fen] = {
+                    "Themes": themes or [],
+                    "themes": themes or [],
+                    "quality": quality,
+                    "full_entry": full_entry,
+                    "source": resolved_path,
+                    "label": dataset_label,
+                }
             attempts += 1
         positions_to_test = list(seen)[:n_sample]
         random.shuffle(positions_to_test)
@@ -420,6 +524,11 @@ def run_batch_diagnostic_test(
             random.shuffle(positions_to_test)
         total_in_file = len(mate_positions)
     total_positions = len(positions_to_test)
+
+    collect_game_history = bool(game_history_dir)
+    if collect_game_history:
+        os.makedirs(game_history_dir, exist_ok=True)
+        print(f"Game history will be saved to: {os.path.abspath(game_history_dir)}")
 
     print("=" * 80)
     print("BATCH DIAGNOSTIC TEST: Mating Positions (Play to Termination)")
@@ -460,7 +569,8 @@ def run_batch_diagnostic_test(
         positions_queue = multiprocessing.get_context("spawn").Queue()
         results_queue = multiprocessing.get_context("spawn").Queue()
         for i, fen in enumerate(positions_to_test):
-            positions_queue.put((i, fen))
+            meta = mate_positions.get(fen, {}) if isinstance(mate_positions.get(fen), dict) else {}
+            positions_queue.put((i, fen, meta, collect_game_history))
         for _ in range(num_workers):
             positions_queue.put(None)
 
@@ -553,6 +663,7 @@ def run_batch_diagnostic_test(
                 if verbose:
                     print(f"\n[{idx}/{total_positions}] Testing position...")
                     print(f"FEN: {fen_position}")
+                meta = mate_positions.get(fen_position, {}) if isinstance(mate_positions.get(fen_position), dict) else {}
                 result = test_single_position(
                     cfg=cfg,
                     fen_position=fen_position,
@@ -561,6 +672,8 @@ def run_batch_diagnostic_test(
                     network=network,
                     verbose=verbose,
                     max_game_moves=max_game_moves,
+                    collect_game_history=collect_game_history,
+                    position_metadata=meta,
                 )
                 results.append(result)
                 if result["error"] is None:
@@ -665,6 +778,22 @@ def run_batch_diagnostic_test(
             print(f"   {error_msg}: {count}")
     
     print("=" * 80)
+
+    if game_history_dir and no_error:
+        game_moves_list = [r["game_info"] for r in no_error if r.get("game_info")]
+        if game_moves_list:
+            mcts_dir = os.path.join(project_root, "MCTS")
+            if mcts_dir not in sys.path:
+                sys.path.insert(0, mcts_dir)
+            from MCTS.train import _save_game_history
+            _save_game_history(
+                game_moves_list,
+                game_history_dir,
+                iteration=0,
+                avg_policy_loss=0.0,
+                avg_value_loss=0.0,
+            )
+            print(f"\nGame history saved to {game_history_dir}")
     
     return results
 
@@ -701,6 +830,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-inference-server", action="store_true", help="Disable inference server")
     parser.add_argument("--workers", type=int, default=None, help=f"Parallel workers when using inference server (default: {default_workers} from config)")
     parser.add_argument("--inference-device", type=str, default=None, help="Device for inference server (default: from train_mcts.yaml)")
+    parser.add_argument("--game-history-dir", type=str, default="./outputs/mcts_test/", help="Directory to save game history files (same format as training)")
     
     args = parser.parse_args()
     use_inference_server = not args.no_inference_server and (args.use_inference_server or default_use_inference)
@@ -744,5 +874,6 @@ if __name__ == "__main__":
         num_workers=num_workers,
         inference_device=inference_device,
         positions_file=mate_positions_file,
+        game_history_dir=args.game_history_dir,
     )
 
