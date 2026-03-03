@@ -96,6 +96,7 @@ class TrainingConfig:
         default_factory=dict
     )  # Dict: termination -> int. 0 = exclude from buffer; n>0 = store only last n moves; absent = full game
     draw_sample_ratio: Optional[float] = None  # Target fraction of batch from draws (0.0–1.0). None = uniform sampling. E.g. 0.4 = 40% draws per batch.
+    follow_dataset_trajectory: bool = False  # If True and a dataset solution exists, select the dataset move deterministically instead of sampling from MCTS policy. Policy target remains MCTS.
 
 
 @dataclass

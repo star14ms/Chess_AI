@@ -974,10 +974,27 @@ def run_self_play_game(
                 # If tree stats calculation fails, continue without it
                 pass
             
-            # AlphaZero-style: sample only from legal actions
+            # AlphaZero-style: sample only from legal actions (or follow dataset trajectory if enabled)
             legal_actions = get_legal_actions(env.board)
             selection_probs = {}  # action_id -> actual prob used for np.random.choice (renormalized over legal)
-            if legal_actions:
+            is_following_solution = (
+                solution_action_ids
+                and move_list_action_ids == solution_action_ids[: len(move_list_action_ids)]
+            )
+            ground_truth_action = (
+                solution_action_ids[move_count]
+                if is_following_solution and move_count < len(solution_action_ids)
+                else None
+            )
+            follow_trajectory = (
+                cfg.training.get("follow_dataset_trajectory", False)
+                and ground_truth_action is not None
+                and ground_truth_action in legal_actions
+            )
+            if follow_trajectory:
+                action_to_take = ground_truth_action
+                selection_probs[ground_truth_action] = 1.0
+            elif legal_actions:
                 legal_indices = [a - 1 for a in legal_actions if 0 <= (a - 1) < len(mcts_policy)]
                 if legal_indices:
                     legal_probs = np.array([mcts_policy[i] for i in legal_indices], dtype=np.float64)
@@ -1003,15 +1020,6 @@ def run_self_play_game(
             mcts_policy_copy = mcts_policy.copy()
             
             # Build policy details for game_history file (before cleanup)
-            is_following_solution = (
-                solution_action_ids
-                and move_list_action_ids == solution_action_ids[: len(move_list_action_ids)]
-            )
-            ground_truth_action = (
-                solution_action_ids[move_count]
-                if is_following_solution and move_count < len(solution_action_ids)
-                else None
-            )
             # Top actions by converted policy (descending)
             sorted_indices = np.argsort(mcts_policy)[::-1]
             top_actions = [
@@ -1054,9 +1062,6 @@ def run_self_play_game(
             legal_actions = get_legal_actions(env.board)
             for action_id in legal_actions:
                 mcts_policy[action_id - 1] = 1
-            action_to_take = np.random.choice(legal_actions)
-            root_value = None  # No MCTS, so no value available
-            # Policy details for no-MCTS case (uniform policy)
             is_following_solution = (
                 solution_action_ids
                 and move_list_action_ids == solution_action_ids[: len(move_list_action_ids)]
@@ -1066,6 +1071,14 @@ def run_self_play_game(
                 if is_following_solution and move_count < len(solution_action_ids)
                 else None
             )
+            follow_trajectory = (
+                cfg.training.get("follow_dataset_trajectory", False)
+                and ground_truth_action is not None
+                and ground_truth_action in legal_actions
+            )
+            action_to_take = ground_truth_action if follow_trajectory else np.random.choice(legal_actions)
+            root_value = None  # No MCTS, so no value available
+            # Policy details for no-MCTS case (uniform policy)
             top_actions = list(legal_actions)[:3] if legal_actions else []
             sig_actions = {int(action_to_take), ground_truth_action or -1}
             sig_actions.update(top_actions[:3])
@@ -1073,7 +1086,11 @@ def run_self_play_game(
             n_legal = len(legal_actions) or 1
             uniform_sel = 1.0 / n_legal
             raw_probs = {aid: float(mcts_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(mcts_policy)}
-            sel_probs = {aid: uniform_sel for aid in sig_actions}
+            sel_probs = (
+                {aid: (1.0 if aid == ground_truth_action else 0.0) for aid in sig_actions}
+                if follow_trajectory
+                else {aid: uniform_sel for aid in sig_actions}
+            )
             policy_details_list.append({
                 "temperature": temperature,
                 "move_temp": temperature,
