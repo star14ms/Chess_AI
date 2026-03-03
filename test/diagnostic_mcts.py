@@ -336,17 +336,34 @@ def test_single_position(
             root_node = MCTSNode(board.copy(stack=False))
             mcts_player.search(root_node, iterations=mcts_iterations, batch_size=cfg.mcts.batch_size, progress=None)
 
-            # Shared logic with training: winning terminals first, else max visits (deterministic)
-            action_id = mcts_player.get_best_action_deterministic(root_node)
+            # AlphaZero-style: filter to legal, renormalize policy, then select (matches train.py)
+            mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=0.0)
+            legal_actions = list(board.legal_actions or [])
+            selection_probs = {}
+            if legal_actions:
+                legal_indices = [a - 1 for a in legal_actions if 0 <= (a - 1) < len(mcts_policy)]
+                if legal_indices:
+                    legal_probs = np.array([mcts_policy[i] for i in legal_indices], dtype=np.float64)
+                    if legal_probs.sum() > 0:
+                        legal_probs = legal_probs / legal_probs.sum()
+                        best_idx = int(np.argmax(legal_probs))
+                        action_id = legal_indices[best_idx] + 1
+                        selection_probs = {
+                            legal_indices[i] + 1: float(legal_probs[i])
+                            for i in range(len(legal_indices))
+                        }
+                    else:
+                        action_id = legal_actions[0]
+                        selection_probs = {a: 1.0 / len(legal_actions) for a in legal_actions}
+                else:
+                    action_id = legal_actions[0]
+                    selection_probs = {a: 1.0 / len(legal_actions) for a in legal_actions}
+            else:
+                action_id = None
 
             if collect_game_history:
                 raw_mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=1.0)
-                converted_policy = mcts_player.get_policy_distribution(root_node, temperature=0.0)
-                legal_actions = list(root_node.board.legal_actions)
-                if action_id is None:
-                    action_id = legal_actions[0] if legal_actions else None
-                if action_id not in legal_actions and legal_actions:
-                    action_id = legal_actions[0]
+                converted_policy = mcts_policy
                 # Ground truth: solution move at this index (if we're following solution)
                 ground_truth_action = None
                 if solution_moves and move_count < len(solution_moves):
@@ -367,44 +384,61 @@ def test_single_position(
                     int(idx + 1) for idx in sorted_indices
                     if converted_policy[idx] > 1e-9
                 ][:3]
-                sig_actions = {int(action_id), ground_truth_action or -1}
-                sig_actions.update(top_actions[:3])
-                sig_actions.discard(-1)
-                raw_probs = {aid: float(raw_mcts_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(raw_mcts_policy)}
-                conv_probs = {aid: float(converted_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(converted_policy)}
-                sel_probs = {aid: (1.0 if aid == action_id else 0.0) for aid in sig_actions}
-                policy_details_list.append({
-                    "temperature": 0.0,
-                    "move_temp": 0.0,
-                    "dirichlet_alpha": dirichlet_alpha,
-                    "dirichlet_epsilon": dirichlet_epsilon,
-                    "selected_action": int(action_id),
-                    "top1_action": top_actions[0] if len(top_actions) >= 1 else None,
-                    "top2_action": top_actions[1] if len(top_actions) >= 2 else None,
-                    "top3_action": top_actions[2] if len(top_actions) >= 3 else None,
-                    "ground_truth_action": ground_truth_action,
-                    "raw_probs": raw_probs,
-                    "converted_probs": conv_probs,
-                    "selection_probs": sel_probs,
-                })
+                if action_id is not None:
+                    sig_actions = {int(action_id), ground_truth_action or -1}
+                    sig_actions.update(top_actions[:3])
+                    sig_actions.discard(-1)
+                    raw_probs = {aid: float(raw_mcts_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(raw_mcts_policy)}
+                    conv_probs = {aid: float(converted_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(converted_policy)}
+                    sel_probs = {aid: selection_probs.get(aid, 0.0) for aid in sig_actions}
+                    policy_details_list.append({
+                        "temperature": 0.0,
+                        "move_temp": 0.0,
+                        "dirichlet_alpha": dirichlet_alpha,
+                        "dirichlet_epsilon": dirichlet_epsilon,
+                        "selected_action": int(action_id),
+                        "top1_action": top_actions[0] if len(top_actions) >= 1 else None,
+                        "top2_action": top_actions[1] if len(top_actions) >= 2 else None,
+                        "top3_action": top_actions[2] if len(top_actions) >= 3 else None,
+                        "ground_truth_action": ground_truth_action,
+                        "raw_probs": raw_probs,
+                        "converted_probs": conv_probs,
+                        "selection_probs": sel_probs,
+                    })
 
             del root_node  # Free MCTS tree immediately (can be large)
+            legal_list = list(board.legal_actions or [])
             if action_id is None:
-                legal = list(board.legal_actions)
-                if not legal:
+                if not legal_list:
                     break
-                action_id = legal[0]
-            
-            if action_id not in board.legal_actions:
-                legal = list(board.legal_actions)
-                if not legal:
+                action_id = legal_list[0]
+
+            if action_id not in legal_list:
+                if not legal_list:
                     break
-                action_id = legal[0]
-            
+                action_id = legal_list[0]
+
+            # Filter to legal: action_id_to_move can return None if action_id doesn't map (e.g. piece-instance mismatch)
+            move = board.action_id_to_move(action_id)
+            if move is None:
+                legal_list = list(board.legal_actions or [])
+                if not legal_list:
+                    break
+                action_id = legal_list[0]
+                move = board.action_id_to_move(action_id)
+                if move is None:
+                    for aid in legal_list:
+                        m = board.action_id_to_move(aid)
+                        if m is not None:
+                            move = m
+                            action_id = aid
+                            break
+                    if move is None:
+                        break
+
             if move_count == 0 and mating_action_id is not None and action_id == mating_action_id:
                 first_move_was_mating = True
-            
-            move = board.action_id_to_move(action_id)
+
             if collect_game_history:
                 moves_san_list.append(board.san(move))
             board.push(move)
