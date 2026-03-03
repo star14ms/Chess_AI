@@ -84,20 +84,35 @@ def _select_fen_from_loaded(loaded):
 
 
 def _select_fen_from_json_path(json_path: str):
-    """Select a random FEN from JSON/JSONL file via O(1) random line access (no full-file load)."""
+    """Select a random FEN from JSON/JSONL file via O(1) random line access (no full-file load).
+    Returns (fen, quality, themes, full_entry). full_entry is the parsed dict when available, else None."""
     try:
         resolved = _resolve_json_path(json_path)
         return select_random_fen_from_file(resolved, offset_cache=_LINE_OFFSET_CACHE)
     except Exception as e:
         print(f"Warning: Failed to load initial_board_fen from file {json_path}: {e}")
-        return None, None, []
+        return None, None, [], None
+
+
+def _extract_solution_moves(entry: dict | None) -> list[str] | None:
+    """Extract solution moves from a dataset entry. Returns list of move strings (UCI or SAN), or None."""
+    if not entry or not isinstance(entry, dict):
+        return None
+    moves_field = entry.get("Moves") or entry.get("moves")
+    if not moves_field:
+        return None
+    if isinstance(moves_field, str):
+        return [m.strip() for m in moves_field.split() if m.strip()]
+    if isinstance(moves_field, list):
+        return [str(m).strip() for m in moves_field if str(m).strip()]
+    return None
 
 
 def _select_fen_from_source(source):
-    """Return (fen, quality, themes). Themes are extracted from dataset entries when available."""
-    fen, quality, themes = None, None, []
+    """Return (fen, quality, themes, full_entry). full_entry is the parsed dict when from JSON, else None."""
+    fen, quality, themes, full_entry = None, None, [], None
     if isinstance(source, str) and (source.endswith(".json") or source.endswith(".jsonl")):
-        fen, quality, themes = _select_fen_from_json_path(source)
+        fen, quality, themes, full_entry = _select_fen_from_json_path(source)
     elif isinstance(source, dict):
         result = select_fen_from_dict(source)
         fen, quality = (result[0], result[1]) if len(result) >= 2 else (result[0], None)
@@ -110,7 +125,7 @@ def _select_fen_from_source(source):
         fen, quality = source, None
     if fen is not None:
         fen = repair_fen_en_passant(fen)
-    return (fen, quality, themes) if fen is not None else (None, None, [])
+    return (fen, quality, themes, full_entry) if fen is not None else (None, None, [], None)
 
 
 def _dataset_cache_key(value) -> str:
@@ -740,6 +755,7 @@ def run_self_play_game(
     initial_dataset_id = None
     initial_dataset_label = None
     initial_dataset_source = None
+    initial_solution_moves = None  # Labeled trajectory (Moves from dataset) for ground-truth comparison
     max_game_moves_override = None
     initial_board_fen_cfg = cfg.training.get('initial_board_fen', None)
     
@@ -768,9 +784,11 @@ def run_self_play_game(
                         initial_dataset_source = _resolve_json_path(source_value)
                     else:
                         initial_dataset_source = source_value
-                initial_fen, initial_position_quality, initial_themes = _select_fen_from_source(selected_entry["source"])
+                initial_fen, initial_position_quality, initial_themes, initial_entry = _select_fen_from_source(selected_entry["source"])
+                initial_solution_moves = _extract_solution_moves(initial_entry) if initial_entry else None
         else:
-            initial_fen, initial_position_quality, initial_themes = _select_fen_from_source(initial_board_fen_cfg)
+            initial_fen, initial_position_quality, initial_themes, _ = _select_fen_from_source(initial_board_fen_cfg)
+            initial_solution_moves = None
             if isinstance(initial_board_fen_cfg, str) and (
                 initial_board_fen_cfg.endswith(".json") or initial_board_fen_cfg.endswith(".jsonl")
             ):
@@ -808,9 +826,38 @@ def run_self_play_game(
 
     game_history = []
     move_list_san = []  # Track moves in SAN notation
+    move_list_action_ids = []  # Track action IDs played (for solution-following check)
+    policy_details_list = []  # Per-state policy info for game_history file
     move_count = 0
     terminated = False
     truncated = False
+
+    # Pre-compute solution action IDs from labeled trajectory (for ground-truth comparison)
+    solution_action_ids = []
+    if initial_solution_moves and initial_fen:
+        try:
+            from MCTS.training_modules.chess import create_board_from_fen
+            sol_board = create_board_from_fen(initial_fen)
+            for move_str in initial_solution_moves:
+                if sol_board.is_game_over():
+                    break
+                move = None
+                try:
+                    if len(move_str) >= 4 and move_str[1].isdigit():
+                        move = chess.Move.from_uci(move_str)
+                    else:
+                        move = sol_board.parse_san(move_str)
+                except Exception:
+                    pass
+                if move and move in sol_board.legal_moves:
+                    aid = sol_board.move_to_action_id(move)
+                    if aid is not None:
+                        solution_action_ids.append(aid)
+                    sol_board.push(move)
+                else:
+                    break
+        except Exception:
+            pass
 
     mcts_iterations = cfg.mcts.iterations
     c_puct = cfg.mcts.c_puct
@@ -912,6 +959,8 @@ def run_self_play_game(
                         move_temp = 0.0
                         break
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=move_temp)
+            # Raw MCTS policy (visit_counts/total, no temperature): used for explanatory logging
+            raw_mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=1.0)
             
             # Get value prediction from root node (MCTS value estimate, better than raw network value)
             # This is the value from the current player's perspective
@@ -927,6 +976,7 @@ def run_self_play_game(
             
             # AlphaZero-style: sample only from legal actions
             legal_actions = get_legal_actions(env.board)
+            selection_probs = {}  # action_id -> actual prob used for np.random.choice (renormalized over legal)
             if legal_actions:
                 legal_indices = [a - 1 for a in legal_actions if 0 <= (a - 1) < len(mcts_policy)]
                 if legal_indices:
@@ -934,16 +984,61 @@ def run_self_play_game(
                     if legal_probs.sum() > 0:
                         legal_probs = legal_probs / legal_probs.sum()
                         action_to_take = np.random.choice([i + 1 for i in legal_indices], p=legal_probs)
+                        for idx, aid in enumerate([i + 1 for i in legal_indices]):
+                            selection_probs[aid] = float(legal_probs[idx])
                     else:
                         action_to_take = np.random.choice(legal_actions)
+                        for aid in legal_actions:
+                            selection_probs[aid] = 1.0 / len(legal_actions)
                 else:
                     action_to_take = np.random.choice(legal_actions)
+                    for aid in legal_actions:
+                        selection_probs[aid] = 1.0 / len(legal_actions)
             else:
                 # Fallback to full policy if no legal actions (should be terminal)
                 action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1  # +1 because actions are 1-indexed
+                selection_probs[action_to_take] = float(mcts_policy[action_to_take - 1])
             
             # Save a copy of mcts_policy before cleanup (needed for game_history)
             mcts_policy_copy = mcts_policy.copy()
+            
+            # Build policy details for game_history file (before cleanup)
+            is_following_solution = (
+                solution_action_ids
+                and move_list_action_ids == solution_action_ids[: len(move_list_action_ids)]
+            )
+            ground_truth_action = (
+                solution_action_ids[move_count]
+                if is_following_solution and move_count < len(solution_action_ids)
+                else None
+            )
+            # Top actions by converted policy (descending)
+            sorted_indices = np.argsort(mcts_policy)[::-1]
+            top_actions = [
+                int(idx + 1) for idx in sorted_indices
+                if mcts_policy[idx] > 1e-9
+            ][:3]
+            # Store only probs for significant actions (not full 4672 arrays)
+            sig_actions = {int(action_to_take), ground_truth_action or -1}
+            sig_actions.update(top_actions[:3])
+            sig_actions.discard(-1)
+            raw_probs = {aid: float(raw_mcts_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(raw_mcts_policy)}
+            conv_probs = {aid: float(mcts_policy_copy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(mcts_policy_copy)}
+            sel_probs = {aid: selection_probs.get(aid, conv_probs.get(aid, 0.0)) for aid in sig_actions}
+            policy_details_list.append({
+                "temperature": temperature,
+                "move_temp": move_temp,
+                "dirichlet_alpha": dirichlet_alpha,
+                "dirichlet_epsilon": dirichlet_epsilon,
+                "selected_action": int(action_to_take),
+                "top1_action": top_actions[0] if len(top_actions) >= 1 else None,
+                "top2_action": top_actions[1] if len(top_actions) >= 2 else None,
+                "top3_action": top_actions[2] if len(top_actions) >= 3 else None,
+                "ground_truth_action": ground_truth_action,
+                "raw_probs": raw_probs,
+                "converted_probs": conv_probs,
+                "selection_probs": sel_probs,
+            })
             
             # Explicit cleanup: Delete MCTS tree and player to free memory immediately
             del root_node
@@ -961,6 +1056,38 @@ def run_self_play_game(
                 mcts_policy[action_id - 1] = 1
             action_to_take = np.random.choice(legal_actions)
             root_value = None  # No MCTS, so no value available
+            # Policy details for no-MCTS case (uniform policy)
+            is_following_solution = (
+                solution_action_ids
+                and move_list_action_ids == solution_action_ids[: len(move_list_action_ids)]
+            )
+            ground_truth_action = (
+                solution_action_ids[move_count]
+                if is_following_solution and move_count < len(solution_action_ids)
+                else None
+            )
+            top_actions = list(legal_actions)[:3] if legal_actions else []
+            sig_actions = {int(action_to_take), ground_truth_action or -1}
+            sig_actions.update(top_actions[:3])
+            sig_actions.discard(-1)
+            n_legal = len(legal_actions) or 1
+            uniform_sel = 1.0 / n_legal
+            raw_probs = {aid: float(mcts_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(mcts_policy)}
+            sel_probs = {aid: uniform_sel for aid in sig_actions}
+            policy_details_list.append({
+                "temperature": temperature,
+                "move_temp": temperature,
+                "dirichlet_alpha": None,
+                "dirichlet_epsilon": None,
+                "selected_action": int(action_to_take),
+                "top1_action": top_actions[0] if len(top_actions) >= 1 else None,
+                "top2_action": top_actions[1] if len(top_actions) >= 2 else None,
+                "top3_action": top_actions[2] if len(top_actions) >= 3 else None,
+                "ground_truth_action": ground_truth_action,
+                "raw_probs": raw_probs,
+                "converted_probs": raw_probs.copy(),
+                "selection_probs": sel_probs,
+            })
 
         current_obs = obs
         # Use stack=False to avoid copying expensive move history stack
@@ -1108,7 +1235,8 @@ def run_self_play_game(
                 )
         
         move_list_san.append(san_move)
-        
+        move_list_action_ids.append(action_to_take)
+
         # Check for same-color double moves before applying the move
         current_turn_before_move = env.board.turn
         current_color_before = 'White' if current_turn_before_move == chess.WHITE else 'Black'
@@ -1354,6 +1482,7 @@ def run_self_play_game(
         'initial_dataset_id': initial_dataset_id,
         'initial_dataset_source': initial_dataset_source,
         'position_themes': initial_themes if initial_themes else None,
+        'policy_details': policy_details_list,
     }
 
     # Final cleanup before return (helps with memory when using large datasets)
@@ -1500,6 +1629,10 @@ def _save_game_history(
         f"games_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.txt",
     )
     with open(games_file, 'w') as f:
+        # Legend once at top (only if any game has policy details)
+        has_any_policy = any(g.get('policy_details') for g in game_moves_list)
+        if has_any_policy:
+            f.write("Raw=visit/total. Selection=prob used for np.random.choice (renormalized over legal). *SELECTED ✓GROUND_TRUTH\n\n")
         for i, game_info in enumerate(game_moves_list):
             # Use actual winner to determine result string
             import chess
@@ -1539,7 +1672,57 @@ def _save_game_history(
                 f.write(f"Reward: {actual_reward:.4f}\n")
             elif result_value is not None:
                 f.write(f"Reward: {result_value:.4f}\n")
-            f.write(f"{game_info['moves_san']}\n\n")
+            f.write(f"{game_info['moves_san']}\n")
+
+            # Policy probability details for each state (one block per move)
+            policy_details = game_info.get('policy_details', [])
+            moves_san_list = game_info['moves_san'].split() if game_info.get('moves_san') else []
+            # Build board at each position to convert action_id -> move (SAN)
+            from MCTS.training_modules.chess import create_board_from_fen
+            init_fen = game_info.get('initial_fen') or chess.STARTING_FEN
+            for move_idx, pd in enumerate(policy_details):
+                move_san = moves_san_list[move_idx] if move_idx < len(moves_san_list) else "?"
+                temp = pd.get("temperature")
+                d_alpha = pd.get("dirichlet_alpha")
+                d_eps = pd.get("dirichlet_epsilon")
+                if d_alpha is not None and d_eps is not None:
+                    header = f"  --- Move {move_idx + 1} ({move_san}) | temp={temp:.4f} | Dirichlet α={d_alpha} ε={d_eps} ---\n"
+                else:
+                    header = f"  --- Move {move_idx + 1} ({move_san}) | temp={temp:.4f} | Dirichlet N/A ---\n"
+                f.write(f"\n{header}")
+                raw_probs = pd.get("raw_probs") or {}
+                sel_probs = pd.get("selection_probs") or pd.get("converted_probs") or {}
+                sel = pd.get("selected_action")
+                gt = pd.get("ground_truth_action")
+                aids = {sel, pd.get("top1_action"), pd.get("top2_action"), pd.get("top3_action"), gt} - {None}
+                # Reconstruct board at this position for action_id -> move
+                try:
+                    board_at_pos = create_board_from_fen(init_fen)
+                    for m in moves_san_list[:move_idx]:
+                        board_at_pos.push(board_at_pos.parse_san(m))
+                except Exception:
+                    board_at_pos = None
+                entries = []
+                for aid in aids:
+                    raw_prob = raw_probs.get(int(aid), 0.0)
+                    sel_prob = sel_probs.get(int(aid), 0.0)
+                    move_str = "?"
+                    if board_at_pos is not None:
+                        try:
+                            mv = board_at_pos.action_id_to_move(int(aid))
+                            move_str = board_at_pos.san(mv) if mv else "?"
+                        except Exception:
+                            pass
+                    tags = ""
+                    if aid == sel:
+                        tags += "*"  # SELECTED
+                    if aid == gt:
+                        tags += "✓"  # GROUND_TRUTH(labeled)
+                    entries.append((sel_prob, f"{tags}{move_str}: {raw_prob*100:.1f}% ({sel_prob*100:.1f}%)"))
+                entries.sort(key=lambda x: -x[0])  # by selection prob descending
+                line = " | ".join(e[1] for e in entries)
+                f.write(f"  {line}\n")
+            f.write("\n")
 
 
 def _init_self_play_infra(cfg: DictConfig):

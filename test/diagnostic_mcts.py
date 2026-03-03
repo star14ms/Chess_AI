@@ -401,7 +401,7 @@ def run_batch_diagnostic_test(
         max_attempts = n_sample * 4
         attempts = 0
         while len(seen) < n_sample and attempts < max_attempts:
-            fen, _, themes = select_random_fen_from_file(positions_file, offset_cache=offset_cache)
+            fen, _, themes, _ = select_random_fen_from_file(positions_file, offset_cache=offset_cache)
             if fen:
                 seen.add(fen)
                 mate_positions_meta[fen] = {"Themes": themes or []}

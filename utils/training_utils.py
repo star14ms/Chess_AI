@@ -261,10 +261,10 @@ def select_random_fen_from_file(
     path: str | Path,
     offsets: list[int] | None = None,
     offset_cache: dict[str, list[int]] | None = None,
-) -> tuple[str | None, str | None, list]:
+) -> tuple[str | None, str | None, list, dict | None]:
     """Select a random FEN by reading a random line from JSON/JSONL file.
     Uses line-offset index for O(1) random access. Supports both .json (array) and .jsonl formats.
-    Returns (fen, quality, themes)."""
+    Returns (fen, quality, themes, entry). entry is the full parsed dict when available, else None."""
     path = Path(path)
     resolved = str(path.resolve())
     is_json_array = resolved.lower().endswith(".json") and not resolved.lower().endswith(".jsonl")
@@ -279,7 +279,7 @@ def select_random_fen_from_file(
                 offset_cache[resolved] = offsets
 
     if not offsets:
-        return None, None, []
+        return None, None, [], None
 
     idx = random.randint(0, len(offsets) - 1)
     line = read_line_at_offset(path, offsets[idx])
@@ -287,12 +287,12 @@ def select_random_fen_from_file(
     if stripped.endswith(","):
         stripped = stripped[:-1].rstrip()
     if not stripped or stripped in ("[", "]"):
-        return None, None, []
+        return None, None, [], None
 
     try:
         entry = json.loads(stripped)
     except json.JSONDecodeError:
-        return None, None, []
+        return None, None, [], None
 
     fen = None
     if isinstance(entry, str):
@@ -302,11 +302,12 @@ def select_random_fen_from_file(
         fen = str(fen).strip() if fen else None
 
     if not fen:
-        return None, None, []
+        return None, None, [], None
 
     themes = _normalize_themes(entry.get("Themes") or entry.get("themes")) if isinstance(entry, dict) else []
     quality = entry.get("quality") if isinstance(entry, dict) and isinstance(entry.get("quality"), str) else None
-    return fen, quality, themes
+    full_entry = entry if isinstance(entry, dict) else None
+    return fen, quality, themes, full_entry
 
 
 def count_dataset_entries(dataset: IterableDataset) -> int:
