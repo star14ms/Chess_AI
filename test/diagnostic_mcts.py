@@ -63,6 +63,14 @@ def _load_positions(data) -> dict:
     raise TypeError(f"Positions must be dict or list, got {type(data)}")
 
 
+def _first_mappable_action_id(board, action_ids: List[int]) -> Optional[int]:
+    """Return first action_id that board.action_id_to_move can resolve (round-trip safe)."""
+    for aid in action_ids:
+        if board.action_id_to_move(aid) is not None:
+            return aid
+    return action_ids[0] if action_ids else None  # last resort; caller has fallback
+
+
 def find_mating_move(board) -> Optional[chess.Move]:
     """Find the mating move from the current position."""
     legal_moves = list(board.legal_moves)
@@ -337,11 +345,17 @@ def test_single_position(
             mcts_player.search(root_node, iterations=mcts_iterations, batch_size=cfg.mcts.batch_size, progress=None)
 
             # AlphaZero-style: filter to legal, renormalize policy, then select (matches train.py)
+            # Use root_node.board for legal_actions: same position as board, ensures consistency with MCTS tree
             mcts_policy = mcts_player.get_policy_distribution(root_node, temperature=0.0)
-            legal_actions = list(board.legal_actions or [])
+            legal_actions = list(root_node.board.legal_actions or [])
+            legal_children = (
+                [a for a in legal_actions if a in root_node.children]
+                if root_node.children else []
+            )
+            candidates = legal_children if legal_children else legal_actions
             selection_probs = {}
-            if legal_actions:
-                legal_indices = [a - 1 for a in legal_actions if 0 <= (a - 1) < len(mcts_policy)]
+            if candidates:
+                legal_indices = [a - 1 for a in candidates if 0 <= (a - 1) < len(mcts_policy)]
                 if legal_indices:
                     legal_probs = np.array([mcts_policy[i] for i in legal_indices], dtype=np.float64)
                     if legal_probs.sum() > 0:
@@ -353,11 +367,11 @@ def test_single_position(
                             for i in range(len(legal_indices))
                         }
                     else:
-                        action_id = legal_actions[0]
-                        selection_probs = {a: 1.0 / len(legal_actions) for a in legal_actions}
+                        action_id = _first_mappable_action_id(board, candidates)
+                        selection_probs = {a: 1.0 / len(candidates) for a in candidates}
                 else:
-                    action_id = legal_actions[0]
-                    selection_probs = {a: 1.0 / len(legal_actions) for a in legal_actions}
+                    action_id = _first_mappable_action_id(board, candidates)
+                    selection_probs = {a: 1.0 / len(candidates) for a in candidates}
             else:
                 action_id = None
 
@@ -406,35 +420,40 @@ def test_single_position(
                         "selection_probs": sel_probs,
                     })
 
-            del root_node  # Free MCTS tree immediately (can be large)
-            legal_list = list(board.legal_actions or [])
+            # Resolve move using root_node.board (same position as board; ensures round-trip consistency)
+            # before freeing root_node
+            legal_list = list(root_node.board.legal_actions or [])
             if action_id is None:
                 if not legal_list:
+                    del root_node
                     break
                 action_id = legal_list[0]
 
             if action_id not in legal_list:
                 if not legal_list:
+                    del root_node
                     break
                 action_id = legal_list[0]
 
-            # Filter to legal: action_id_to_move can return None if action_id doesn't map (e.g. piece-instance mismatch)
-            move = board.action_id_to_move(action_id)
+            move = root_node.board.action_id_to_move(action_id)
             if move is None:
-                legal_list = list(board.legal_actions or [])
+                legal_list = list(root_node.board.legal_actions or [])
                 if not legal_list:
+                    del root_node
                     break
                 action_id = legal_list[0]
-                move = board.action_id_to_move(action_id)
+                move = root_node.board.action_id_to_move(action_id)
                 if move is None:
                     for aid in legal_list:
-                        m = board.action_id_to_move(aid)
+                        m = root_node.board.action_id_to_move(aid)
                         if m is not None:
                             move = m
                             action_id = aid
                             break
                     if move is None:
+                        del root_node
                         break
+            del root_node  # Free MCTS tree immediately (can be large)
 
             if move_count == 0 and mating_action_id is not None and action_id == mating_action_id:
                 first_move_was_mating = True

@@ -950,6 +950,13 @@ def run_self_play_game(
             mcts_start = time.perf_counter()
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
             mcts_elapsed = time.perf_counter() - mcts_start
+            # Restore board state before any use of env.board.
+            try:
+                env.board.set_fen(fen_string_before_mcts)
+            except Exception as e:
+                logging.warning(f"Failed to restore board before legal_actions: {e}")
+            # Use root_node.board for legal_actions: it is the pre-MCTS copy, never modified during
+            # search. env.board may be modified when mcts_env is not None (sequential expansion).
             # Use temperature=0 when any root child is a winning terminal (mate in one available)
             # Ensures we always pick the mating move regardless of initial FEN
             move_temp = temperature
@@ -975,7 +982,7 @@ def run_self_play_game(
                 pass
             
             # AlphaZero-style: sample only from legal actions (or follow dataset trajectory if enabled)
-            legal_actions = get_legal_actions(env.board)
+            legal_actions = get_legal_actions(root_node.board)
             selection_probs = {}  # action_id -> actual prob used for np.random.choice (renormalized over legal)
             is_following_solution = (
                 solution_action_ids
@@ -1190,30 +1197,7 @@ def run_self_play_game(
                 legal_moves_list = list(env.board.legal_moves)
                 move_in_legal = move in legal_moves_list
                 
-                # Log only if move is not in legal_moves (the bug we're tracking)
                 if not move_in_legal:
-                    # #region agent log
-                    try:
-                        with open('/Users/minseo/Documents/Github/_star14ms/Chess_AI/.cursor/debug.log', 'a') as f:
-                            legal_moves_sample = [env.board.san(m) for m in legal_moves_list[:10]]
-                            f.write(json.dumps({
-                                'sessionId': 'debug-session',
-                                'runId': 'run1',
-                                'hypothesisId': 'C',
-                                'location': 'train.py:598',
-                                'message': 'ILLEGAL MOVE DETECTED',
-                                'data': {
-                                    'action_id': action_to_take,
-                                    'move_uci': move.uci(),
-                                    'move_count': move_count,
-                                    'fen': env.board.fen(),
-                                    'legal_moves_sample': legal_moves_sample,
-                                    'turn': 'White' if env.board.turn == chess.WHITE else 'Black'
-                                },
-                                'timestamp': int(time.time() * 1000)
-                            }) + '\n')
-                    except: pass
-                    # #endregion
                     pass  # Move will be handled as illegal below
                 
                 if move_in_legal:
@@ -1225,7 +1209,6 @@ def run_self_play_game(
                         # board.san() can fail even for legal moves in some edge cases (python-chess limitation)
                         # Fallback to UCI notation if SAN generation fails
                         san_move = move.uci()
-                        # #endregion
                         logging.warning(
                             f"SAN generation failed for action {action_to_take}: "
                             f"move={move.uci()}, root_value={root_value}, "
@@ -1660,7 +1643,8 @@ def _save_game_history(
                 result_str = "1-0"  # White won
             else:
                 result_str = "0-1"  # Black won
-            f.write(f"Game {i+1}: {result_str} ({game_info['termination']}, {game_info['move_count']} moves)\n")
+            term = (game_info.get('termination') or 'unknown').upper()
+            f.write(f"Game {i+1}: {result_str} ({term}, {game_info['move_count']} moves)\n")
             # Write initial FEN and quality if available
             initial_fen = game_info.get('initial_fen', None)
             initial_quality = game_info.get('initial_position_quality', None)
@@ -1720,11 +1704,12 @@ def _save_game_history(
                 except Exception:
                     board_at_pos = None
                 entries = []
+                legal_at_pos = set(board_at_pos.legal_actions) if board_at_pos is not None else set()
                 for aid in aids:
                     raw_prob = raw_probs.get(int(aid), 0.0)
                     sel_prob = sel_probs.get(int(aid), 0.0)
                     move_str = "?"
-                    if board_at_pos is not None:
+                    if board_at_pos is not None and int(aid) in legal_at_pos:
                         try:
                             mv = board_at_pos.action_id_to_move(int(aid))
                             move_str = board_at_pos.san(mv) if mv else "?"
@@ -1735,8 +1720,8 @@ def _save_game_history(
                         tags += "*"  # SELECTED
                     if aid == gt:
                         tags += "✓"  # GROUND_TRUTH(labeled)
-                    entries.append((sel_prob, f"{tags}{move_str}: {raw_prob*100:.1f}% ({sel_prob*100:.1f}%)"))
-                entries.sort(key=lambda x: -x[0])  # by selection prob descending
+                    entries.append((raw_prob, f"{tags}{move_str}: {raw_prob*100:.1f}% ({sel_prob*100:.1f}%)"))
+                entries.sort(key=lambda x: -x[0])  # by raw prob descending (high->low)
                 line = " | ".join(e[1] for e in entries)
                 f.write(f"  {line}\n")
             f.write("\n")

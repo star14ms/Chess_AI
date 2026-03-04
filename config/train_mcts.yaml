@@ -139,6 +139,7 @@ training:
     #   weight: 0.0
     #   max_game_moves: 19
 
+  follow_dataset_trajectory: true # If true, select dataset move deterministically when on solution path (policy target still from MCTS)
   progress_bar: true
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
   draw_reward: 0.0 # Fixed reward value for draws. Set to null to use draw_reward_table
