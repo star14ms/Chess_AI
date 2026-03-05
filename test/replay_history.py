@@ -150,23 +150,39 @@ def parse_game_file(file_path: str) -> List[Dict]:
                 
                 i += 1
             
-            # Parse moves (everything until next game or end of file)
+            # Parse moves line (single line of SAN moves)
             moves = []
-            while i < len(lines):
+            policy_logs = []  # Per-move policy blocks for new format
+            if i < len(lines):
                 move_line = lines[i].strip()
-                
-                # Check if this is the start of a new game
-                if re.match(r'Game \d+:', move_line):
-                    break
-                
-                # Skip empty lines
-                if not move_line:
+                # Moves line: not a game header, not empty, not metadata, not a policy block
+                if move_line and not re.match(r'Game \d+:', move_line) and not move_line.startswith('---'):
+                    moves = [m for m in move_line.split() if m]
                     i += 1
-                    continue
-                
-                # Parse moves (split by whitespace)
-                moves.extend([m for m in move_line.split() if m])
-                i += 1
+                # Parse policy blocks (new format: --- Move N (san) --- ...)
+                while i < len(lines):
+                    line = lines[i]
+                    if re.match(r'Game \d+:', line.strip()):
+                        break
+                    if not line.strip():
+                        i += 1
+                        continue  # Skip blank lines, don't break (blank may separate moves from policy blocks)
+                    block_match = re.match(r'\s*--- Move (\d+) \(([^)]+)\)', line)
+                    if block_match:
+                        block_lines = [line.rstrip()]
+                        i += 1
+                        while i < len(lines):
+                            bl = lines[i]
+                            if re.match(r'Game \d+:', bl.strip()):
+                                break
+                            if bl.strip().startswith('--- Move ') or (not bl.strip() and block_lines):
+                                break
+                            if bl.strip():
+                                block_lines.append(bl.rstrip())
+                            i += 1
+                        policy_logs.append(block_lines)
+                        continue
+                    i += 1
             
             games.append({
                 'game_number': game_number,
@@ -180,6 +196,7 @@ def parse_game_file(file_path: str) -> List[Dict]:
                 'initial_fen_source': initial_fen_source,
                 'initial_fen_label': initial_fen_label,
                 'position_themes': position_themes,
+                'policy_logs': policy_logs,
             })
         else:
             i += 1
@@ -259,6 +276,52 @@ def _center_pygame_window() -> None:
         pass
 
 
+def _parse_policy_entry(part: str) -> Tuple[str, bool, bool]:
+    """Parse policy entry: *✓Qxh2+: 79.6% (51.9%) -> (text, is_selected, is_ground_truth).
+    Returns clean text with [Selected] if selected; ground truth is indicated by is_ground_truth for green color."""
+    part = part.strip()
+    is_selected = part.startswith("*")
+    if is_selected:
+        part = part.lstrip("*")
+    is_ground_truth = part.startswith("✓")
+    if is_ground_truth:
+        part = part.lstrip("✓")
+    part = part.strip()
+    if is_selected:
+        part = part.rstrip() + " [Selected]"
+    return part, is_selected, is_ground_truth
+
+
+def _wrap_text_to_width(font, text: str, max_width: int) -> List[str]:
+    """Wrap text to fit within max_width, returning list of lines."""
+    words = text.split()
+    lines = []
+    current = []
+    for word in words:
+        test = " ".join(current + [word]) if current else word
+        if font.size(test)[0] <= max_width:
+            current.append(word)
+        else:
+            if current:
+                lines.append(" ".join(current))
+            # Start new line; if single word is too long, split by chars
+            if font.size(word)[0] <= max_width:
+                current = [word]
+            else:
+                current = []
+                for c in word:
+                    test = "".join(current) + c
+                    if font.size(test)[0] <= max_width:
+                        current.append(c)
+                    else:
+                        if current:
+                            lines.append("".join(current))
+                        current = [c] if font.size(c)[0] <= max_width else []
+    if current:
+        lines.append("".join(current) if all(len(w) == 1 for w in current) else " ".join(current))
+    return lines
+
+
 def _board_surface_from_chess_svg(board: chess.Board, size_px: int, flipped: bool) -> pygame.Surface:
     """Render board with python-chess.svg, convert to pygame Surface."""
     if cairosvg is None:
@@ -297,10 +360,15 @@ def replay_game_pygame(
     owns_display = shared_screen is None
 
     try:
-        # Adjust margin_top based on whether we have metadata and controls hint
+        # Layout: header, then board. Policy log goes in a right panel beside the board.
         has_metadata = game_data.get('initial_quality') or game_data.get('reward') is not None
-        margin_top = 120 if has_metadata else 96  # Extra space for controls hint
+        policy_logs = game_data.get('policy_logs') or []
+        base_margin = 120 if has_metadata else 96
+        margin_top = base_margin
         margin = 16
+        log_panel_width = 420 if policy_logs else 0
+        total_width = board_px + margin * 2 + log_panel_width
+        total_height = board_px + margin_top + margin
 
         if shared_screen is not None:
             screen = shared_screen
@@ -309,9 +377,7 @@ def replay_game_pygame(
             pygame.init()
             pygame_initialized = True
             pygame.display.set_caption("Chess replay")
-            width = board_px + margin * 2
-            height = board_px + margin_top + margin
-            screen = pygame.display.set_mode((width, height))
+            screen = pygame.display.set_mode((total_width, total_height))
             _center_pygame_window()
         clock = pygame.time.Clock()
 
@@ -362,6 +428,39 @@ def replay_game_pygame(
             controls_text = "←/→: Navigate | B/Tab: Back to selection | Esc/Q: Quit"
             controls_surface = small_font.render(controls_text, True, (150, 150, 150))
             screen.blit(controls_surface, (margin, y_offset + 25))
+
+            # Policy log: show ahead of board (policy for next move from current position)
+            # At ply 0: show Move 1 policy; at ply N: show Move N+1 policy
+            log_panel_x = margin + board_px + margin
+            log_text_max_width = max(100, log_panel_width - 24)
+            if policy_logs and log_panel_width > 0 and ply < len(policy_logs):
+                policy_y = margin_top
+                policy_default_color = (180, 200, 220)
+                policy_ground_truth_color = (100, 220, 120)  # Green for ground truth
+                for bl in policy_logs[ply]:
+                    text = bl.strip()
+                    # Policy data line: parse *✓ symbols; ground truth = green, selected = [Selected]
+                    is_policy_line = ("%" in text and ("*" in text or "✓" in text)) or "SELECTED" in text or "GROUND" in text
+                    if is_policy_line:
+                        # Split by " | " for multi-move lines; single-move lines are one part
+                        parts = text.split(" | ") if " | " in text else [text]
+                        for part in parts:
+                            formatted, _sel, is_gt = _parse_policy_entry(part)
+                            color = policy_ground_truth_color if is_gt else policy_default_color
+                            for wrapped_line in _wrap_text_to_width(small_font, formatted, log_text_max_width):
+                                policy_surf = small_font.render(wrapped_line, True, color)
+                                screen.blit(policy_surf, (log_panel_x, policy_y))
+                                policy_y += 18
+                    else:
+                        # Legend/metadata lines (e.g. *SELECTED ✓GROUND_TRUTH)
+                        # Strip --- from header lines (e.g. "--- Move 1 (Qxf2+) | temp=... ---")
+                        text = re.sub(r'^\s*---\s*', '', text)
+                        text = re.sub(r'\s*---\s*$', '', text)
+                        text = text.replace("*SELECTED", "[Selected]").replace("✓GROUND_TRUTH", "(green)")
+                        for wrapped_line in _wrap_text_to_width(small_font, text, log_text_max_width):
+                            policy_surf = small_font.render(wrapped_line, True, policy_default_color)
+                            screen.blit(policy_surf, (log_panel_x, policy_y))
+                            policy_y += 18
 
             if cached_idx != ply:
                 cached_surf = _board_surface_from_chess_svg(
@@ -432,7 +531,7 @@ def replay_game_pygame(
             # Always draw, but force cache invalidation if idx changed
             if idx_changed:
                 cached_idx = None  # Force cache invalidation
-            
+
             draw(boards[idx], sans[idx], idx)
 
     except KeyboardInterrupt:
@@ -505,9 +604,11 @@ def select_and_replay_game(
         theme_option_width = theme_panel_width + margin - theme_option_margin * 2
         selection_width = list_panel_width + theme_panel_width + margin * 2
         selection_height = header_height + min(len(games), rows_per_page) * item_height + margin * 2
-        # Replay needs 800x904 (board_px=768 + margins)
-        replay_height = board_px + 120 + 16  # max margin_top + margin
-        replay_width = board_px + 32
+        # Replay: board + margins; extra width for policy log panel when games have policy logs
+        has_policy_logs = any(g.get('policy_logs') for g in games)
+        log_panel_width = 420 if has_policy_logs else 0
+        replay_height = board_px + 120 + 16
+        replay_width = board_px + 32 + log_panel_width
         window_width = max(selection_width, replay_width)
         window_height = max(selection_height, replay_height)
         clock = pygame.time.Clock()
@@ -760,6 +861,7 @@ def select_and_replay_game(
 
         theme_state = [True]  # [0] = dropdown open (list to allow mutation in nested scope)
         hovered_theme_index = [None]  # [0] = index of theme under mouse, or None
+        theme_scroll_offset = [0]  # [0] = scroll offset for theme list when overflow
 
         while running:
             clock.tick(fps)
@@ -797,17 +899,19 @@ def select_and_replay_game(
                                 break
                             tab_x += tab_w + 6
 
-                    # Theme panel: dropdown toggle
-                    theme_btn_rect = pygame.Rect(list_panel_width + margin, header_height + margin, theme_panel_width - margin, 28)
+                    # Theme panel: dropdown toggle (button extends to right edge of section)
+                    _theme_panel_w = max(theme_panel_width + margin, window_width - list_panel_width)
+                    theme_btn_rect = pygame.Rect(list_panel_width + margin, header_height + margin, _theme_panel_w - margin, 28)
                     if theme_btn_rect.collidepoint(mouse_x, mouse_y) and all_themes:
                         theme_state[0] = not theme_state[0]
                     # Theme checkboxes (when dropdown open)
                     elif theme_state[0] and all_themes:
                         theme_option_x = list_panel_width + theme_option_margin
+                        _theme_opt_w = _theme_panel_w - theme_option_margin * 2
                         theme_list_y = header_height + margin + 35
                         for ti, theme_name in enumerate(all_themes):
                             cb_y = theme_list_y + ti * theme_checkbox_height
-                            cb_rect = pygame.Rect(theme_option_x, cb_y, theme_option_width, theme_checkbox_height)
+                            cb_rect = pygame.Rect(theme_option_x, cb_y, _theme_opt_w, theme_checkbox_height)
                             if cb_rect.collidepoint(mouse_x, mouse_y):
                                 if theme_name in selected_themes:
                                     selected_themes.discard(theme_name)
@@ -845,10 +949,12 @@ def select_and_replay_game(
                     hovered_theme_index[0] = None
                     if theme_state[0] and all_themes:
                         theme_option_x = list_panel_width + theme_option_margin
+                        _theme_panel_w = max(theme_panel_width + margin, window_width - list_panel_width)
+                        _theme_opt_w = _theme_panel_w - theme_option_margin * 2
                         theme_list_y = header_height + margin + 35
                         for ti, theme_name in enumerate(all_themes):
                             cb_y = theme_list_y + ti * theme_checkbox_height
-                            cb_rect = pygame.Rect(theme_option_x, cb_y, theme_option_width, theme_checkbox_height)
+                            cb_rect = pygame.Rect(theme_option_x, cb_y, _theme_opt_w, theme_checkbox_height)
                             if cb_rect.collidepoint(mouse_x, mouse_y):
                                 hovered_theme_index[0] = ti
                                 break
@@ -952,13 +1058,15 @@ def select_and_replay_game(
                 screen.blit(tab_text, (text_x, text_y))
                 tab_x += tab_w + 6
 
-            # Theme filter panel (right side)
+            # Theme filter panel (right side); extend to fill window when wider (e.g. for replay log panel)
             theme_panel_x = list_panel_width
-            theme_panel_rect = pygame.Rect(theme_panel_x, 0, theme_panel_width + margin, window_height)
+            theme_panel_rect_width = max(theme_panel_width + margin, window_width - theme_panel_x)
+            theme_panel_rect = pygame.Rect(theme_panel_x, 0, theme_panel_rect_width, window_height)
             pygame.draw.rect(screen, (35, 35, 40), theme_panel_rect)
             pygame.draw.line(screen, (60, 60, 65), (theme_panel_x, 0), (theme_panel_x, window_height))
             if all_themes:
-                theme_btn_rect = pygame.Rect(theme_panel_x + margin, header_height + margin, theme_panel_width - margin, 28)
+                theme_btn_width = theme_panel_rect_width - margin  # Extend to right edge of section
+                theme_btn_rect = pygame.Rect(theme_panel_x + margin, header_height + margin, theme_btn_width, 28)
                 btn_label = "Themes ▼" if theme_state[0] else "Themes ▶"
                 if selected_themes:
                     btn_label += f" ({len(selected_themes)})"
@@ -968,13 +1076,14 @@ def select_and_replay_game(
                 screen.blit(theme_btn_text, (theme_btn_rect.x + 6, theme_btn_rect.y + 6))
                 if theme_state[0]:
                     theme_option_x = theme_panel_x + theme_option_margin
+                    theme_option_width_dyn = theme_panel_rect_width - theme_option_margin * 2
                     theme_list_y = header_height + margin + 35
                     for ti, theme_name in enumerate(all_themes):
                         row_y = theme_list_y + ti * theme_checkbox_height
                         row_center_y = row_y + theme_checkbox_height // 2
                         is_checked = theme_name in selected_themes
                         is_hovered = ti == hovered_theme_index[0]
-                        row_rect = pygame.Rect(theme_option_x, row_y, theme_option_width, theme_checkbox_height)
+                        row_rect = pygame.Rect(theme_option_x, row_y, theme_option_width_dyn, theme_checkbox_height)
                         if is_hovered:
                             pygame.draw.rect(screen, (70, 90, 120), row_rect, border_radius=4)
                         cb_size = 16

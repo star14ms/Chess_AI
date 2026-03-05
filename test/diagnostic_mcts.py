@@ -46,12 +46,12 @@ def _ci95_proportion(wins: int, total: int) -> Tuple[float, float]:
 
 
 def _format_won_with_ci(side_won_count: int, played_count: int) -> str:
-    """Format 'Won: X (pct% [lo%, hi%])' with 95% CI."""
+    """Format 'Won: X (pct%, 95% CI [lo%, hi%])' with 95% CI."""
     if played_count <= 0:
         return "Won: 0"
     pct = 100 * side_won_count / played_count
     lo, hi = _ci95_proportion(side_won_count, played_count)
-    return f"Won: {side_won_count} ({pct:.0f}% [{lo:.0f}%, {hi:.0f}%])"
+    return f"Won: {side_won_count} ({pct:.1f}%, 95% CI [{lo:.1f}%, {hi:.1f}%])"
 
 
 def _load_positions(data) -> dict:
@@ -757,11 +757,20 @@ def run_batch_diagnostic_test(
     errors = [r for r in results if r['error'] is not None]
     side_won = [r for r in no_error if r.get('side_to_move_won', False)]
     
-    # Termination breakdown
+    # Termination breakdown (by type and winner)
     termination_counts = defaultdict(int)
+    termination_by_outcome = defaultdict(lambda: {"won": 0, "lost": 0, "draw": 0})
     for r in no_error:
         t = r.get('termination') or 'unknown'
         termination_counts[t] += 1
+        won = r.get('side_to_move_won', False)
+        if t == 'checkmate':
+            if won:
+                termination_by_outcome[t]["won"] += 1
+            else:
+                termination_by_outcome[t]["lost"] += 1
+        else:
+            termination_by_outcome[t]["draw"] += 1
 
     # Per-piece-type accuracy (KQ, KR, KBB, KBN)
     PIECE_TYPES = ("K_vs_KQ", "K_vs_KR", "K_vs_KBB", "K_vs_KBN")
@@ -810,7 +819,17 @@ def run_batch_diagnostic_test(
     print(f"\nTermination breakdown:")
     for term, count in sorted(termination_counts.items(), key=lambda x: -x[1]):
         pct = 100 * count / total_positions
-        print(f"   {term}: {count} ({pct:.1f}%)")
+        ob = termination_by_outcome.get(term, {})
+        if term == "checkmate" and (ob.get("won", 0) or ob.get("lost", 0)):
+            won_n = ob.get("won", 0)
+            lost_n = ob.get("lost", 0)
+            print(f"   {term}: {count} ({pct:.1f}%)")
+            print(f"      won (delivered mate): {won_n} ({100*won_n/total_positions:.1f}%)")
+            print(f"      lost (got mated): {lost_n} ({100*lost_n/total_positions:.1f}%)")
+        elif ob.get("draw", 0):
+            print(f"   {term}: {count} ({pct:.1f}%) [draw/timeout]")
+        else:
+            print(f"   {term}: {count} ({pct:.1f}%)")
 
     # Per-piece-type accuracy
     if by_piece:
