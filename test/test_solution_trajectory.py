@@ -131,6 +131,8 @@ PUZZLES = [
     {"id": "KJ4wd", "fen": "r2q1k2/p1pbb1pn/1p5p/4N2Q/8/2N5/PPP3PP/R4rK1 w - - 0 18", "moves": ["a1f1", "f8g8", "h5f7", "g8h8", "e5g6"]},
     {"id": "8LAFw", "fen": "2Q5/pp4p1/1p2p3/2k2p2/2Pq3r/PB6/1P3PPb/3R1R1K b - - 1 29", "moves": ["h2c7", "h1g1", "h4h1", "g1h1", "d4h4", "h1g1", "h4h2"]},
     {"id": "cNzo4", "fen": "5B2/Q2R1p1k/1p2p2p/3p2N1/3PnK2/4P2P/PP4P1/7q b - - 0 26", "moves": ["h6g5", "f4e5", "h1h2", "g2g3", "h2g3"]},
+    # 3sisn - underpromotion g2g1n vs capture g2f1n
+    {"id": "3sisn", "fen": "1k4r1/p5r1/3R3p/4p2n/1NQ1P2b/P4P1K/1PP3p1/5N2 b - - 1 34", "moves": ["g2g1n", "h3h4", "g1f3", "h4h5", "g7g5", "h5h6", "g8h8"]},
 ]
 
 

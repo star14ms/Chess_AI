@@ -867,12 +867,15 @@ def get_absolute_action_id_4672(
     rank_change = chess.square_rank(end_sq) - chess.square_rank(start_sq)
     
     # Handle promotions: underpromotions use 65-73; queen promotions fall back to queen-like indices
+    # N: 65=forward, 66=left, 67=right; B: 68-70; R: 71-73
     if len(uci) == 5:
         promo_char = uci[4].lower()
         if promo_char in ['n', 'b', 'r']:
-            # Promotion moves are encoded as 65-73 using N (65-67), B (68-70), R (71-73)
-            promo_offset = {'n': 65, 'b': 68, 'r': 71}[promo_char]
-            return base_id + promo_offset - 1  # Subtract 1 because base_id is 1-based
+            promo_base = {'n': 65, 'b': 68, 'r': 71}[promo_char]
+            # Direction: 0=forward, 1=capture left (file-1), 2=capture right (file+1)
+            direction = 0 if file_change == 0 else (1 if file_change == -1 else 2)
+            move_index = promo_base + direction
+            return base_id + move_index - 1  # Subtract 1 because base_id is 1-based
         elif promo_char == 'q':
             # Fall through to queen-like mapping below (treat as normal direction/distance)
             pass
