@@ -311,12 +311,18 @@ class BaseChessBoard(chess.Board):
             return all_legal
         
         # When in check, filter to only include moves that actually escape check
+        # After push(move), turn switches to opponent. We must check if the side
+        # that JUST moved (was in check) escaped - i.e. their king is no longer attacked.
         moves_that_escape = []
         for move in all_legal:
-            # Test if this move escapes check
             test_board = self.copy()
             test_board.push(move)
-            if not test_board.is_check():
+            # The side that just moved is not test_board.turn. Check if their king
+            # is still under attack by the current side to move.
+            moved_side = not test_board.turn
+            king_sq = test_board.king(moved_side)
+            still_attacked = test_board.is_attacked_by(test_board.turn, king_sq)
+            if not still_attacked:
                 moves_that_escape.append(move)
             test_board.pop()
         
