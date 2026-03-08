@@ -1557,13 +1557,27 @@ def _save_game_history(
     iteration: int,
     avg_policy_loss: float,
     avg_value_loss: float,
+    *,
+    train_iteration: int | None = None,
+    positions_label: str | None = None,
+    mcts_iterations: int | None = None,
+    max_positions: int | None = None,
 ):
+    """Save game history to a text file.
+
+    Training mode: uses iteration, avg_policy_loss, avg_value_loss for filename.
+    Diagnostic mode: when train_iteration, positions_label, mcts_iterations, max_positions
+    are provided, uses abbreviated format: games_t{train}_p{pos}_i{iter}_n{max}.txt
+    """
     if not game_moves_list or not game_history_dir:
         return
-    games_file = os.path.join(
-        game_history_dir,
-        f"games_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.txt",
-    )
+    # Diagnostic naming: t=train_iter, p=positions, i=mcts_iter, n=max_pos
+    if train_iteration is not None and positions_label is not None and mcts_iterations is not None and max_positions is not None:
+        pos_slug = "".join(c if c.isalnum() or c in "_-" else "_" for c in str(positions_label))[:24]
+        games_filename = f"games_t{train_iteration}_p{pos_slug}_i{mcts_iterations}_n{max_positions}.txt"
+    else:
+        games_filename = f"games_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.txt"
+    games_file = os.path.join(game_history_dir, games_filename)
     with open(games_file, 'w') as f:
         # Legend once at top (only if any game has policy details)
         has_any_policy = any(g.get('policy_details') for g in game_moves_list)

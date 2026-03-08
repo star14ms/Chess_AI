@@ -541,6 +541,7 @@ def run_batch_diagnostic_test(
     # Use file-based sampling (same as train.py): read random lines via offset index, no full JSON parse
     from utils.training_utils import select_random_fen_from_file, build_line_offset_index
 
+    positions_label = "inmem"  # default when using in-memory positions
     if positions_file and os.path.exists(positions_file):
         path = Path(positions_file)
         resolved = str(path.resolve())
@@ -555,6 +556,7 @@ def run_batch_diagnostic_test(
         mate_positions_meta = {}  # {fen: {themes, quality, full_entry, source, label}}
         resolved_path = str(path.resolve())
         dataset_label = os.path.splitext(os.path.basename(resolved_path))[0] or "data"
+        positions_label = dataset_label
         max_attempts = n_sample * 4
         attempts = 0
         while len(seen) < n_sample and attempts < max_attempts:
@@ -617,6 +619,12 @@ def run_batch_diagnostic_test(
 
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    # Load checkpoint to get train iteration for file naming
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    train_iteration = int(checkpoint.get("iteration", 0))
+    del checkpoint
+    gc.collect()
 
     results = []
     start_time = time.time()
@@ -871,12 +879,17 @@ def run_batch_diagnostic_test(
             if mcts_dir not in sys.path:
                 sys.path.insert(0, mcts_dir)
             from MCTS.train import _save_game_history
+            n_pos = max_positions if max_positions is not None else total_positions
             _save_game_history(
                 game_moves_list,
                 game_history_dir,
                 iteration=0,
                 avg_policy_loss=0.0,
                 avg_value_loss=0.0,
+                train_iteration=train_iteration,
+                positions_label=positions_label,
+                mcts_iterations=mcts_iterations,
+                max_positions=n_pos,
             )
             print(f"\nGame history saved to {game_history_dir}")
     
