@@ -826,6 +826,7 @@ def run_self_play_game(
 
     game_history = []
     move_list_san = []  # Track moves in SAN notation
+    move_list_uci = []  # Track moves in UCI (unambiguous for replay)
     move_list_action_ids = []  # Track action IDs played (for solution-following check)
     policy_details_list = []  # Per-state policy info for game_history file
     move_count = 0
@@ -1185,6 +1186,7 @@ def run_self_play_game(
             ) from e
 
         move_list_san.append(san_move)
+        move_list_uci.append(move.uci())
         move_list_action_ids.append(action_to_take)
 
         # Check for same-color double moves before applying the move
@@ -1405,6 +1407,7 @@ def run_self_play_game(
     # Return game data, move list in SAN, and termination reason
     game_info = {
         'moves_san': ' '.join(move_list_san),
+        'moves_uci': ' '.join(move_list_uci),
         'termination': termination_reason,
         'move_count': move_count,
         'result': final_value,  # Sentinel value for draw detection
@@ -1628,7 +1631,9 @@ def _save_game_history(
             # Policy probability details for each state (one block per move)
             policy_details = game_info.get('policy_details', [])
             moves_san_list = game_info['moves_san'].split() if game_info.get('moves_san') else []
-            # Build board at each position to convert action_id -> move (SAN)
+            moves_uci_list = game_info['moves_uci'].split() if game_info.get('moves_uci') else []
+            # Prefer UCI for replay (unambiguous); SAN can pick wrong piece when ambiguous
+            use_uci_replay = len(moves_uci_list) >= len(moves_san_list) and len(moves_uci_list) > 0
             from MCTS.training_modules.chess import create_board_from_fen
             init_fen = game_info.get('initial_fen') or chess.STARTING_FEN
             for move_idx, pd in enumerate(policy_details):
@@ -1646,10 +1651,13 @@ def _save_game_history(
                 sel = pd.get("selected_action")
                 gt = pd.get("ground_truth_action")
                 aids = {sel, pd.get("top1_action"), pd.get("top2_action"), pd.get("top3_action"), gt} - {None}
-                # Reconstruct board at this position for action_id -> move
+                # Reconstruct board at this position for action_id -> move (use UCI when available to avoid SAN ambiguity)
                 board_at_pos = create_board_from_fen(init_fen)
-                for m in moves_san_list[:move_idx]:
-                    board_at_pos.push(board_at_pos.parse_san(m))
+                for k in range(move_idx):
+                    if use_uci_replay and k < len(moves_uci_list):
+                        board_at_pos.push(chess.Move.from_uci(moves_uci_list[k]))
+                    elif k < len(moves_san_list):
+                        board_at_pos.push(board_at_pos.parse_san(moves_san_list[k]))
                 legal_at_pos = list(board_at_pos.legal_actions)
                 # Pad to at least top 3 when 3+ legal moves exist
                 if len(aids) < 3 and len(legal_at_pos) >= 3:

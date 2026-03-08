@@ -334,6 +334,7 @@ def test_single_position(
         move_count = 0
         first_move_was_mating = False
         moves_san_list: List[str] = []
+        moves_uci_list: List[str] = []
         policy_details_list: List[Dict[str, Any]] = []
         init_fen = fen_position
         meta = position_metadata or {}
@@ -467,6 +468,7 @@ def test_single_position(
 
             if collect_game_history:
                 moves_san_list.append(board.san(move))
+                moves_uci_list.append(move.uci())
             board.push(move)
             move_count += 1
             # Periodic GC to free MCTS tree (circular refs delay collection)
@@ -494,6 +496,7 @@ def test_single_position(
                 'termination': result.get('termination', 'unknown'),
                 'move_count': result['move_count'],
                 'moves_san': ' '.join(moves_san_list),
+                'moves_uci': ' '.join(moves_uci_list),
                 'initial_fen': init_fen,
                 'initial_position_quality': meta.get('quality'),
                 'initial_dataset_source': meta.get('source'),
