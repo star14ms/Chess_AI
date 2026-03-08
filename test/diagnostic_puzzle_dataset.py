@@ -153,7 +153,10 @@ def _play_position(
 
         move = root_node.board.action_id_to_move(action_id)
         if move is None:
-            break
+            raise RuntimeError(
+                f"_play_position: action_id_to_move({action_id}) returned None, "
+                f"FEN={board.fen()}, legal_actions={list(board.legal_actions)[:10]}"
+            )
 
         board.push(move)
 

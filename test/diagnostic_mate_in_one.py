@@ -49,11 +49,12 @@ def get_top_moves_by_visits(root_node: MCTSNode, top_k: int = 10) -> list[Tuple[
     moves_data = []
     for action_id, child_node in root_node.children.items():
         visit_count = child_node.N
-        # Convert action_id to move
-        try:
-            move = root_node.board.action_id_to_move(action_id)
-        except Exception:
-            move = None
+        move = root_node.board.action_id_to_move(action_id)
+        if move is None:
+            raise RuntimeError(
+                f"get_top_moves_by_visits: action_id_to_move({action_id}) returned None, "
+                f"FEN={root_node.board.fen()}, legal_actions={list(root_node.board.legal_actions)[:10]}"
+            )
         moves_data.append((action_id, visit_count, move))
     
     # Sort by visit count descending

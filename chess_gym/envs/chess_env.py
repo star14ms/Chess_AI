@@ -46,12 +46,13 @@ class MoveSpace(spaces.Space):
         if isinstance(action, (int, np.integer)):
             if self.action_space_size == 4672:
                 if hasattr(self.board, "action_id_to_move"):
-                    try:
-                        move = self.board.action_id_to_move(int(action))
-                        if move is not None:
-                            return move
-                    except Exception:
-                        pass
+                    move = self.board.action_id_to_move(int(action))
+                    if move is None:
+                        raise RuntimeError(
+                            f"_action_to_move: action_id_to_move({action}) returned None, "
+                            f"FEN={self.board.fen()[:60]}, legal_actions_sample={list(self.board.legal_actions)[:10]}"
+                        )
+                    return move
                 square = (action - 1) // 73
                 relative_action = (action - 1) % 73  # 0-based: 0-72
 

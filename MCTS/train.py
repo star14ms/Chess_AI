@@ -1019,9 +1019,10 @@ def run_self_play_game(
                     for aid in legal_actions:
                         selection_probs[aid] = 1.0 / len(legal_actions)
             else:
-                # Fallback to full policy if no legal actions (should be terminal)
-                action_to_take = np.random.choice(len(mcts_policy), p=mcts_policy) + 1  # +1 because actions are 1-indexed
-                selection_probs[action_to_take] = float(mcts_policy[action_to_take - 1])
+                raise RuntimeError(
+                    f"No legal actions at move {move_count + 1} (expected terminal). "
+                    f"FEN={env.board.fen()}, outcome={env.board.outcome()}"
+                )
             
             # Save a copy of mcts_policy before cleanup (needed for game_history)
             mcts_policy_copy = mcts_policy.copy()
@@ -1632,14 +1633,11 @@ def _save_game_history(
                 gt = pd.get("ground_truth_action")
                 aids = {sel, pd.get("top1_action"), pd.get("top2_action"), pd.get("top3_action"), gt} - {None}
                 # Reconstruct board at this position for action_id -> move
-                try:
-                    board_at_pos = create_board_from_fen(init_fen)
-                    for m in moves_san_list[:move_idx]:
-                        board_at_pos.push(board_at_pos.parse_san(m))
-                except Exception:
-                    board_at_pos = None
+                board_at_pos = create_board_from_fen(init_fen)
+                for m in moves_san_list[:move_idx]:
+                    board_at_pos.push(board_at_pos.parse_san(m))
+                legal_at_pos = list(board_at_pos.legal_actions)
                 # Pad to at least top 3 when 3+ legal moves exist
-                legal_at_pos = list(board_at_pos.legal_actions) if board_at_pos is not None else []
                 if len(aids) < 3 and len(legal_at_pos) >= 3:
                     for aid in legal_at_pos:
                         if aid not in aids:
@@ -1654,17 +1652,19 @@ def _save_game_history(
                     raw_prob = raw_probs.get(int(aid), 0.0)
                     sel_prob = sel_probs.get(int(aid), 0.0)
                     move_str = "?"
-                    # Only call action_id_to_move when aid is legal on reconstructed board;
-                    # otherwise we'd log warnings for action_ids from a different board state
-                    if board_at_pos is not None and int(aid) in legal_at_pos_set:
-                        try:
-                            mv = board_at_pos.action_id_to_move(int(aid))
-                            move_str = board_at_pos.san(mv) if mv else "?"
-                        except Exception:
-                            pass
-                    # Fallback: for selected move, use move_san from header when unresolved
-                    if move_str == "?" and aid == sel:
-                        move_str = move_san
+                    if int(aid) in legal_at_pos_set:
+                        mv = board_at_pos.action_id_to_move(int(aid))
+                        if mv is None:
+                            raise RuntimeError(
+                                f"_save_game_history: action_id_to_move({aid}) returned None at move {move_idx + 1}, "
+                                f"FEN={board_at_pos.fen()[:60]}, legal_at_pos_sample={list(legal_at_pos)[:10]}"
+                            )
+                        move_str = board_at_pos.san(mv)
+                    elif aid == sel:
+                        raise RuntimeError(
+                            f"_save_game_history: selected action {aid} not in legal_at_pos at move {move_idx + 1}, "
+                            f"FEN={board_at_pos.fen()[:60]}, legal_at_pos_sample={list(legal_at_pos)[:10]}"
+                        )
                     tags = ""
                     if aid == sel:
                         tags += "*"  # SELECTED
@@ -1673,14 +1673,8 @@ def _save_game_history(
                     entries.append((raw_prob, f"{tags}{move_str}: {raw_prob*100:.1f}% ({sel_prob*100:.1f}%)"))
                 # When ground truth exists but isn't legal (model deviated), show solution move
                 if gt is None and gt_move_uci and gt_move_uci not in {e[1].split(":")[0].lstrip("*✓") for e in entries}:
-                    gt_display = gt_move_uci
-                    if board_at_pos is not None:
-                        try:
-                            mv = chess.Move.from_uci(gt_move_uci)
-                            if mv in board_at_pos.legal_moves:
-                                gt_display = board_at_pos.san(mv)
-                        except Exception:
-                            pass
+                    mv = chess.Move.from_uci(gt_move_uci)
+                    gt_display = board_at_pos.san(mv) if mv in board_at_pos.legal_moves else gt_move_uci
                     entries.append((0.0, f"✓{gt_display}: 0.0% (0.0%)"))
                 entries.sort(key=lambda x: -x[0])  # by raw prob descending (high->low)
                 line = " | ".join(e[1] for e in entries)

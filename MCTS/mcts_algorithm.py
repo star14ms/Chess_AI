@@ -216,7 +216,11 @@ class MCTS:
                 self.env.board.set_fen(original_fen, original_tracker)
                 _restore_chess_stack(self.env.board, leaf_board)
                 move = leaf_board.action_id_to_move(action_id)
-                if move is None: continue
+                if move is None:
+                    raise RuntimeError(
+                        f"MCTS _expand_sequential: action_id_to_move({action_id}) returned None for legal action, "
+                        f"FEN={leaf_board.fen()[:60]}, legal_actions_sample={legal_action_ids[:10]}"
+                    )
 
                 try:
                     self.env.step(action_id)
@@ -279,7 +283,10 @@ class MCTS:
                     sim_board = leaf_board.copy(stack=False) if hasattr(leaf_board, "copy") else leaf_board.copy()
                     move = sim_board.action_id_to_move(action_id)
                     if move is None:
-                        continue
+                        raise RuntimeError(
+                            f"MCTS _expand_parallel: action_id_to_move({action_id}) returned None for legal action, "
+                            f"FEN={leaf_board.fen()[:60]}"
+                        )
                     sim_board.push(move)
                     child_node = MCTSNode(
                         board=sim_board,
