@@ -380,27 +380,38 @@ def test_single_position(
                 converted_policy = mcts_policy
                 # Ground truth: solution move at this index (if we're following solution)
                 ground_truth_action = None
+                ground_truth_move_uci = None
                 if solution_moves and move_count < len(solution_moves):
                     sol_str = solution_moves[move_count]
-                    try:
-                        mv = board.parse_san(sol_str) if sol_str else None
-                        if mv and mv in board.legal_moves:
-                            ground_truth_action = board.move_to_action_id(mv)
-                    except Exception:
+                    ground_truth_move_uci = sol_str
+                    if sol_str:
                         try:
-                            mv = chess.Move.from_uci(sol_str)
-                            if mv in board.legal_moves:
+                            mv = board.parse_san(sol_str)
+                            if mv and mv in board.legal_moves:
                                 ground_truth_action = board.move_to_action_id(mv)
                         except Exception:
-                            pass
+                            try:
+                                mv = chess.Move.from_uci(sol_str)
+                                if mv in board.legal_moves:
+                                    ground_truth_action = board.move_to_action_id(mv)
+                            except Exception:
+                                pass
                 sorted_indices = np.argsort(converted_policy)[::-1]
                 top_actions = [
                     int(idx + 1) for idx in sorted_indices
                     if converted_policy[idx] > 1e-9
                 ][:3]
+                legal_actions_list = list(root_node.board.legal_actions or [])
                 if action_id is not None:
                     sig_actions = {int(action_id), ground_truth_action or -1}
                     sig_actions.update(top_actions[:3])
+                    # Pad to at least 3 when 3+ legal moves exist
+                    if len(sig_actions) < 3 and len(legal_actions_list) >= 3:
+                        for aid in legal_actions_list:
+                            if aid not in sig_actions:
+                                sig_actions.add(aid)
+                                if len(sig_actions) >= 3:
+                                    break
                     sig_actions.discard(-1)
                     raw_probs = {aid: float(raw_mcts_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(raw_mcts_policy)}
                     conv_probs = {aid: float(converted_policy[aid - 1]) for aid in sig_actions if 1 <= aid <= len(converted_policy)}
@@ -415,6 +426,7 @@ def test_single_position(
                         "top2_action": top_actions[1] if len(top_actions) >= 2 else None,
                         "top3_action": top_actions[2] if len(top_actions) >= 3 else None,
                         "ground_truth_action": ground_truth_action,
+                        "ground_truth_move_uci": ground_truth_move_uci,
                         "raw_probs": raw_probs,
                         "converted_probs": conv_probs,
                         "selection_probs": sel_probs,
@@ -427,32 +439,26 @@ def test_single_position(
                 if not legal_list:
                     del root_node
                     break
-                action_id = legal_list[0]
+                result["error"] = f"action_id was None but legal moves exist (move {move_count + 1})"
+                del root_node
+                break
 
             if action_id not in legal_list:
-                if not legal_list:
-                    del root_node
-                    break
-                action_id = legal_list[0]
+                result["error"] = (
+                    f"action_id {action_id} not in legal_actions (move {move_count + 1}); "
+                    f"legal_actions={legal_list[:10]}{'...' if len(legal_list) > 10 else ''}"
+                )
+                del root_node
+                break
 
             move = root_node.board.action_id_to_move(action_id)
             if move is None:
-                legal_list = list(root_node.board.legal_actions or [])
-                if not legal_list:
-                    del root_node
-                    break
-                action_id = legal_list[0]
-                move = root_node.board.action_id_to_move(action_id)
-                if move is None:
-                    for aid in legal_list:
-                        m = root_node.board.action_id_to_move(aid)
-                        if m is not None:
-                            move = m
-                            action_id = aid
-                            break
-                    if move is None:
-                        del root_node
-                        break
+                result["error"] = (
+                    f"action_id_to_move({action_id}) returned None (move {move_count + 1}); "
+                    f"FEN={root_node.board.fen()}; legal_actions={legal_list[:10]}{'...' if len(legal_list) > 10 else ''}"
+                )
+                del root_node
+                break
             del root_node  # Free MCTS tree immediately (can be large)
 
             if move_count == 0 and mating_action_id is not None and action_id == mating_action_id:
@@ -580,6 +586,12 @@ def run_batch_diagnostic_test(
 
     collect_game_history = bool(game_history_dir)
     if collect_game_history:
+        # Create date/time folder structure like mcts_train: base/YYYY-MM-DD/HH-MM-SS/game_history
+        from datetime import datetime
+        now = datetime.now()
+        date_folder = now.strftime("%Y-%m-%d")
+        time_folder = now.strftime("%H-%M-%S")
+        game_history_dir = os.path.join(game_history_dir, date_folder, time_folder, "game_history")
         os.makedirs(game_history_dir, exist_ok=True)
         print(f"Game history will be saved to: {os.path.abspath(game_history_dir)}")
 

@@ -1150,90 +1150,39 @@ def run_self_play_game(
         position_matches = (len(fen_after_parts) >= 4 and len(fen_before_parts) >= 4 and 
                            fen_after_parts[:4] == fen_before_parts[:4])
         
-        if not position_matches or action_to_take not in env.board.legal_actions:
-            pass  # Logging handled below if action is not legal
-        
-        # Record SAN notation BEFORE playing the move, but ensure board is in correct state
-        # This prevents issues with pop/push affecting turn alternation
-        if action_to_take not in env.board.legal_actions:
-            # Enforce legal action selection (AlphaZero-style: only legal moves allowed)
-            legal_actions = list(env.board.legal_actions)
-            if legal_actions:
-                if mcts_policy is not None and len(mcts_policy) > 0:
-                    legal_indices = [a - 1 for a in legal_actions if 0 <= (a - 1) < len(mcts_policy)]
-                    if legal_indices:
-                        legal_probs = np.array([mcts_policy[i] for i in legal_indices], dtype=np.float64)
-                        if legal_probs.sum() > 0:
-                            legal_probs = legal_probs / legal_probs.sum()
-                            action_to_take = np.random.choice([i + 1 for i in legal_indices], p=legal_probs)
-                        else:
-                            action_to_take = np.random.choice(legal_actions)
-                    else:
-                        action_to_take = np.random.choice(legal_actions)
-                else:
-                    action_to_take = np.random.choice(legal_actions)
-                logging.warning(
-                    f"Illegal action replaced with legal move: action={action_to_take}, "
-                    f"root_value={root_value}, FEN={env.board.fen()}, "
-                    f"legal_actions_count={len(legal_actions)}"
-                )
-            else:
-                logging.warning(
-                    f"No legal actions available after illegal action detection: "
-                    f"action={action_to_take}, root_value={root_value}, FEN={env.board.fen()}"
-                )
-            # Continue with SAN logging using the corrected legal action (if any)
+        # No fallback: fail fast with debug info when action is illegal
+        legal_actions = list(env.board.legal_actions)
+        if action_to_take not in legal_actions:
+            raise RuntimeError(
+                f"action_to_take {action_to_take} not in legal_actions (move {move_count + 1}). "
+                f"FEN={env.board.fen()}, root_value={root_value}, "
+                f"position_matches={position_matches}, "
+                f"legal_actions={legal_actions[:15]}{'...' if len(legal_actions) > 15 else ''}"
+            )
 
-        if action_to_take not in env.board.legal_actions:
-            san_move = "ILLEGAL"
-        else:
-            # Get the move and record SAN BEFORE playing it
-            # This ensures we record from the correct board state without affecting turn alternation
-            move = env.board.action_id_to_move(action_to_take)
-            
-            if move is not None:
-                # Verify the move is actually legal before trying to get SAN
-                # This prevents errors if board state changed or action_id_to_move returned wrong move
-                legal_moves_list = list(env.board.legal_moves)
-                move_in_legal = move in legal_moves_list
-                
-                if not move_in_legal:
-                    pass  # Move will be handled as illegal below
-                
-                if move_in_legal:
-                    # Get SAN notation for the move
-                    # Note: legal_moves override ensures moves that don't escape check are filtered out
-                    try:
-                        san_move = env.board.san(move)
-                    except Exception as e:
-                        # board.san() can fail even for legal moves in some edge cases (python-chess limitation)
-                        # Fallback to UCI notation if SAN generation fails
-                        san_move = move.uci()
-                        logging.warning(
-                            f"SAN generation failed for action {action_to_take}: "
-                            f"move={move.uci()}, root_value={root_value}, "
-                            f"FEN={env.board.fen()}, error={e}"
-                        )
-                else:
-                    # Move is not legal - this shouldn't happen but handle gracefully
-                    # Use UCI notation as fallback
-                    san_move = move.uci()
-                    logging.warning(
-                        f"action_id_to_move returned non-legal move for action {action_to_take}: "
-                        f"move={move.uci()}, FEN={env.board.fen()}, "
-                        f"legal_actions_count={len(env.board.legal_actions)}, "
-                        f"move_in_legal_moves={move in env.board.legal_moves}"
-                    )
-                    # Logging already done above in the "if not move_in_legal" block
-            else:
-                # Should not happen if action is in legal_actions, but handle gracefully
-                san_move = "ILLEGAL"
-                logging.warning(
-                    f"action_id_to_move returned None for action {action_to_take}: "
-                    f"root_value={root_value}, "
-                    f"FEN={env.board.fen()}, legal_actions_count={len(env.board.legal_actions)}"
-                )
-        
+        # Record SAN notation BEFORE playing the move
+        move = env.board.action_id_to_move(action_to_take)
+        if move is None:
+            raise RuntimeError(
+                f"action_id_to_move({action_to_take}) returned None (move {move_count + 1}). "
+                f"FEN={env.board.fen()}, root_value={root_value}, "
+                f"legal_actions_count={len(legal_actions)}"
+            )
+        if move not in env.board.legal_moves:
+            raise RuntimeError(
+                f"action_id_to_move({action_to_take}) returned non-legal move {move.uci()} (move {move_count + 1}). "
+                f"FEN={env.board.fen()}, root_value={root_value}"
+            )
+
+        # Get SAN notation (move already validated above)
+        try:
+            san_move = env.board.san(move)
+        except Exception as e:
+            raise RuntimeError(
+                f"SAN generation failed for action {action_to_take}, move={move.uci()} (move {move_count + 1}). "
+                f"FEN={env.board.fen()}, error={e}"
+            ) from e
+
         move_list_san.append(san_move)
         move_list_action_ids.append(action_to_take)
 
@@ -1241,39 +1190,25 @@ def run_self_play_game(
         current_turn_before_move = env.board.turn
         current_color_before = 'White' if current_turn_before_move == chess.WHITE else 'Black'
         
-        # Also check if the move being attempted matches the current turn
-        # This catches cases where a move for the wrong color is being attempted
+        # Check if the move being attempted matches the current turn
         move_color_mismatch = False
-        if san_move != "ILLEGAL" and action_to_take in env.board.legal_actions:
-            try:
-                move = env.board.action_id_to_move(action_to_take)
-                if move is not None:
-                    # Check if the move's from_square has a piece of the correct color
-                    piece = env.board.piece_at(move.from_square)
-                    if piece is not None:
-                        piece_color = 'White' if piece.color == chess.WHITE else 'Black'
-                        if piece_color != current_color_before:
-                            move_color_mismatch = True
-            except Exception:
-                pass  # If we can't check, continue
+        piece = env.board.piece_at(move.from_square)
+        if piece is not None:
+            piece_color = 'White' if piece.color == chess.WHITE else 'Black'
+            if piece_color != current_color_before:
+                move_color_mismatch = True
         
         if previous_turn is not None and current_turn_before_move == previous_turn:
-            # Same color is trying to move twice in a row!
-            logging.error(
-                f"CRITICAL BUG: Same color double move detected at move {move_count + 1}! "
-                f"Previous turn: {'White' if previous_turn == chess.WHITE else 'Black'}, "
-                f"Current turn: {current_color_before}, "
-                f"Move: {san_move}, Action: {action_to_take}, "
-                f"FEN: {env.board.fen()}"
+            raise RuntimeError(
+                f"Same color double move at move {move_count + 1}: "
+                f"previous_turn=current_turn={current_color_before}, "
+                f"move={san_move}, action={action_to_take}, FEN={env.board.fen()}"
             )
         
         if move_color_mismatch:
-            # Move is for the wrong color
-            logging.error(
-                f"CRITICAL BUG: Move color mismatch at move {move_count + 1}! "
-                f"Current turn: {current_color_before}, "
-                f"Move: {san_move}, Action: {action_to_take}, "
-                f"FEN: {env.board.fen()}"
+            raise RuntimeError(
+                f"Move color mismatch at move {move_count + 1}: current turn={current_color_before}, "
+                f"move={san_move} (action {action_to_take}), FEN={env.board.fen()}"
             )
         
         # Now play the move - this will switch turns correctly
@@ -1703,24 +1638,50 @@ def _save_game_history(
                         board_at_pos.push(board_at_pos.parse_san(m))
                 except Exception:
                     board_at_pos = None
+                # Pad to at least top 3 when 3+ legal moves exist
+                legal_at_pos = list(board_at_pos.legal_actions) if board_at_pos is not None else []
+                if len(aids) < 3 and len(legal_at_pos) >= 3:
+                    for aid in legal_at_pos:
+                        if aid not in aids:
+                            aids.add(aid)
+                            if len(aids) >= 3:
+                                break
                 entries = []
-                legal_at_pos = set(board_at_pos.legal_actions) if board_at_pos is not None else set()
+                move_san = moves_san_list[move_idx] if move_idx < len(moves_san_list) else "?"
+                gt_move_uci = pd.get("ground_truth_move_uci")
+                legal_at_pos_set = set(legal_at_pos)
                 for aid in aids:
                     raw_prob = raw_probs.get(int(aid), 0.0)
                     sel_prob = sel_probs.get(int(aid), 0.0)
                     move_str = "?"
-                    if board_at_pos is not None and int(aid) in legal_at_pos:
+                    # Only call action_id_to_move when aid is legal on reconstructed board;
+                    # otherwise we'd log warnings for action_ids from a different board state
+                    if board_at_pos is not None and int(aid) in legal_at_pos_set:
                         try:
                             mv = board_at_pos.action_id_to_move(int(aid))
                             move_str = board_at_pos.san(mv) if mv else "?"
                         except Exception:
                             pass
+                    # Fallback: for selected move, use move_san from header when unresolved
+                    if move_str == "?" and aid == sel:
+                        move_str = move_san
                     tags = ""
                     if aid == sel:
                         tags += "*"  # SELECTED
                     if aid == gt:
                         tags += "✓"  # GROUND_TRUTH(labeled)
                     entries.append((raw_prob, f"{tags}{move_str}: {raw_prob*100:.1f}% ({sel_prob*100:.1f}%)"))
+                # When ground truth exists but isn't legal (model deviated), show solution move
+                if gt is None and gt_move_uci and gt_move_uci not in {e[1].split(":")[0].lstrip("*✓") for e in entries}:
+                    gt_display = gt_move_uci
+                    if board_at_pos is not None:
+                        try:
+                            mv = chess.Move.from_uci(gt_move_uci)
+                            if mv in board_at_pos.legal_moves:
+                                gt_display = board_at_pos.san(mv)
+                        except Exception:
+                            pass
+                    entries.append((0.0, f"✓{gt_display}: 0.0% (0.0%)"))
                 entries.sort(key=lambda x: -x[0])  # by raw prob descending (high->low)
                 line = " | ".join(e[1] for e in entries)
                 f.write(f"  {line}\n")

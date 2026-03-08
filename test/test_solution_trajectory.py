@@ -7,6 +7,10 @@ is in legal_actions, (3) no mismatch between sol_board and env board.
 Run from project root: python test/test_solution_trajectory.py
 (Requires torch - use the same env as MCTS/train.py)
 
+The K_vs_KBN0001161 test runs first and verifies that ALL legal moves at every
+position return a non-None action_id from move_to_action_id, and all legal_actions
+round-trip via action_id_to_move.
+
 Root cause of follow_dataset_trajectory failure (fixed in chess_custom.py):
   BaseChessBoard.legal_moves was checking the wrong side after push(move).
   It used is_check() which checks the NEW side to move, but we need to verify
@@ -133,7 +137,71 @@ PUZZLES = [
     {"id": "cNzo4", "fen": "5B2/Q2R1p1k/1p2p2p/3p2N1/3PnK2/4P2P/PP4P1/7q b - - 0 26", "moves": ["h6g5", "f4e5", "h1h2", "g2g3", "h2g3"]},
     # 3sisn - underpromotion g2g1n vs capture g2f1n
     {"id": "3sisn", "fen": "1k4r1/p5r1/3R3p/4p2n/1NQ1P2b/P4P1K/1PP3p1/5N2 b - - 1 34", "moves": ["g2g1n", "h3h4", "g1f3", "h4h5", "g7g5", "h5h6", "g8h8"]},
+    # K_vs_KBN0001161 - minimal mate in 4
+    {
+        "id": "K_vs_KBN0001161",
+        "fen": "5K2/7k/8/6B1/5N2/8/8/8 w - - 34 18",
+        "moves": ["f8f7", "h7h8", "f4e6", "h8h7", "e6f8", "h7h8", "g5f6"],
+    },
 ]
+
+
+def _create_board_from_fen(fen: str):
+    """Create LegacyChessBoard from FEN (avoids torch import from training_modules)."""
+    from chess_gym.chess_custom import LegacyChessBoard
+    board = LegacyChessBoard()
+    board.set_fen(fen)
+    return board
+
+
+def test_all_legal_moves_return_action_id(fen: str, moves_uci: list[str]) -> tuple[bool, str]:
+    """
+    Verify that at every position along the trajectory, ALL legal moves
+    return a non-None action_id from move_to_action_id, and ALL legal_actions
+    round-trip via action_id_to_move.
+    """
+
+    board = _create_board_from_fen(fen)
+    positions_checked = 0
+    total_moves_checked = 0
+
+    def check_position(step_name: str) -> tuple[bool, str]:
+        nonlocal positions_checked, total_moves_checked
+        positions_checked += 1
+        # Check: every legal move -> move_to_action_id returns not None
+        for move in board.legal_moves:
+            total_moves_checked += 1
+            aid = board.move_to_action_id(move)
+            if aid is None:
+                return False, f"{step_name}: move_to_action_id returned None for {move.uci()} ({board.san(move)})"
+        # Check: every legal_action -> action_id_to_move returns not None
+        for aid in board.legal_actions:
+            mv = board.action_id_to_move(aid)
+            if mv is None:
+                return False, f"{step_name}: action_id_to_move returned None for action_id={aid}"
+            if mv not in board.legal_moves:
+                return False, f"{step_name}: action_id_to_move({aid}) returned {mv.uci()} which is not in legal_moves"
+        return True, ""
+
+    ok, err = check_position("initial")
+    if not ok:
+        return False, err
+
+    for i, move_str in enumerate(moves_uci):
+        if board.is_game_over():
+            break
+        move = chess.Move.from_uci(move_str)
+        if move not in board.legal_moves:
+            return False, f"Move {i+1} ({move_str}): not legal"
+        aid = board.move_to_action_id(move)
+        if aid is None:
+            return False, f"Move {i+1} ({move_str}): move_to_action_id returned None"
+        board.push(move)
+        ok, err = check_position(f"after move {i+1} ({move_str})")
+        if not ok:
+            return False, err
+
+    return True, f"OK ({positions_checked} positions, {total_moves_checked} move_to_action_id checks)"
 
 
 def would_old_bug_filter_move(board, move: chess.Move) -> bool:
@@ -202,7 +270,24 @@ def test_puzzle_brief(puzzle: dict) -> tuple[bool, str]:
 if __name__ == "__main__":
     import sys
 
-    print("Testing all puzzles (including those that may have been affected by the legal_moves bug)\n")
+    # Run first: all legal moves return action_id (no torch required)
+    print("--- All legal moves return action_id (K_vs_KBN0001161) ---")
+    try:
+        p = next(x for x in PUZZLES if x["id"] == "K_vs_KBN0001161")
+        ok, msg = test_all_legal_moves_return_action_id(p["fen"], p["moves"])
+        status = "PASS" if ok else "FAIL"
+        print(f"  {status} - {msg}")
+        if not ok:
+            sys.exit(1)
+    except StopIteration:
+        print("  (puzzle not found)")
+    except Exception as e:
+        import traceback
+        print(f"  ERROR - {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+    print("\nTesting all puzzles (including those that may have been affected by the legal_moves bug)\n")
 
     all_ok = True
     for p in PUZZLES:
