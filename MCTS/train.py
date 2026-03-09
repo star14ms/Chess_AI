@@ -869,8 +869,10 @@ def run_self_play_game(
                     pass
                 if move and move in sol_board.legal_moves:
                     aid = sol_board.move_to_action_id(move)
-                    if aid is not None:
-                        solution_action_ids.append(aid)
+                    if aid is None:
+                        # Cannot convert move to action_id; stop building solution to avoid misalignment
+                        break
+                    solution_action_ids.append(aid)
                     sol_board.push(move)
                 else:
                     break
