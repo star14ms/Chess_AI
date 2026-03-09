@@ -2383,9 +2383,9 @@ def run_training_loop(cfg: DictConfig) -> None:
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
-            TimeRemainingColumn(),
+            # TimeRemainingColumn(),
             TimeElapsedColumn(),
-            TextColumn("{task.fields[steps]} Steps - Games/1st/2nd: {task.fields[games]}/{task.fields[first_wins]}/{task.fields[second_wins]}, {task.fields[draw_rate]:.1f}% Draw"),
+            TextColumn("{task.fields[steps]} Steps (Games/1st/2nd: {task.fields[games]}/{task.fields[first_wins]}/{task.fields[second_wins]}, {task.fields[draw_rate]:.1f}% Draw)"),
         )
         progress.columns = self_play_columns
         
@@ -3227,11 +3227,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                     else 0.0
                 )
 
+                # Update every 8 epochs (or always on last) to avoid Jupyter IOPub rate limit
+                do_refresh = (epoch + 1) % 8 == 0 or epoch == cfg.training.num_training_steps - 1
                 progress.update(
                     task_id_train, advance=1,
                     loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss,
                     illegal_r=current_illegal_ratio,
-                    illegal_p=avg_illegal_prob_mass
+                    illegal_p=avg_illegal_prob_mass,
+                    refresh=do_refresh,
                 )
             progress.update(task_id_train, visible=False)
 

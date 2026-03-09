@@ -245,6 +245,11 @@ def inference_server_worker_tpu(
 
     max_wait_s = max(0.001, max_wait_ms / 1000.0)
     lock = tpu_lock if tpu_lock is not None else threading.Lock()
+    batch_count = 0
+    total_inferences = 0
+    total_inferences_at_last_log = 0
+    log_interval = 1000
+    log_interval_start = time.monotonic() if logging_enabled else 0.0
 
     if logging_enabled:
         logger.info(f"InferenceServer(TPU): max_wait_ms={max_wait_ms} (max_wait_s={max_wait_s})")
@@ -338,6 +343,26 @@ def inference_server_worker_tpu(
             except Exception:
                 pass
             offset += size
+
+        if logging_enabled:
+            batch_count += 1
+            num_requests = len(valid_pairs)
+            combined_obs = sum(s for _, _, s in valid_pairs)
+            total_inferences += combined_obs
+            avg_obs = total_inferences / batch_count
+            worker_ids = [req.get("worker_id") for req, _, _ in valid_pairs if req.get("worker_id") is not None]
+            unique_workers = len(set(worker_ids)) if worker_ids else "?"
+            if batch_count % log_interval == 0:
+                elapsed_s = time.monotonic() - log_interval_start
+                obs_in_interval = total_inferences - total_inferences_at_last_log
+                obs_per_s = obs_in_interval / elapsed_s if elapsed_s > 0 else 0
+                batches_per_s = log_interval / elapsed_s if elapsed_s > 0 else 0
+                total_inferences_at_last_log = total_inferences
+                log_interval_start = time.monotonic()
+                logger.info(
+                    f"InferenceServer(TPU): obs={combined_obs} (from {num_requests} requests, {unique_workers} workers), "
+                    f"avg_batch={avg_obs:.1f} | last {log_interval} batches in {elapsed_s:.2f}s (~{batches_per_s:.1f} batch/s, ~{obs_per_s:.1f} obs/s)"
+                )
 
 
 class InferenceClient:
