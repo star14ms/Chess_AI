@@ -652,16 +652,23 @@ class ReplayBuffer:
                 # Fallback: try FEN if available
                 board_str = board.fen() if hasattr(board, 'fen') else str(board)
             
+            # Store arrays as (bytes, shape, dtype) to avoid NumPy's deprecated pickle path (numpy.core.numeric)
+            state_f16 = state.astype(np.float16)
+            policy_f16 = policy.astype(np.float16)
             compact_exp = (
-                state.astype(np.float16),  # Use half precision to save space
-                policy.astype(np.float16),
+                state_f16.tobytes(),
+                state_f16.shape,
+                state_f16.dtype.name,
+                policy_f16.tobytes(),
+                policy_f16.shape,
+                policy_f16.dtype.name,
                 board_str,
                 float(value),
                 source_id
             )
             compact_buffer.append(compact_exp)
         
-        # Compress the buffer data using gzip
+        # Compress the buffer data using gzip (no numpy arrays in structure -> no deprecated unpickle path)
         buffer_bytes = pickle.dumps(compact_buffer, protocol=pickle.HIGHEST_PROTOCOL)
         compressed_bytes = gzip.compress(buffer_bytes, compresslevel=6)
         
@@ -696,22 +703,32 @@ class ReplayBuffer:
             # Convert back to full format with board objects
             full_buffer = []
             for compact_exp in compact_buffer:
-                if len(compact_exp) == 5:
-                    state_data, policy, board_str, value, source_id = compact_exp
+                # New format (v2): (state_bytes, state_shape, state_dtype, policy_bytes, policy_shape, policy_dtype, board_str, value, source_id)
+                if len(compact_exp) == 9 and isinstance(compact_exp[0], bytes):
+                    (state_bytes, state_shape, state_dtype, policy_bytes, policy_shape, policy_dtype,
+                     board_str, value, source_id) = compact_exp
+                    state_data = np.frombuffer(state_bytes, dtype=np.dtype(state_dtype)).reshape(state_shape).astype(np.float32)
+                    policy = np.frombuffer(policy_bytes, dtype=np.dtype(policy_dtype)).reshape(policy_shape).astype(np.float32)
                 else:
-                    state_data, policy, board_str, value = compact_exp
-                    source_id = None
+                    # Legacy format: numpy arrays pickled directly (may trigger NumPy deprecation warning)
+                    if len(compact_exp) == 5:
+                        state_data, policy, board_str, value, source_id = compact_exp
+                    else:
+                        state_data, policy, board_str, value = compact_exp
+                        source_id = None
+                    state_data = state_data.astype(np.float32)
+                    policy = policy.astype(np.float32)
                 # Reconstruct board object from serialized string
                 board = board_factory_fn(board_str)
                 exp = (
-                    state_data.astype(np.float32),  # Convert back to float32
-                    policy.astype(np.float32),
+                    state_data,
+                    policy,
                     board,
                     value,
                     source_id
                 ) if source_id is not None else (
-                    state_data.astype(np.float32),  # Convert back to float32
-                    policy.astype(np.float32),
+                    state_data,
+                    policy,
                     board,
                     value
                 )
