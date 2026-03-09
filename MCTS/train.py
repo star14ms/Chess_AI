@@ -1447,6 +1447,13 @@ def _parse_optional_seconds(value):
     )
 
 
+def _is_xla_device(device: torch.device) -> bool:
+    """Return True if device is XLA/TPU. Used to choose map_location when loading checkpoints."""
+    if device is None:
+        return False
+    return str(device.type).lower() in ("xla", "tpu")
+
+
 def _select_training_device() -> torch.device:
     if os.environ.get("XRT_TPU_CONFIG") or os.environ.get("COORDINATOR_ADDRESS"):
         try:
@@ -1812,7 +1819,9 @@ def _load_checkpoint(
 
     progress.print(f"\nFound existing checkpoint at {checkpoint_path}")
     try:
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        # TPU/XLA: torch.load cannot map directly to xla:0. Load to CPU first, then move to device.
+        load_device = "cpu" if _is_xla_device(device) else device
+        checkpoint = torch.load(checkpoint_path, map_location=load_device, weights_only=False)
         network.load_state_dict(checkpoint["model_state_dict"])
         network.to(device)
 
