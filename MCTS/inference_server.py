@@ -343,15 +343,27 @@ def inference_server_worker_tpu(
 class InferenceClient:
     """Client for sending inference requests to the server. Thread-safe for concurrent predict() calls."""
 
-    def __init__(self, request_queue, reply_queue, timeout_s: float = 30.0, worker_id: Optional[int] = None):
+    def __init__(
+        self,
+        request_queue,
+        reply_queue,
+        timeout_s: float = 30.0,
+        worker_id: Optional[int] = None,
+        pause_for_training=None,
+    ):
         self.request_queue = request_queue
         self.reply_queue = reply_queue
         self.timeout_s = timeout_s
         self.worker_id = worker_id
+        self.pause_for_training = pause_for_training
         self._lock = threading.Lock()
         self._reply_stash = {}  # request_id -> (pol_np, val_np) for out-of-order replies
 
     def predict(self, obs_batch: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # Block new requests while training uses TPU (allows inference queue to drain)
+        if self.pause_for_training is not None:
+            while self.pause_for_training.is_set():
+                time.sleep(0.1)
         obs_np = obs_batch.detach().cpu().numpy()
         request_id = uuid.uuid4().hex
         req = {

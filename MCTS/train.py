@@ -390,6 +390,7 @@ def continual_self_play_worker(
     inference_timeout_s: float = 30.0,
     worker_id: int = -1,
     games_per_worker: int = 1,
+    pause_for_training=None,
 ):
     if isinstance(cfg, dict) and not OmegaConf.is_config(cfg):
         cfg = OmegaConf.create(cfg)
@@ -397,7 +398,11 @@ def continual_self_play_worker(
     inference_client = None
     if inference_request_queue is not None and inference_reply_queue is not None:
         inference_client = InferenceClient(
-            inference_request_queue, inference_reply_queue, timeout_s=inference_timeout_s, worker_id=worker_id if worker_id >= 0 else None
+            inference_request_queue,
+            inference_reply_queue,
+            timeout_s=inference_timeout_s,
+            worker_id=worker_id if worker_id >= 0 else None,
+            pause_for_training=pause_for_training,
         )
 
     if inference_client is not None:
@@ -2266,6 +2271,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                 f"(max_stacked={max_stacked}, max_wait_ms={eff_wait})"
             )
 
+    # TPU: pause self-play workers during training so inference queue drains and training can acquire TPU
+    pause_for_training = None
+    if tpu_lock is not None and cfg.training.get("continual_training", False):
+        pause_for_training = manager.Event()
+
     # --- Launch continual self-play actors (after checkpoint loading) ---
     if continual_enabled:
         # Helper function to get available accelerators (CUDA and MPS)
@@ -2313,6 +2323,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     30.0,
                     worker_idx,
                     games_per_worker,
+                    pause_for_training,
                 ),
             )
             p.daemon = True
@@ -2374,7 +2385,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
-            TextColumn("{task.fields[steps]} Steps (Games: {task.fields[games]}, 1st: {task.fields[first_wins]}, 2nd: {task.fields[second_wins]}, {task.fields[draw_rate]:.1f}% Draw)"),
+            TextColumn("{task.fields[steps]} Steps - Games/1st/2nd: {task.fields[games]}/{task.fields[first_wins]}/{task.fields[second_wins]}, {task.fields[draw_rate]:.1f}% Draw"),
         )
         progress.columns = self_play_columns
         
@@ -3054,7 +3065,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         progress.columns = training_columns
 
         # progress.print("Starting training phase...")
-        # For TPU, acquire lock so inference thread yields (TPU cannot run inference and training concurrently)
+        # For TPU, pause self-play workers so inference queue drains, then acquire lock
+        if pause_for_training is not None:
+            pause_for_training.set()
         if tpu_lock is not None:
             tpu_lock.acquire()
         try:
@@ -3249,6 +3262,8 @@ def run_training_loop(cfg: DictConfig) -> None:
         finally:
             if tpu_lock is not None:
                 tpu_lock.release()
+            if pause_for_training is not None:
+                pause_for_training.clear()
         iteration_duration = int(time.time() - iteration_start_time)
         total_elapsed_time = int(time.time() - total_training_start_time)
         
