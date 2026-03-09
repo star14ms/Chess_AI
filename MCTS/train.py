@@ -1759,6 +1759,7 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
         min_stacked_requests = max(1, max_stacked_requests // 2)
     min_stacked_requests = int(min_stacked_requests)
     max_wait_ms = int(cfg.training.get("inference_server_max_wait_ms", 2))
+    logging_enabled = bool(cfg.training.get("inference_server_logging_enabled", False))
     device_str = cfg.training.get("inference_server_device", None)
     if not device_str or str(device_str).lower() in ("none", "null", "auto"):
         if os.environ.get("XRT_TPU_CONFIG") or os.environ.get("COORDINATOR_ADDRESS"):
@@ -1794,6 +1795,7 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
                 reply_queues_by_worker,
                 network_state_dict,
                 tpu_lock,
+                logging_enabled,
             ),
             daemon=True,
         )
@@ -1813,6 +1815,7 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
                 max_wait_ms,
                 reply_queues_by_worker,
                 network_state_dict,
+                logging_enabled,
             ),
         )
         p.daemon = True

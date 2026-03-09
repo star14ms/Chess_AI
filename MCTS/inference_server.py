@@ -25,10 +25,6 @@ def _get_torch_xla():
             _torch_xla = False
     return _torch_xla if _torch_xla else None
 
-# Set to True to enable inference server logging (startup, throughput, exceptions)
-INFERENCE_SERVER_LOGGING_ENABLED = False
-
-
 def _create_network_from_cfg(cfg):
     if cfg.env.type == "chess":
         from MCTS.training_modules.chess import create_chess_network as create_network
@@ -50,6 +46,7 @@ def inference_server_worker(
     max_wait_ms: int,
     reply_queues_by_worker: dict,
     initial_state_dict: Optional[dict] = None,
+    logging_enabled: bool = False,
 ):
     # Ensure logging works in spawned subprocess
     if not logging.getLogger().handlers:
@@ -80,9 +77,9 @@ def inference_server_worker(
     total_inferences = 0
     total_inferences_at_last_log = 0
     log_interval = 1000
-    log_interval_start = time.monotonic() if INFERENCE_SERVER_LOGGING_ENABLED else 0.0
+    log_interval_start = time.monotonic() if logging_enabled else 0.0
 
-    if INFERENCE_SERVER_LOGGING_ENABLED:
+    if logging_enabled:
         logger.info(f"InferenceServer: max_wait_ms={max_wait_ms} (max_wait_s={max_wait_s})")
 
     while not stop_event.is_set():
@@ -131,7 +128,7 @@ def inference_server_worker(
             except queue.Empty:
                 time.sleep(max(0, min(0.05, remaining)))
             except Exception as e:
-                if INFERENCE_SERVER_LOGGING_ENABLED:
+                if logging_enabled:
                     logger.warning(f"InferenceServer: collection loop exception: {e}")
                 break
 
@@ -179,7 +176,7 @@ def inference_server_worker(
                 pass
             offset += size
 
-        if INFERENCE_SERVER_LOGGING_ENABLED:
+        if logging_enabled:
             batch_count += 1
             num_requests = len(valid_pairs)
             combined_obs = sum(s for _, _, s in valid_pairs)
@@ -218,6 +215,7 @@ def inference_server_worker_tpu(
     reply_queues_by_worker: dict,
     initial_state_dict: Optional[dict] = None,
     tpu_lock: Optional[threading.Lock] = None,
+    logging_enabled: bool = False,
 ):
     """TPU variant of inference server. Runs in a thread (not process) since TPU cannot be shared across processes.
     Uses tpu_lock to serialize TPU usage with the main training loop."""
@@ -248,7 +246,7 @@ def inference_server_worker_tpu(
     max_wait_s = max(0.001, max_wait_ms / 1000.0)
     lock = tpu_lock if tpu_lock is not None else threading.Lock()
 
-    if INFERENCE_SERVER_LOGGING_ENABLED:
+    if logging_enabled:
         logger.info(f"InferenceServer(TPU): max_wait_ms={max_wait_ms} (max_wait_s={max_wait_s})")
 
     while not stop_event.is_set():
@@ -291,7 +289,7 @@ def inference_server_worker_tpu(
             except queue.Empty:
                 time.sleep(max(0, min(0.05, remaining)))
             except Exception as e:
-                if INFERENCE_SERVER_LOGGING_ENABLED:
+                if logging_enabled:
                     logger.warning(f"InferenceServer(TPU): collection loop exception: {e}")
                 break
 

@@ -70,6 +70,7 @@ class TrainingConfig:
     inference_server_device: Optional[str] = None  # Device for inference server (e.g., "cuda:0", "xla" for TPU)
     inference_server_min_stacked_requests: Optional[int] = None  # Min requests before processing; None = max_stacked // 2
     inference_server_max_wait_ms: int = 2  # Max wait before dispatching a batch
+    inference_server_logging_enabled: bool = False  # Enable inference server logging (startup, throughput, exceptions)
     inference_queue_maxsize: Optional[int] = None  # Max queued inference requests; None = num_workers
     enable_thermal_pause: bool = False  # Allow brief thermal throttling pauses during self-play
     manual_pause_seconds: Optional[float] = None  # If set, sleep this many seconds before self-play

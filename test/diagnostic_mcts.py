@@ -154,6 +154,7 @@ def _start_inference_server(
     min_stacked = int(min_stacked)
     max_wait_ms = cfg.training.get("inference_server_max_wait_ms", 2)
     max_wait_ms = int(max_wait_ms) if max_wait_ms is not None and max_wait_ms != "" else 2
+    logging_enabled = bool(cfg.training.get("inference_server_logging_enabled", False))
 
     if use_tpu:
         import threading
@@ -172,6 +173,7 @@ def _start_inference_server(
                 reply_queues_by_worker,
                 network_state_dict,
                 tpu_lock,
+                logging_enabled,
             ),
             daemon=True,
         )
@@ -190,6 +192,7 @@ def _start_inference_server(
                 max_wait_ms,
                 reply_queues_by_worker,
                 network_state_dict,
+                logging_enabled,
             ),
         )
         proc.daemon = True
