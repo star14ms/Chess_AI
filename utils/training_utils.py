@@ -683,7 +683,8 @@ class RewardComputer:
             else:
                 device = self.device
             
-            obs_tensor = torch.tensor(state_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            dtype = next(self.network.parameters()).dtype
+            obs_tensor = torch.tensor(state_obs, dtype=dtype, device=device).unsqueeze(0)
             with torch.no_grad():
                 self.network.eval()
                 _, value_pred = self.network(obs_tensor)
@@ -781,7 +782,8 @@ class RewardComputer:
         
         # Evaluate initial position
         if self.network is not None:
-            obs_tensor = torch.tensor(initial_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            dtype = next(self.network.parameters()).dtype
+            obs_tensor = torch.tensor(initial_obs, dtype=dtype, device=device).unsqueeze(0)
             with torch.no_grad():
                 self.network.eval()
                 _, initial_value_pred = self.network(obs_tensor)

@@ -68,6 +68,8 @@ class TrainingConfig:
     games_per_worker: int = 1  # Number of concurrent games per worker. >1 increases parallelism when using inference server.
     use_inference_server: bool = False  # Use a dedicated process/thread for batched GPU/TPU inference
     inference_server_device: Optional[str] = None  # Device for inference server (e.g., "cuda:0", "xla" for TPU)
+    self_play_dtype: Optional[str] = None  # "float16", "float32", or null for auto (float16 on cuda/mps, float32 elsewhere)
+    inference_server_max_batch_size: Optional[int] = None  # Max batch size for self-play inference; None = use training batch_size
     inference_server_min_stacked_requests: Optional[int] = None  # Min requests before processing; None = max_stacked // 2
     inference_server_max_wait_ms: int = 2  # Max wait before dispatching a batch
     inference_server_logging_enabled: bool = False  # Enable inference server logging (startup, throughput, exceptions)

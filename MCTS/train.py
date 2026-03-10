@@ -33,7 +33,7 @@ from mcts_algorithm import MCTS
 from utils.profile_model import get_optimal_worker_count, profile_model, format_time
 from utils.progress import LoggingProgressWrapper, NullProgress
 from utils.thermal import maybe_pause_for_thermal_throttle
-from inference_server import InferenceClient, inference_server_worker, inference_server_worker_tpu
+from inference_server import InferenceClient, inference_server_worker, inference_server_worker_tpu, _resolve_self_play_dtype
 from utils.training_utils import (
     RewardComputer,
     freeze_first_n_conv_layers,
@@ -99,12 +99,15 @@ def _extract_solution_moves(entry: dict | None) -> list[str] | None:
     if not entry or not isinstance(entry, dict):
         return None
     moves_field = entry.get("Moves") or entry.get("moves")
-    if not moves_field:
-        return None
-    if isinstance(moves_field, str):
-        return [m.strip() for m in moves_field.split() if m.strip()]
-    if isinstance(moves_field, list):
-        return [str(m).strip() for m in moves_field if str(m).strip()]
+    if moves_field:
+        if isinstance(moves_field, str):
+            return [m.strip() for m in moves_field.split() if m.strip()]
+        if isinstance(moves_field, list):
+            return [str(m).strip() for m in moves_field if str(m).strip()]
+    # Expanded format (one position per line): has policy_uci for the next move only
+    policy_uci = entry.get("policy_uci")
+    if policy_uci and isinstance(policy_uci, str) and policy_uci.strip():
+        return [policy_uci.strip()]
     return None
 
 
@@ -340,7 +343,10 @@ def self_play_worker(
     if cfg.mcts.iterations > 0 and inference_client is None:
         network = create_network(cfg, device)
         network.load_state_dict(network_state_dict)
-        network.to(device).eval() # Ensure it's on the correct device and in eval mode
+        network.to(device).eval()
+        sp_dtype = _resolve_self_play_dtype(cfg, device_str)
+        if sp_dtype == torch.float16:
+            network.half()
     else:
         network = None
 
@@ -424,6 +430,9 @@ def continual_self_play_worker(
             except Exception:
                 pass
         network.to(device).eval()
+        sp_dtype = _resolve_self_play_dtype(cfg, device_str)
+        if sp_dtype == torch.float16:
+            network.half()
     last_mtime = os.path.getmtime(checkpoint_path) if os.path.exists(checkpoint_path) else 0.0
     reload_lock = threading.Lock() if (games_per_worker > 1 and network is not None) else None
 
@@ -449,6 +458,8 @@ def continual_self_play_worker(
                                     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
                                     network.load_state_dict(ckpt['model_state_dict'])
                                     network.to(device).eval()
+                                    if sp_dtype == torch.float16:
+                                        network.half()
                                     last_mtime = mtime
                                 except Exception:
                                     pass
@@ -753,6 +764,7 @@ def run_self_play_game(
     progress: Progress | None = None,
     device: torch.device | None = None,
     inference_client: InferenceClient | None = None,
+    self_play_dtype_override: torch.dtype | None = None,
 ):
     """Plays one game of self-play using MCTS and returns the game data."""
     manual_pause_seconds = cfg.training.get("manual_pause_seconds", None)
@@ -957,6 +969,7 @@ def run_self_play_game(
             draw_reward_table = cfg.training.get('draw_reward_table')
             if draw_reward_table is not None and OmegaConf.is_config(draw_reward_table):
                 draw_reward_table = OmegaConf.to_container(draw_reward_table, resolve=True)
+            sp_dtype = self_play_dtype_override if self_play_dtype_override is not None else _resolve_self_play_dtype(cfg, str(device) if device else "cpu")
             mcts_player = MCTS(
                 network,
                 device=device,
@@ -971,6 +984,7 @@ def run_self_play_game(
                 inference_client=inference_client,
                 draw_reward_table=draw_reward_table,
                 initial_position_quality=initial_position_quality,
+                self_play_dtype=sp_dtype,
             )
             mcts_start = time.perf_counter()
             mcts_player.search(root_node, mcts_iterations, batch_size=cfg.mcts.batch_size, progress=progress)
@@ -1758,7 +1772,12 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
     training_batch_size = int(cfg.training.get("batch_size", 64))
     num_workers = len(reply_queues_by_worker) if reply_queues_by_worker else 1
     games_per_worker = max(1, int(cfg.training.get("games_per_worker", 1)))
-    max_stacked_requests = min(training_batch_size, num_workers * games_per_worker)
+    max_batch = cfg.training.get("inference_server_max_batch_size")
+    if max_batch in (None, "", "null"):
+        max_batch = training_batch_size
+    else:
+        max_batch = int(max_batch)
+    max_stacked_requests = min(max_batch, num_workers * games_per_worker)
     min_stacked_requests = cfg.training.get("inference_server_min_stacked_requests")
     if min_stacked_requests in (None, "", "null"):
         min_stacked_requests = max(1, max_stacked_requests // 2)
@@ -2259,9 +2278,14 @@ def run_training_loop(cfg: DictConfig) -> None:
         )
         if inference_process is not None:
             training_batch_size = int(cfg.training.get("batch_size", 64))
+            max_batch = cfg.training.get("inference_server_max_batch_size")
+            if max_batch in (None, "", "null"):
+                max_batch = training_batch_size
+            else:
+                max_batch = int(max_batch)
             nw = len(reply_queues_by_worker) if reply_queues_by_worker else 1
             gpw = max(1, int(cfg.training.get("games_per_worker", 1)))
-            max_stacked = min(training_batch_size, nw * gpw)
+            max_stacked = min(max_batch, nw * gpw)
             eff_wait = int(cfg.training.get("inference_server_max_wait_ms", 2))
             gpw = max(1, int(cfg.training.get("games_per_worker", 1)))
             if gpw > 1 and eff_wait < 10:
@@ -2907,6 +2931,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     progress=progress if (device.type == 'cpu' and show_progress) else None,
                     device=self_play_device,
                     inference_client=inference_client,
+                    self_play_dtype_override=torch.float32 if (inference_request_queue is None and cfg.mcts.iterations > 0) else None,  # Main network stays float32 for training
                 )
                 include_in_replay = _include_in_replay_buffer(game_info)
                 _update_mate_success(game_info)
@@ -3068,8 +3093,12 @@ def run_training_loop(cfg: DictConfig) -> None:
         # For TPU, pause self-play workers so inference queue drains, then acquire lock
         if pause_for_training is not None:
             pause_for_training.set()
+            progress.print("TPU: Paused self-play workers, waiting for inference queue to drain...")
+            time.sleep(1.0)  # Give workers time to see pause signal before acquire
         if tpu_lock is not None:
+            progress.print("TPU: Acquiring lock (may block until inference finishes current batch)...")
             tpu_lock.acquire()
+            progress.print("TPU: Lock acquired, starting training.")
         try:
             network.to(training_device).train()
 
@@ -3133,6 +3162,18 @@ def run_training_loop(cfg: DictConfig) -> None:
                 illegal_r=float("nan"),
                 illegal_p=float("nan"),
             )
+            if use_tpu:
+                bs = cfg.training.batch_size
+                est_min = max(2, min(30, bs // 64))  # Rough: ~2 min for 64, scales with batch
+                progress.print(
+                    f"TPU: First step compiles XLA graph (batch_size={bs}). "
+                    f"May take {est_min}-{est_min*2} min. Subsequent steps are fast."
+                )
+                if bs > 512:
+                    progress.print(
+                        f"TPU: Consider batch_size=256 or 512 for faster first-step compilation. "
+                        f"Current {bs} may take 15-30+ min."
+                    )
             # Use values from cfg
             for epoch in range(cfg.training.num_training_steps):
                 batch = replay_buffer.sample(

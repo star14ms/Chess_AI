@@ -35,6 +35,19 @@ def _create_network_from_cfg(cfg):
     return create_network
 
 
+def _resolve_self_play_dtype(cfg, device_str: str) -> torch.dtype:
+    """Resolve self-play inference dtype: float16 by default on cuda/mps, float32 elsewhere."""
+    dtype_str = cfg.training.get("self_play_dtype") if cfg else None
+    if dtype_str in (None, "", "null", "auto"):
+        ds = (device_str or "").lower()
+        if "cuda" in ds or ds == "mps":
+            return torch.float16
+        return torch.float32
+    if str(dtype_str).lower() in ("float16", "fp16", "half"):
+        return torch.float16
+    return torch.float32
+
+
 def inference_server_worker(
     checkpoint_path: str,
     cfg,
@@ -64,6 +77,9 @@ def inference_server_worker(
         except Exception:
             pass
     network.to(device).eval()
+    inference_dtype = _resolve_self_play_dtype(cfg, device_str)
+    if inference_dtype == torch.float16:
+        network.half()
 
     last_mtime = 0.0
     if checkpoint_path and os.path.exists(checkpoint_path):
@@ -92,6 +108,8 @@ def inference_server_worker(
                         ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
                         network.load_state_dict(ckpt["model_state_dict"])
                         network.to(device).eval()
+                        if inference_dtype == torch.float16:
+                            network.half()
                         last_mtime = mtime
                     except Exception:
                         pass
@@ -151,11 +169,11 @@ def inference_server_worker(
             continue
 
         obs_batch = np.concatenate([obs for _, obs, _ in valid_pairs], axis=0)
-        obs_tensor = torch.from_numpy(obs_batch).to(device=device, dtype=torch.float32)
+        obs_tensor = torch.from_numpy(obs_batch).to(device=device, dtype=inference_dtype)
         with torch.no_grad():
             policy_logits, value_preds = network(obs_tensor)
-        policy_np = policy_logits.detach().cpu().numpy()
-        value_np = value_preds.detach().cpu().numpy()
+        policy_np = policy_logits.detach().float().cpu().numpy()
+        value_np = value_preds.detach().float().cpu().numpy()
 
         offset = 0
         for req, _obs, size in valid_pairs:
@@ -235,6 +253,9 @@ def inference_server_worker_tpu(
         except Exception:
             pass
     network.to(device).eval()
+    inference_dtype = _resolve_self_play_dtype(cfg, device_str)
+    if inference_dtype == torch.float16:
+        network.half()
 
     last_mtime = 0.0
     if checkpoint_path and os.path.exists(checkpoint_path):
@@ -263,6 +284,8 @@ def inference_server_worker_tpu(
                         ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
                         network.load_state_dict(ckpt["model_state_dict"])
                         network.to(device).eval()
+                        if inference_dtype == torch.float16:
+                            network.half()
                         last_mtime = mtime
                     except Exception:
                         pass
@@ -316,14 +339,14 @@ def inference_server_worker_tpu(
             continue
 
         obs_batch = np.concatenate([obs for _, obs, _ in valid_pairs], axis=0)
-        obs_tensor = torch.from_numpy(obs_batch).float().to(device)
+        obs_tensor = torch.from_numpy(obs_batch).to(dtype=inference_dtype, device=device)
 
         with lock:
             with torch.no_grad():
                 policy_logits, value_preds = network(obs_tensor)
             xm.mark_step()
-            policy_np = policy_logits.cpu().numpy()
-            value_np = value_preds.cpu().numpy()
+            policy_np = policy_logits.detach().float().cpu().numpy()
+            value_np = value_preds.detach().float().cpu().numpy()
 
         offset = 0
         for req, _obs, size in valid_pairs:

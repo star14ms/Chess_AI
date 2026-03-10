@@ -65,6 +65,7 @@ class MCTS:
                  inference_client: Optional["InferenceClient"] = None,
                  draw_reward_table: Optional[dict] = None,  # {termination: {quality: reward}} for position-aware term_val
                  initial_position_quality: Optional[str] = None,  # 'winning'|'losing'|'equal' from White's perspective
+                 self_play_dtype: Optional[torch.dtype] = None,  # Dtype for network inference; None = float32
                  ):
         self.network = network
         self.device = torch.device(device)
@@ -79,6 +80,7 @@ class MCTS:
         self.inference_client = inference_client
         self.draw_reward_table = draw_reward_table
         self.initial_position_quality = initial_position_quality
+        self.self_play_dtype = self_play_dtype if self_play_dtype is not None else torch.float32
         if self.network is None and self.inference_client is None:
             raise ValueError("MCTS requires either a network or an inference client.")
         if self.network is not None:
@@ -439,6 +441,8 @@ class MCTS:
                 if steps is None:
                     steps = self.history_steps
                 obs_tensor = self._prepare_observation(leaf_node, reuse_buffer=True).unsqueeze(0)
+                if self.inference_client is None and obs_tensor.dtype != self.self_play_dtype:
+                    obs_tensor = obs_tensor.to(self.self_play_dtype)
                 with torch.no_grad():
                     if self.inference_client is not None:
                         policy_logits, value_pred = self.inference_client.predict(obs_tensor)
@@ -563,6 +567,8 @@ class MCTS:
         value_preds_batch = None
         if obs_tensors:
             obs_batch = torch.stack(obs_tensors, dim=0)  # (B, C, H, W)
+            if self.inference_client is None and obs_batch.dtype != self.self_play_dtype:
+                obs_batch = obs_batch.to(self.self_play_dtype)
             with torch.no_grad():
                 if self.inference_client is not None:
                     policy_logits_batch, value_preds_batch = self.inference_client.predict(obs_batch)
