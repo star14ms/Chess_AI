@@ -138,6 +138,44 @@ def _dataset_cache_key(value) -> str:
         return repr(value)
 
 
+def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets_np, policy_logits, value_preds, policy_loss, value_loss):
+    """Log batch stats when NaN loss detected to help find root cause of TPU gradient deviation."""
+    progress.print(f"[TPU diag] NaN/Inf loss at epoch {epoch}. Batch stats:")
+    p = policy_targets_np
+    n_zeros = int(np.sum(p == 0))
+    n_small = int(np.sum((p > 0) & (p < 6e-5)))
+    p_sum = p.sum(axis=1)
+    progress.print(f"  policy_targets: shape={p.shape}, zeros={n_zeros}, small(<6e-5)={n_small}, "
+                   f"row_sums min={p_sum.min():.6f} max={p_sum.max():.6f} mean={p_sum.mean():.6f}")
+    v = value_targets_np
+    progress.print(f"  value_targets: min={v.min():.4f} max={v.max():.4f} mean={v.mean():.4f}")
+    try:
+        with torch.no_grad():
+            pl = policy_logits.detach().float().cpu().numpy()
+            vp = value_preds.detach().float().cpu().numpy()
+        progress.print(f"  policy_logits: min={pl.min():.4f} max={pl.max():.4f} has_nan={bool(np.isnan(pl).any())}")
+        progress.print(f"  value_preds: min={vp.min():.4f} max={vp.max():.4f} has_nan={bool(np.isnan(vp).any())}")
+    except Exception as e:
+        progress.print(f"  (could not get model outputs: {e})")
+    try:
+        progress.print(f"  policy_loss={float(policy_loss.item())}, value_loss={float(value_loss.item())}")
+    except Exception:
+        progress.print("  (could not get loss values)")
+
+
+def _compute_grad_norm(model) -> float:
+    """Compute total gradient norm across all parameters. Returns float('nan') on error."""
+    try:
+        total_norm_sq = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm_sq += param_norm.item() ** 2
+        return total_norm_sq ** 0.5
+    except Exception:
+        return float("nan")
+
+
 def _state_dict_has_nan_or_inf(state_dict: dict) -> bool:
     """Check if any tensor in state_dict contains NaN or Inf. Used to reject corrupted checkpoints."""
     for v in state_dict.values():
@@ -3189,6 +3227,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                         f"TPU: Consider batch_size=256 or 512 for faster first-step compilation. "
                         f"Current {bs} may take 15-30+ min."
                     )
+                if cfg.training.get("diagnose_tpu_gradients", False):
+                    progress.print(
+                        "TPU: diagnose_tpu_gradients enabled - will log grad norms, loss components, "
+                        "and batch stats on NaN to find gradient deviation cause."
+                    )
             # Use values from cfg
             for epoch in range(cfg.training.num_training_steps):
                 batch = replay_buffer.sample(
@@ -3216,6 +3259,11 @@ def run_training_loop(cfg: DictConfig) -> None:
 
                 # Skip batch if loss is NaN/Inf (e.g. from bad replay data or TPU numerical instability)
                 if not torch.isfinite(total_loss).item():
+                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
+                        _log_nan_batch_diagnostics(
+                            progress, epoch, policy_targets_np, value_targets_np,
+                            policy_logits, value_preds, policy_loss, value_loss,
+                        )
                     optimizer.zero_grad()
                     continue
 
@@ -3224,12 +3272,28 @@ def run_training_loop(cfg: DictConfig) -> None:
                 if scaler.is_enabled():
                     scaler.scale(total_loss).backward()
                     scaler.unscale_(optimizer)
+                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
+                        grad_norm = _compute_grad_norm(network)
+                        log_interval = max(1, cfg.training.num_training_steps // 10)
+                        if epoch % log_interval == 0 or grad_norm > 10.0 or not np.isfinite(grad_norm):
+                            progress.print(
+                                f"[TPU diag] epoch={epoch} grad_norm={grad_norm:.4f} "
+                                f"loss_p={policy_loss.item():.4f} loss_v={value_loss.item():.4f}"
+                            )
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     total_loss.backward()
+                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
+                        grad_norm = _compute_grad_norm(network)
+                        log_interval = max(1, cfg.training.num_training_steps // 10)
+                        if epoch % log_interval == 0 or grad_norm > 10.0 or not np.isfinite(grad_norm):
+                            progress.print(
+                                f"[TPU diag] epoch={epoch} grad_norm={grad_norm:.4f} "
+                                f"loss_p={policy_loss.item():.4f} loss_v={value_loss.item():.4f}"
+                            )
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                     if use_tpu:
