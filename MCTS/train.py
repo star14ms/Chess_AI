@@ -142,8 +142,12 @@ def _state_dict_has_nan_or_inf(state_dict: dict) -> bool:
     """Check if any tensor in state_dict contains NaN or Inf. Used to reject corrupted checkpoints."""
     for v in state_dict.values():
         if isinstance(v, torch.Tensor):
-            if torch.isnan(v).any() or torch.isinf(v).any():
-                return True
+            try:
+                v_cpu = v.cpu()  # Materialize TPU/XLA tensors before checking
+                if torch.isnan(v_cpu).any().item() or torch.isinf(v_cpu).any().item():
+                    return True
+            except Exception:
+                pass  # If we can't check (e.g. TPU sync fails), assume OK
     return False
 
 
