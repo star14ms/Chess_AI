@@ -1835,7 +1835,8 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
 
     queue_maxsize = cfg.training.get("inference_queue_maxsize")
     if queue_maxsize in (None, "", "null"):
-        queue_maxsize = len(reply_queues_by_worker) if reply_queues_by_worker else 128
+        nw = len(reply_queues_by_worker) if reply_queues_by_worker else 1
+        queue_maxsize = max(32, nw * 8)  # Avoid workers blocking on put() when server is slow
     queue_maxsize = int(queue_maxsize)
     training_batch_size = int(cfg.training.get("batch_size", 64))
     num_workers = len(reply_queues_by_worker) if reply_queues_by_worker else 1
@@ -1865,6 +1866,7 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
 
     request_queue = multiprocessing.get_context("spawn").Queue(maxsize=queue_maxsize)
     stop_event = manager.Event()
+    ready_event = manager.Event()
     cfg_for_worker = OmegaConf.to_container(cfg, resolve=True) if OmegaConf.is_config(cfg) else cfg
 
     use_tpu = str(device_str).lower() in ("xla", "tpu")
@@ -1908,10 +1910,20 @@ def _start_inference_server(cfg: DictConfig, manager, checkpoint_path: str, netw
                 reply_queues_by_worker,
                 network_state_dict,
                 logging_enabled,
+                ready_event,
             ),
         )
         p.daemon = True
         p.start()
+        # Wait for GPU inference server to be ready (avoids silent failure when spawn fails)
+        ready_timeout_s = 60
+        if not ready_event.wait(timeout=ready_timeout_s):
+            print(
+                f"Inference server on {device_str} did not signal ready within {ready_timeout_s}s. "
+                "Self-play may be stuck. Check stderr for CUDA/GPU errors. "
+                "On Kaggle TPU kernel, cuda:0 might not exist - use inference_server_device: xla or null.",
+                flush=True,
+            )
         return request_queue, stop_event, p, device_str, None
 
 
