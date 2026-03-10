@@ -74,6 +74,7 @@ training:
   num_training_iterations: 20
   num_training_steps: 40
   batch_size: 64
+  grad_clip_norm: 1.0  # Gradient clipping for TPU stability; set null to disable
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
   games_per_worker: 1  # Concurrent games per worker (increases parallelism with inference server)

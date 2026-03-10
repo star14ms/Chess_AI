@@ -3210,13 +3210,24 @@ def run_training_loop(cfg: DictConfig) -> None:
 
                     total_loss = policy_loss + value_loss
 
+                # Skip batch if loss is NaN/Inf (e.g. from bad replay data or TPU numerical instability)
+                if not torch.isfinite(total_loss).item():
+                    optimizer.zero_grad()
+                    continue
+
                 optimizer.zero_grad()
+                grad_clip = cfg.training.get("grad_clip_norm")
                 if scaler.is_enabled():
                     scaler.scale(total_loss).backward()
+                    scaler.unscale_(optimizer)
+                    if grad_clip is not None and grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     total_loss.backward()
+                    if grad_clip is not None and grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                     if use_tpu:
                         import torch_xla.core.xla_model as xm
                         xm.optimizer_step(optimizer, barrier=True)
