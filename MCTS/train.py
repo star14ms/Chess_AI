@@ -140,27 +140,42 @@ def _dataset_cache_key(value) -> str:
 
 def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets_np, policy_logits, value_preds, policy_loss, value_loss):
     """Log batch stats when NaN loss detected to help find root cause of TPU gradient deviation."""
-    progress.print(f"[TPU diag] NaN/Inf loss at epoch {epoch}. Batch stats:")
-    p = policy_targets_np
-    n_zeros = int(np.sum(p == 0))
-    n_small = int(np.sum((p > 0) & (p < 6e-5)))
-    p_sum = p.sum(axis=1)
-    progress.print(f"  policy_targets: shape={p.shape}, zeros={n_zeros}, small(<6e-5)={n_small}, "
-                   f"row_sums min={p_sum.min():.6f} max={p_sum.max():.6f} mean={p_sum.mean():.6f}")
-    v = value_targets_np
-    progress.print(f"  value_targets: min={v.min():.4f} max={v.max():.4f} mean={v.mean():.4f}")
+    def _out(msg):
+        logging.info(msg)
+        print(msg, flush=True)
+        if progress is not None and hasattr(progress, "print"):
+            try:
+                progress.print(msg)
+            except Exception:
+                pass
+
     try:
-        with torch.no_grad():
-            pl = policy_logits.detach().float().cpu().numpy()
-            vp = value_preds.detach().float().cpu().numpy()
-        progress.print(f"  policy_logits: min={pl.min():.4f} max={pl.max():.4f} has_nan={bool(np.isnan(pl).any())}")
-        progress.print(f"  value_preds: min={vp.min():.4f} max={vp.max():.4f} has_nan={bool(np.isnan(vp).any())}")
+        _out(f"[TPU diag] NaN/Inf loss at epoch {epoch}. Batch stats:")
+        p = policy_targets_np
+        n_zeros = int(np.sum(p == 0))
+        n_small = int(np.sum((p > 0) & (p < 6e-5)))
+        p_sum = p.sum(axis=1)
+        _out(f"  policy_targets: shape={p.shape}, zeros={n_zeros}, small(<6e-5)={n_small}, "
+             f"row_sums min={p_sum.min():.6f} max={p_sum.max():.6f} mean={p_sum.mean():.6f}")
+        v = value_targets_np
+        _out(f"  value_targets: min={v.min():.4f} max={v.max():.4f} mean={v.mean():.4f}")
+        try:
+            with torch.no_grad():
+                pl = policy_logits.detach().float().cpu().numpy()
+                vp = value_preds.detach().float().cpu().numpy()
+            _out(f"  policy_logits: min={pl.min():.4f} max={pl.max():.4f} has_nan={bool(np.isnan(pl).any())}")
+            _out(f"  value_preds: min={vp.min():.4f} max={vp.max():.4f} has_nan={bool(np.isnan(vp).any())}")
+        except Exception as e:
+            _out(f"  (could not get model outputs: {e})")
+        try:
+            _out(f"  policy_loss={float(policy_loss.item())}, value_loss={float(value_loss.item())}")
+        except Exception:
+            _out("  (could not get loss values)")
     except Exception as e:
-        progress.print(f"  (could not get model outputs: {e})")
-    try:
-        progress.print(f"  policy_loss={float(policy_loss.item())}, value_loss={float(value_loss.item())}")
-    except Exception:
-        progress.print("  (could not get loss values)")
+        try:
+            _out(f"[TPU diag] Error during diagnostic: {e}")
+        except Exception:
+            print(f"[TPU diag] Error during diagnostic: {e}", flush=True)
 
 
 def _compute_grad_norm(model) -> float:
@@ -3258,7 +3273,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                     total_loss = policy_loss + value_loss
 
                 # Skip batch if loss is NaN/Inf (e.g. from bad replay data or TPU numerical instability)
-                if not torch.isfinite(total_loss).item():
+                try:
+                    loss_finite = torch.isfinite(total_loss).item()
+                except Exception:
+                    loss_finite = False  # Assume NaN if check fails (e.g. TPU sync)
+                if not loss_finite:
                     if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
                         _log_nan_batch_diagnostics(
                             progress, epoch, policy_targets_np, value_targets_np,
