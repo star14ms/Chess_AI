@@ -138,6 +138,15 @@ def _dataset_cache_key(value) -> str:
         return repr(value)
 
 
+def _state_dict_has_nan_or_inf(state_dict: dict) -> bool:
+    """Check if any tensor in state_dict contains NaN or Inf. Used to reject corrupted checkpoints."""
+    for v in state_dict.values():
+        if isinstance(v, torch.Tensor):
+            if torch.isnan(v).any() or torch.isinf(v).any():
+                return True
+    return False
+
+
 def _empty_device_cache(device=None):
     """Clear GPU cache for CUDA and/or MPS to reduce memory fragmentation (like diagnostic_mcts)."""
     if torch.cuda.is_available():
@@ -456,11 +465,13 @@ def continual_self_play_worker(
                             if mtime > last_mtime and network is not None:
                                 try:
                                     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-                                    network.load_state_dict(ckpt['model_state_dict'])
-                                    network.to(device).eval()
-                                    if sp_dtype == torch.float16:
-                                        network.half()
-                                    last_mtime = mtime
+                                    sd = ckpt.get("model_state_dict")
+                                    if sd is not None and not _state_dict_has_nan_or_inf(sd):
+                                        network.load_state_dict(sd)
+                                        network.to(device).eval()
+                                        if sp_dtype == torch.float16:
+                                            network.half()
+                                        last_mtime = mtime
                                 except Exception:
                                     pass
             except Exception:
@@ -3332,20 +3343,27 @@ def run_training_loop(cfg: DictConfig) -> None:
                 history.setdefault('mate_success', {}).setdefault(label, []).append(ratio)
             history["mate_success_labels"] = list(mate_entry_labels)
 
-        # Save checkpoint after each iteration
-        checkpoint = {
-            'iteration': iteration + 1,
-            'model_state_dict': network.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'training_mode': 'rl',
-            'total_games_simulated': total_games_simulated,
-            'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
-            'history': history,
-        }
+        # Save checkpoint after each iteration (skip if model has NaN/Inf to avoid corrupting inference)
         checkpoint_path = os.path.join(checkpoint_dir, "model.pth")
-        torch.save(checkpoint, checkpoint_path)
+        model_state = network.state_dict()
+        if _state_dict_has_nan_or_inf(model_state):
+            progress.print(
+                "WARNING: Skipping checkpoint save - model contains NaN/Inf. "
+                "Inference will continue with previous checkpoint. Fix training (e.g. lower LR, disable AMP on TPU)."
+            )
+        else:
+            checkpoint = {
+                'iteration': iteration + 1,
+                'model_state_dict': model_state,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'training_mode': 'rl',
+                'total_games_simulated': total_games_simulated,
+                'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
+                'history': history,
+            }
+            torch.save(checkpoint, checkpoint_path)
         
-        checkpoint_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024)
+        checkpoint_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024) if os.path.exists(checkpoint_path) else 0.0
         buffer_size_str = str(len(replay_buffer))
         
         progress.print(

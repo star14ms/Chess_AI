@@ -86,6 +86,8 @@ class MCTSNode:
             if not child:
                 continue
             score = child.Q() + child.U(C_puct)
+            if math.isnan(score) or math.isinf(score):
+                continue  # Skip corrupted nodes (e.g. from NaN model outputs)
             if score > best_score:
                 best_score = score
                 best_child = child

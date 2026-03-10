@@ -106,11 +106,15 @@ def inference_server_worker(
                 if mtime > last_mtime:
                     try:
                         ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-                        network.load_state_dict(ckpt["model_state_dict"])
-                        network.to(device).eval()
-                        if inference_dtype == torch.float16:
-                            network.half()
-                        last_mtime = mtime
+                        sd = ckpt.get("model_state_dict")
+                        if sd is not None and not _state_dict_has_nan_or_inf(sd):
+                            network.load_state_dict(sd)
+                            network.to(device).eval()
+                            if inference_dtype == torch.float16:
+                                network.half()
+                            last_mtime = mtime
+                        elif sd is not None and logging_enabled:
+                            logger.warning("InferenceServer: Rejected checkpoint with NaN/Inf - keeping previous weights")
                     except Exception:
                         pass
         except Exception:
