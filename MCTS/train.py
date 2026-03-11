@@ -3476,19 +3476,23 @@ def run_training_loop(cfg: DictConfig) -> None:
                 else:
                     total_loss.backward()
                     if use_tpu and epoch == 0:
-                        print("[TPU diag] backward() done, starting optimizer_step...", file=sys.stderr, flush=True)
-                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
-                        grad_norm = _compute_grad_norm(network)
-                        log_interval = max(1, cfg.training.num_training_steps // 10)
-                        if epoch % log_interval == 0 or grad_norm > 10.0 or not np.isfinite(grad_norm):
-                            progress.print(
-                                f"[TPU diag] epoch={epoch} grad_norm={grad_norm:.4f} "
-                                f"loss_p={policy_loss.item():.4f} loss_v={value_loss.item():.4f}"
-                            )
+                        print("[TPU diag] backward() done, applying grad_clip then optimizer_step...", file=sys.stderr, flush=True)
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
+                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
+                        # Skip grad_norm on TPU epoch 0: _compute_grad_norm does 100+ .item() syncs, very slow
+                        if epoch > 0:
+                            grad_norm = _compute_grad_norm(network)
+                            log_interval = max(1, cfg.training.num_training_steps // 10)
+                            if epoch % log_interval == 0 or grad_norm > 10.0 or not np.isfinite(grad_norm):
+                                progress.print(
+                                    f"[TPU diag] epoch={epoch} grad_norm={grad_norm:.4f} "
+                                    f"loss_p={policy_loss.item():.4f} loss_v={value_loss.item():.4f}"
+                                )
                     if use_tpu:
                         import torch_xla.core.xla_model as xm
+                        if epoch == 0:
+                            print("[TPU diag] calling xm.optimizer_step (first step may compile, 2-5 min)...", file=sys.stderr, flush=True)
                         xm.optimizer_step(optimizer, barrier=True)
                         if epoch == 0:
                             print("[TPU diag] optimizer_step done, updating loss totals...", file=sys.stderr, flush=True)
