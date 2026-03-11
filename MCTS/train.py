@@ -2350,6 +2350,21 @@ def run_training_loop(cfg: DictConfig) -> None:
     if mate_entry_labels:
         progress.print(f"Mate-in success tracking enabled per datafile: {', '.join(mate_entry_labels)} (see second plot in visualize_learning_curves_RL.py)")
 
+    # Save loaded model to checkpoint_dir so workers can load it when not using inference server
+    # (workers read checkpoint_dir/model.pth; if we loaded from checkpoint_load, that file may not exist yet)
+    if continual_enabled and not cfg.training.get("use_inference_server", False):
+        actors_checkpoint_path = os.path.join(checkpoint_dir, "model.pth")
+        if not os.path.exists(actors_checkpoint_path) or load_checkpoint_path != actors_checkpoint_path:
+            try:
+                model_state = network.state_dict()
+                if not _state_dict_has_nan_or_inf(model_state):
+                    torch.save(
+                        {"model_state_dict": model_state, "iteration": start_iter, "training_mode": "rl"},
+                        actors_checkpoint_path,
+                    )
+            except Exception:
+                pass
+
     # Optional inference server for batched GPU/TPU inference
     inference_request_queue = None
     inference_reply_queues = None
