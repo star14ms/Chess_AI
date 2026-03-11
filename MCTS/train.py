@@ -3373,6 +3373,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                 )
                 if batch is None: continue
 
+                if use_tpu:
+                    print(f"[TPU diag] epoch {epoch}: got batch, starting forward...", file=sys.stderr, flush=True)
                 # states_np, policy_targets_np, fens_batch, value_targets_np = batch
                 states_np, policy_targets_np, boards_batch, value_targets_np, source_ids_np = batch # Unpack boards
                 states_tensor = torch.from_numpy(states_np).to(training_device)
@@ -3401,6 +3403,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
                     total_loss = policy_loss + value_loss
 
+                if use_tpu:
+                    print(f"[TPU diag] epoch {epoch}: forward+loss done, backward next...", file=sys.stderr, flush=True)
                 # H6: Check which loss component is NaN (policy vs value) - run before any .item() on total_loss
                 if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
                     pl_ok, vl_ok = None, None
@@ -3474,8 +3478,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     scaler.update()
                 else:
                     total_loss.backward()
-                    if use_tpu and epoch == 0:
-                        print("[TPU diag] backward() done, applying grad_clip then optimizer_step...", file=sys.stderr, flush=True)
+                    if use_tpu:
+                        print(f"[TPU diag] epoch {epoch} backward() done, optimizer_step next...", file=sys.stderr, flush=True)
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                     if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
@@ -3493,8 +3497,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                         if epoch == 0:
                             print("[TPU diag] calling xm.optimizer_step (first step may compile, 2-5 min)...", file=sys.stderr, flush=True)
                         xm.optimizer_step(optimizer, barrier=True)
-                        if epoch == 0:
-                            print("[TPU diag] optimizer_step done, updating loss totals...", file=sys.stderr, flush=True)
+                        if use_tpu:
+                            print(f"[TPU diag] epoch {epoch} optimizer_step done, loss.item() + source_acc next...", file=sys.stderr, flush=True)
                     else:
                         optimizer.step()
 
@@ -3518,8 +3522,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     or epoch % illegal_metrics_interval == 0
                     or epoch == cfg.training.num_training_steps - 1
                 )
-                if use_tpu and epoch == 0:
-                    print(f"[TPU diag] epoch 0 loss totals updated, illegal_metrics={'yes' if do_illegal_metrics else 'no'}...", file=sys.stderr, flush=True)
+                if use_tpu:
+                    print(f"[TPU diag] epoch {epoch} loss totals + source_acc done, illegal_metrics={'yes' if do_illegal_metrics else 'no'}...", file=sys.stderr, flush=True)
                 if do_illegal_metrics:
                     with torch.no_grad():
                         policy_probs = torch.softmax(policy_logits, dim=1)
@@ -3547,9 +3551,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                         avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
                         total_illegal_moves_in_iteration += batch_illegal_moves
                         total_samples_in_iteration += len(boards_batch)
-                        if use_tpu and epoch == 0:
-                            print("[TPU diag] illegal_metrics done, updating progress bar...", file=sys.stderr, flush=True)
+                        if use_tpu:
+                            print(f"[TPU diag] epoch {epoch} illegal_metrics done...", file=sys.stderr, flush=True)
 
+                if use_tpu:
+                    print(f"[TPU diag] epoch {epoch}: about to progress.update...", file=sys.stderr, flush=True)
                 current_avg_policy_loss = total_policy_loss / (epoch + 1)
                 current_avg_value_loss = total_value_loss / (epoch + 1)
                 current_illegal_ratio = (
