@@ -3459,6 +3459,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
                 optimizer.zero_grad()
                 grad_clip = cfg.training.get("grad_clip_norm")
+                if use_tpu and grad_clip is not None and grad_clip > 0.5:
+                    grad_clip = min(grad_clip, 0.5)  # Tighter clip on TPU to reduce NaN after a few steps
                 if use_tpu and epoch == 0:
                     print("[TPU diag] Loss finite, starting backward (first step compiles XLA graph, may take 2-4 min)...", file=sys.stderr, flush=True)
                 if scaler.is_enabled():
@@ -3481,7 +3483,17 @@ def run_training_loop(cfg: DictConfig) -> None:
                     if use_tpu:
                         print(f"[TPU diag] epoch {epoch} backward() done, optimizer_step next...", file=sys.stderr, flush=True)
                     if grad_clip is not None and grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
+                        total_norm = torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
+                        if use_tpu:
+                            try:
+                                if not torch.isfinite(total_norm).item():
+                                    print(f"[TPU diag] epoch {epoch} grad norm NaN/Inf - skipping optimizer step", file=sys.stderr, flush=True)
+                                    optimizer.zero_grad()
+                                    do_refresh = (epoch + 1) % 8 == 0 or epoch == cfg.training.num_training_steps - 1
+                                    progress.update(task_id_train, advance=1, loss_p=float("nan"), loss_v=float("nan"), illegal_r=0.0, illegal_p=0.0, refresh=do_refresh or use_tpu)
+                                    continue
+                            except Exception:
+                                pass  # If check hangs, proceed
                     if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
                         # Skip grad_norm on TPU: _compute_grad_norm does 100+ .item() syncs per param, very slow
                         pass  # grad_norm disabled on TPU
