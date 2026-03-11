@@ -65,6 +65,8 @@ class TrainingConfig:
     batch_size: int = 128
     grad_clip_norm: Optional[float] = None  # Max gradient norm; None = no clipping. Use 1.0 for TPU stability.
     diagnose_tpu_gradients: bool = False  # If True and on TPU, log grad norms, loss components, batch stats to find gradient deviation cause
+    replay_buffer_float32: bool = False  # If True, store replay buffer in float32 (avoids float16 underflow on TPU)
+    skip_replay_buffer_load: bool = False  # If True, skip loading buffer from checkpoint (refill from self-play)
     use_multiprocessing: bool = True  # Flag to enable/disable multiprocessing for self-play
     self_play_workers: int = 0  # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
     games_per_worker: int = 1  # Number of concurrent games per worker. >1 increases parallelism when using inference server.

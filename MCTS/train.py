@@ -690,11 +690,12 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
     
-    def get_state(self, env_type='chess'):
+    def get_state(self, env_type='chess', use_float32=False):
         """Returns the replay buffer state for checkpointing in compressed format.
         
         Args:
             env_type: Type of environment ('chess' or 'gomoku')
+            use_float32: If True, store state/policy in float32 (avoids float16 underflow of small probs on TPU)
         """
         if len(self.buffer) == 0:
             return {
@@ -737,15 +738,16 @@ class ReplayBuffer:
                 board_str = board.fen() if hasattr(board, 'fen') else str(board)
             
             # Store arrays as (bytes, shape, dtype) to avoid NumPy's deprecated pickle path (numpy.core.numeric)
-            state_f16 = state.astype(np.float16)
-            policy_f16 = policy.astype(np.float16)
+            # use_float32 avoids float16 underflow of small policy probs (can cause TPU NaN)
+            state_arr = state.astype(np.float32 if use_float32 else np.float16)
+            policy_arr = policy.astype(np.float32 if use_float32 else np.float16)
             compact_exp = (
-                state_f16.tobytes(),
-                state_f16.shape,
-                state_f16.dtype.name,
-                policy_f16.tobytes(),
-                policy_f16.shape,
-                policy_f16.dtype.name,
+                state_arr.tobytes(),
+                state_arr.shape,
+                state_arr.dtype.name,
+                policy_arr.tobytes(),
+                policy_arr.shape,
+                policy_arr.dtype.name,
                 board_str,
                 float(value),
                 source_id
@@ -2140,7 +2142,7 @@ def _load_checkpoint(
                 history["other_draw_count"] = [0] * len(history["policy_loss"])
 
         buffer_loaded = False
-        if "replay_buffer_state" in checkpoint:
+        if "replay_buffer_state" in checkpoint and not cfg.training.get("skip_replay_buffer_load", False):
             try:
                 replay_buffer_state = checkpoint["replay_buffer_state"]
                 replay_buffer.load_state(replay_buffer_state, create_board_from_serialized)
@@ -3495,7 +3497,10 @@ def run_training_loop(cfg: DictConfig) -> None:
                 'optimizer_state_dict': optimizer.state_dict(),
                 'training_mode': 'rl',
                 'total_games_simulated': total_games_simulated,
-                'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
+                'replay_buffer_state': replay_buffer.get_state(
+                    env_type=cfg.env.type,
+                    use_float32=bool(cfg.training.get("replay_buffer_float32", False)),
+                ),
                 'history': history,
             }
             torch.save(checkpoint, checkpoint_path)

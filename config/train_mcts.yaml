@@ -76,6 +76,8 @@ training:
   batch_size: 64
   grad_clip_norm: 1.0  # Gradient clipping for TPU stability; set null to disable
   diagnose_tpu_gradients: false  # Set true to log grad norms, loss components, batch stats when on TPU
+  replay_buffer_float32: false  # Set true on TPU to avoid float16 underflow of policy probs (can cause NaN)
+  skip_replay_buffer_load: false  # Set true to skip loading buffer (use when buffer may cause NaN; will refill from self-play)
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
   games_per_worker: 1  # Concurrent games per worker (increases parallelism with inference server)
