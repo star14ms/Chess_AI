@@ -322,6 +322,41 @@ def _log_forward_activation_diagnostics(captured):
     _log("[TPU diag] === End forward activation check ===")
 
 
+def _clamp_bn_params_on_tpu(network):
+    """Replace NaN/Inf in BatchNorm params with safe fallbacks after optimizer step.
+    BN bias -> 0, BN weight (gamma) -> 1. Keeps BN trainable while fixing TPU Adam corruption.
+    Returns (count, list of param names clamped)."""
+    fixed = 0
+    clamped_names = []
+    for name, module in network.named_modules():
+        if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
+            if module.weight is not None:
+                with torch.no_grad():
+                    w = module.weight.data
+                    bad = ~torch.isfinite(w)
+                    if bad.any():
+                        module.weight.data = torch.where(bad, torch.ones_like(w), w)
+                        fixed += 1
+                        clamped_names.append(f"{name}.weight")
+            if module.bias is not None:
+                with torch.no_grad():
+                    b = module.bias.data
+                    bad = ~torch.isfinite(b)
+                    if bad.any():
+                        module.bias.data = torch.where(bad, torch.zeros_like(b), b)
+                        fixed += 1
+                        clamped_names.append(f"{name}.bias")
+    if fixed > 0:
+        print(f"[TPU] Clamped {fixed} BN param(s) with NaN/Inf: {clamped_names}", file=sys.stderr, flush=True)
+        if fixed > 5:
+            print(
+                "[TPU] WARNING: Many BN params corrupted. Consider lowering tpu_learning_rate_multiplier or other fixes.",
+                file=sys.stderr,
+                flush=True,
+            )
+    return fixed, clamped_names
+
+
 def _log_tpu_pre_optimizer_diag(network, epoch):
     """Before optimizer step: check gradients for NaN (would cause corrupted update)."""
     def _log(msg):
@@ -3485,6 +3520,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
             total_policy_loss = 0.0
             total_value_loss = 0.0
+            total_bn_clamps_this_iteration = 0
             total_illegal_moves_in_iteration = 0
             total_samples_in_iteration = 0
             avg_illegal_prob_mass = 0.0
@@ -3684,6 +3720,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                             print("[TPU diag] epoch 1 optimizer_step(barrier=True) - second step may also compile, wait 2-5 min...", file=sys.stderr, flush=True)
                         xm.optimizer_step(optimizer, barrier=True)
                         if use_tpu:
+                            if cfg.training.get("tpu_clamp_bn_params", True):
+                                clamp_count, _ = _clamp_bn_params_on_tpu(network)
+                                total_bn_clamps_this_iteration += clamp_count
                             print(f"[TPU diag] epoch {epoch} optimizer_step done, loss.item() + source_acc next...", file=sys.stderr, flush=True)
                             if epoch <= 2 and cfg.training.get("diagnose_tpu_gradients", False):
                                 _log_tpu_post_optimizer_diag(network, optimizer, epoch)
@@ -3763,6 +3802,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                     refresh=do_refresh,
                 )
             progress.update(task_id_train, visible=False)
+
+            if use_tpu and total_bn_clamps_this_iteration > 0:
+                progress.print(
+                    f"[TPU] BN clamp summary: {total_bn_clamps_this_iteration} total clamp(s) this iteration. "
+                    f"If this happens every step, consider lowering tpu_learning_rate_multiplier."
+                )
 
             avg_policy_loss = total_policy_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
             avg_value_loss = total_value_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
