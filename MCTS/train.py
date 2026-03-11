@@ -3402,6 +3402,24 @@ def run_training_loop(cfg: DictConfig) -> None:
 
                     total_loss = policy_loss + value_loss
 
+                # H6: Check which loss component is NaN (policy vs value) - run before any .item() on total_loss
+                if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
+                    pl_ok, vl_ok = None, None
+                    try:
+                        pl_ok = torch.isfinite(policy_loss).item()
+                        print(f"[TPU diag] H6a policy_loss: finite={pl_ok}", file=sys.stderr, flush=True)
+                    except Exception as e:
+                        print(f"[TPU diag] H6a policy_loss: check failed (may hang on NaN): {e}", file=sys.stderr, flush=True)
+                    try:
+                        vl_ok = torch.isfinite(value_loss).item()
+                        print(f"[TPU diag] H6b value_loss: finite={vl_ok}", file=sys.stderr, flush=True)
+                    except Exception as e:
+                        print(f"[TPU diag] H6b value_loss: check failed (may hang on NaN): {e}", file=sys.stderr, flush=True)
+                    if pl_ok is False:
+                        print("[TPU diag] -> LIKELY CAUSE: CrossEntropyLoss produces NaN on TPU (soft targets)", file=sys.stderr, flush=True)
+                    if vl_ok is False:
+                        print("[TPU diag] -> LIKELY CAUSE: MSELoss produces NaN on TPU", file=sys.stderr, flush=True)
+
                 # Skip batch if loss is NaN/Inf (e.g. from bad replay data or TPU numerical instability)
                 # On TPU, .item() can hang when tensor has NaN - log numpy stats FIRST (no TPU sync)
                 if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
