@@ -1,5 +1,6 @@
 import sys
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.nn as nn
 import numpy as np
@@ -3331,10 +3332,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                 with autocast(amp_device, enabled=amp_enabled):
                     policy_logits, value_preds = network(states_tensor)
 
+                    # Clamp logits for numerical stability (TPU/XLA can produce NaN with extreme values)
+                    policy_logits = torch.clamp(policy_logits, -50.0, 50.0)
+                    value_preds = torch.clamp(value_preds.squeeze(-1), -10.0, 10.0)
+
                     # AlphaZero-style: policy targets are already legal-only, no masking needed.
-                    policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
+                    # On TPU, use KL divergence (more numerically stable than CrossEntropyLoss with soft targets)
+                    if use_tpu:
+                        log_probs = F.log_softmax(policy_logits, dim=1)
+                        policy_loss = F.kl_div(log_probs, policy_targets_tensor, reduction="batchmean")
+                    else:
+                        policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
                     # Ensure value shapes match before loss calc
-                    value_loss = value_loss_fn(value_preds.squeeze(-1), value_targets_tensor.squeeze(-1))
+                    value_loss = value_loss_fn(value_preds, value_targets_tensor.squeeze(-1))
 
                     total_loss = policy_loss + value_loss
 
@@ -3354,6 +3364,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                             policy_logits, value_preds, policy_loss, value_loss,
                         )
                     optimizer.zero_grad()
+                    # Advance progress bar so training doesn't appear stuck
+                    do_refresh = (epoch + 1) % 8 == 0 or epoch == cfg.training.num_training_steps - 1
+                    progress.update(
+                        task_id_train, advance=1,
+                        loss_p=float("nan"), loss_v=float("nan"),
+                        illegal_r=0.0, illegal_p=0.0,
+                        refresh=do_refresh,
+                    )
                     continue
 
                 optimizer.zero_grad()
