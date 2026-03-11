@@ -255,6 +255,73 @@ def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets
             print(f"[TPU diag] Error during diagnostic: {e}", file=sys.stderr, flush=True)
 
 
+def _log_epoch2_input_states(states_np):
+    """Log input states stats before forward (epoch 2) to find bad inputs causing NaN."""
+    def _log(msg):
+        print(msg, file=sys.stderr, flush=True)
+    _log("[TPU diag] === Epoch 2 input states (before forward) ===")
+    try:
+        s = states_np
+        _log(f"  states: shape={s.shape} dtype={s.dtype}")
+        _log(f"  min={s.min():.6f} max={s.max():.6f} mean={s.mean():.6f} std={s.std():.6f}")
+        _log(f"  has_nan={bool(np.isnan(s).any())} has_inf={bool(np.isinf(s).any())}")
+        # Per-channel stats if shape is (N,C,H,W)
+        if s.ndim >= 3:
+            for c in [0, s.shape[1] // 2, s.shape[1] - 1]:
+                if c < s.shape[1]:
+                    ch = s[:, c, ...]
+                    _log(f"  channel[{c}]: min={ch.min():.6f} max={ch.max():.6f} has_nan={bool(np.isnan(ch).any())}")
+    except Exception as e:
+        _log(f"  Error: {e}")
+    _log("[TPU diag] === End input states ===")
+
+
+def _register_forward_activation_hooks(network, captured):
+    """Register forward hooks on body, policy_head, value_head. Returns list of handles to remove."""
+    handles = []
+
+    def make_hook(name):
+        def fn(module, inp, out):
+            captured[name] = out.detach() if isinstance(out, torch.Tensor) else out
+        return fn
+
+    for name in ("body", "policy_head", "value_head"):
+        mod = getattr(network, name, None)
+        if mod is not None:
+            h = mod.register_forward_hook(make_hook(name))
+            handles.append(h)
+    return handles
+
+
+def _log_forward_activation_diagnostics(captured):
+    """Check captured activations (body out, policy_head out, value_head out) for NaN."""
+    def _log(msg):
+        print(msg, file=sys.stderr, flush=True)
+    _log("[TPU diag] === Forward activation check (where does NaN first appear?) ===")
+    order = ["body", "policy_head", "value_head"]
+    for name in order:
+        if name not in captured:
+            _log(f"  {name}: (not captured)")
+            continue
+        t = captured.get(name)
+        if t is None or not isinstance(t, torch.Tensor):
+            _log(f"  {name}: (no tensor)")
+            continue
+        try:
+            arr = t.float().cpu().numpy()
+            has_nan = bool(np.isnan(arr).any())
+            has_inf = bool(np.isinf(arr).any())
+            mn = np.nanmin(arr) if arr.size > 0 else float("nan")
+            mx = np.nanmax(arr) if arr.size > 0 else float("nan")
+            _log(f"  {name}: has_nan={has_nan} has_inf={has_inf} min={mn:.6e} max={mx:.6e}")
+            if has_nan or has_inf:
+                _log(f"  -> FIRST NaN/Inf at: {name}")
+                return
+        except Exception as e:
+            _log(f"  {name}: sync failed: {e}")
+    _log("[TPU diag] === End forward activation check ===")
+
+
 def _log_tpu_pre_optimizer_diag(network, epoch):
     """Before optimizer step: check gradients for NaN (would cause corrupted update)."""
     def _log(msg):
@@ -283,13 +350,19 @@ def _log_tpu_pre_optimizer_diag(network, epoch):
 
 
 def _log_tpu_post_optimizer_diag(network, optimizer, epoch):
-    """After optimizer step: check params and Adam state for NaN to find corruption source."""
+    """After optimizer step: check params and Adam state for NaN to find corruption source.
+    When epoch==1, checks ALL params (no sampling) to rule out hidden corruption."""
     def _log(msg):
         print(msg, file=sys.stderr, flush=True)
     _log(f"[TPU diag] === Post-optimizer-step {epoch} diagnostic ===")
     params = list(network.named_parameters())
-    # Sample 5 params: first, 1/4, 1/2, 3/4, last
-    indices = [0, len(params) // 4, len(params) // 2, 3 * len(params) // 4, len(params) - 1] if len(params) >= 5 else list(range(len(params)))
+    # Epoch 1: full scan of all params to find any hidden NaN. Else: sample 5.
+    full_scan = epoch == 1
+    if full_scan:
+        indices = list(range(len(params)))
+        _log(f"[TPU diag] Full param scan (epoch 1): checking all {len(params)} params")
+    else:
+        indices = [0, len(params) // 4, len(params) // 2, 3 * len(params) // 4, len(params) - 1] if len(params) >= 5 else list(range(len(params)))
     for i in indices:
         if i >= len(params):
             continue
@@ -298,12 +371,19 @@ def _log_tpu_post_optimizer_diag(network, optimizer, epoch):
             arr = param.detach().cpu().numpy()
             has_nan = bool(np.isnan(arr).any())
             has_inf = bool(np.isinf(arr).any())
+            if full_scan and (has_nan or has_inf):
+                _log(f"  param[{i}] {name[:60]}: has_nan={has_nan} has_inf={has_inf} -> FIRST NaN/Inf")
+                return
+            elif full_scan:
+                continue  # Skip per-param log in full scan unless NaN
             _log(f"  param[{i}] {name[:50]}: has_nan={has_nan} has_inf={has_inf} min={arr.min():.6f} max={arr.max():.6f}")
             if has_nan or has_inf:
                 _log(f"  -> FIRST NaN/Inf in param: {name}")
                 return
         except Exception as e:
             _log(f"  param[{i}] {name[:50]}: sync failed: {e}")
+    if full_scan:
+        _log("[TPU diag] Full scan: all params finite (no hidden NaN)")
     # Check Adam state for first param
     try:
         first_param = next(network.parameters())
@@ -3460,8 +3540,19 @@ def run_training_loop(cfg: DictConfig) -> None:
                 policy_targets_tensor = torch.from_numpy(policy_targets_np).to(training_device)
                 value_targets_tensor = torch.from_numpy(value_targets_np).to(training_device)
 
+                # Epoch 2: log input states and register forward hooks to find where NaN first appears
+                captured = {}
+                hooks_to_remove = []
+                if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 2:
+                    _log_epoch2_input_states(states_np)
+                    hooks_to_remove = _register_forward_activation_hooks(network, captured)
+
                 with autocast(amp_device, enabled=amp_enabled):
                     policy_logits, value_preds = network(states_tensor)
+                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 2:
+                        _log_forward_activation_diagnostics(captured)
+                        for h in hooks_to_remove:
+                            h.remove()
 
                     # Early NaN hypothesis check (first batch only, before clamp/loss)
                     if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
