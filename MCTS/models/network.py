@@ -22,17 +22,17 @@ DEFAULT_VALUE_HIDDEN_SIZE = 64
 
 class ConvBlock(nn.Module):
     """A single convolutional block with Conv -> BatchNorm -> ReLU."""
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, bn_eps=1e-5):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=True)
-        self.bn = nn.BatchNorm2d(out_channels)
+        self.bn = nn.BatchNorm2d(out_channels, eps=bn_eps)
 
     def forward(self, x, policy_only: bool = False):
         return F.relu(self.bn(self.conv(x)))
 
 class ConvBlockInitial(nn.Module):
     """A multi-scale convolutional block that captures both local and long-range patterns."""
-    def __init__(self, in_channels, initial_conv_block_out_channels=[16, 32, 64, 128, 128, 128, 128]):
+    def __init__(self, in_channels, initial_conv_block_out_channels=[16, 32, 64, 128, 128, 128, 128], bn_eps=1e-5):
         super().__init__()
         self.conv_paths = nn.ModuleList()
         self.bn_paths = nn.ModuleList()
@@ -40,23 +40,23 @@ class ConvBlockInitial(nn.Module):
         initial_conv_block_out_channels = [in_channels] + initial_conv_block_out_channels
         self.conv_blocks = nn.Sequential()
         for i in range(len(initial_conv_block_out_channels)-1):
-            self.conv_blocks.append(ConvBlock(initial_conv_block_out_channels[i], initial_conv_block_out_channels[i+1], kernel_size=3, padding=1))
+            self.conv_blocks.append(ConvBlock(initial_conv_block_out_channels[i], initial_conv_block_out_channels[i+1], kernel_size=3, padding=1, bn_eps=bn_eps))
             
-        self.bn = nn.BatchNorm2d(initial_conv_block_out_channels[-1])
+        self.bn = nn.BatchNorm2d(initial_conv_block_out_channels[-1], eps=bn_eps)
 
     def forward(self, x):
         return F.relu(self.bn(self.conv_blocks(x)))
 
 class ResidualConvBlock(nn.Module):
-    def __init__(self, channel_list, kernel_size=3, padding=1):
+    def __init__(self, channel_list, kernel_size=3, padding=1, bn_eps=1e-5):
         super().__init__()
         self.conv_blocks = nn.Sequential()
         for i in range(len(channel_list)-1):
-            self.conv_blocks.append(ConvBlock(channel_list[i], channel_list[i+1], kernel_size, padding))
+            self.conv_blocks.append(ConvBlock(channel_list[i], channel_list[i+1], kernel_size, padding, bn_eps=bn_eps))
 
         self.last_block = nn.Sequential(
             nn.Conv2d(channel_list[-2], channel_list[-1], kernel_size=1, padding=0, bias=True),
-            nn.BatchNorm2d(channel_list[-1])
+            nn.BatchNorm2d(channel_list[-1], eps=bn_eps)
         )
 
     def forward(self, x):
@@ -73,9 +73,10 @@ class PolicyHead(nn.Module):
         board_height: int,
         board_width: int,
         dropout: float = 0.0,
+        bn_eps: float = 1e-5,
     ):
         super().__init__()
-        self.conv = ConvBlock(num_channels+dim_piece_type+1, 128)  # Directly reduce channels including piece type
+        self.conv = ConvBlock(num_channels+dim_piece_type+1, 128, bn_eps=bn_eps)  # Directly reduce channels including piece type
         self.fc = nn.Sequential(
             nn.Linear(128*board_height*board_width, 128),
             nn.ReLU(),
@@ -106,11 +107,12 @@ class ValueHead(nn.Module):
         board_width: int,
         hidden_size: int = 256,
         dropout: float = 0.0,
+        bn_eps: float = 1e-5,
     ):
         super().__init__()
         # Input channels = C
         # Use a 1x1 Conv block to reduce channels to 1
-        self.value_conv = ConvBlock(num_channels, 1, kernel_size=1, padding=0) 
+        self.value_conv = ConvBlock(num_channels, 1, kernel_size=1, padding=0, bn_eps=bn_eps) 
         value_input_size = 1 * board_height * board_width 
         self.value_fc1 = nn.Linear(value_input_size, hidden_size)
         self.value_dropout = nn.Dropout(p=dropout) if dropout > 0.0 else None
@@ -155,6 +157,7 @@ class ChessNetwork(nn.Module):
                  action_space_size=DEFAULT_ACTION_SPACE,
                  num_pieces=DEFAULT_NUM_PIECES,
                  value_head_hidden_size=DEFAULT_VALUE_HIDDEN_SIZE,
+                 batch_norm_eps: float = 1e-5,
                  policy_dropout: float = 0.0,
                  value_dropout: float = 0.0,
                 ):
@@ -172,7 +175,7 @@ class ChessNetwork(nn.Module):
         if residual_blocks_out_channels is None or len(residual_blocks_out_channels) != num_residual_layers:
             raise ValueError(f"residual_blocks_out_channels must be a list of length num_residual_layers ({num_residual_layers})")
 
-        self.first_conv_block = ConvBlockInitial(self.conv_input_channels, initial_conv_block_out_channels=initial_conv_block_out_channels)
+        self.first_conv_block = ConvBlockInitial(self.conv_input_channels, initial_conv_block_out_channels=initial_conv_block_out_channels, bn_eps=batch_norm_eps)
 
         if residual_blocks_out_channels:
             self.final_conv_channels = residual_blocks_out_channels[-1][-1]
@@ -185,7 +188,7 @@ class ChessNetwork(nn.Module):
                 if not ch_list:
                     raise ValueError(f"Channel list for conv stage {i} cannot be empty")
                 self.residual_blocks.append(
-                    ResidualConvBlock(channel_list=[current_stage_in_channels] + ch_list)
+                    ResidualConvBlock(channel_list=[current_stage_in_channels] + ch_list, bn_eps=batch_norm_eps)
                 )
                 current_stage_in_channels = ch_list[-1] # Output of this stage is input for next
         else:
@@ -199,6 +202,7 @@ class ChessNetwork(nn.Module):
             self.board_height,
             self.board_width,
             dropout=policy_dropout,
+            bn_eps=batch_norm_eps,
         )
         self.value_head = ValueHead(
             self.final_conv_channels,
@@ -206,6 +210,7 @@ class ChessNetwork(nn.Module):
             self.board_width,
             hidden_size=value_head_hidden_size,
             dropout=value_dropout,
+            bn_eps=batch_norm_eps,
         )
 
     def forward(self, x):

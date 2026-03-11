@@ -18,6 +18,7 @@ class NetworkConfig:
     value_head_hidden_size: int = 256
     policy_linear_out_features: Optional[List[int]] = field(default_factory=lambda: [4672])
     conv_bias: bool = False  # Whether to use bias in convolutional layers
+    batch_norm_eps: float = 1e-5  # Epsilon for BatchNorm2d (1e-5 default). Use 1e-4 or 1e-3 for TPU stability.
     policy_dropout: float = 0.0
     value_dropout: float = 0.0
     conv_dropout: float = 0.0
