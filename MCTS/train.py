@@ -138,190 +138,6 @@ def _dataset_cache_key(value) -> str:
         return repr(value)
 
 
-def _log_nan_batch_diagnostics_numpy_only(epoch, policy_targets_np, value_targets_np):
-    """Log batch stats using only numpy arrays (no TPU tensor access). Safe to run before .item() check."""
-    try:
-        p = policy_targets_np
-        n_zeros = int(np.sum(p == 0))
-        n_small = int(np.sum((p > 0) & (p < 6e-5)))
-        p_sum = p.sum(axis=1)
-        v = value_targets_np
-        msg = (
-            f"[TPU diag] First batch (epoch {epoch}) - numpy only (no TPU sync): "
-            f"policy_targets zeros={n_zeros} small={n_small} row_sums min={p_sum.min():.6f} max={p_sum.max():.6f} | "
-            f"value_targets min={v.min():.4f} max={v.max():.4f} mean={v.mean():.4f}"
-        )
-        logging.info(msg)
-        print(msg, file=sys.stderr, flush=True)
-    except Exception as e:
-        print(f"[TPU diag] numpy-only diagnostic error: {e}", file=sys.stderr, flush=True)
-
-
-def _log_early_nan_hypotheses(epoch, states_np, policy_targets_np, value_targets_np, policy_logits, value_preds):
-    """Log hypothesis-based checks to find NaN source as early as possible. Order = pipeline order."""
-    def _log(msg):
-        logging.info(msg)
-        print(msg, file=sys.stderr, flush=True)
-
-    _log("[TPU diag] === Early NaN hypothesis check (first batch) ===")
-    # H1: Input states corrupted
-    s_nan, s_inf = bool(np.isnan(states_np).any()), bool(np.isinf(states_np).any())
-    _log(f"  H1 states_np:     has_nan={s_nan} has_inf={s_inf} shape={states_np.shape} "
-         f"min={states_np.min():.4f} max={states_np.max():.4f}")
-    if s_nan or s_inf:
-        _log("  -> LIKELY CAUSE: corrupted observation states in replay buffer")
-
-    # H2: Policy targets corrupted
-    p_nan, p_inf = bool(np.isnan(policy_targets_np).any()), bool(np.isinf(policy_targets_np).any())
-    p_sum = policy_targets_np.sum(axis=1)
-    _log(f"  H2 policy_targets: has_nan={p_nan} has_inf={p_inf} row_sums min={p_sum.min():.6f} max={p_sum.max():.6f}")
-    if p_nan or p_inf or (p_sum < 0.99).any() or (p_sum > 1.01).any():
-        _log("  -> LIKELY CAUSE: invalid policy targets (NaN/Inf or row_sum != 1)")
-
-    # H3: Value targets corrupted
-    v_nan, v_inf = bool(np.isnan(value_targets_np).any()), bool(np.isinf(value_targets_np).any())
-    _log(f"  H3 value_targets: has_nan={v_nan} has_inf={v_inf} min={value_targets_np.min():.4f} max={value_targets_np.max():.4f}")
-    if v_nan or v_inf:
-        _log("  -> LIKELY CAUSE: invalid value targets in replay buffer")
-
-    # H4: Model outputs NaN (policy_logits) - TPU sync may hang if tensor has NaN
-    try:
-        with torch.no_grad():
-            pl = policy_logits.detach().float().cpu().numpy()
-        pl_nan, pl_inf = bool(np.isnan(pl).any()), bool(np.isinf(pl).any())
-        _log(f"  H4 policy_logits:  has_nan={pl_nan} has_inf={pl_inf} min={pl.min():.4f} max={pl.max():.4f}")
-        if pl_nan or pl_inf:
-            _log("  -> LIKELY CAUSE: model forward pass outputs NaN/Inf (checkpoint weights or TPU numerics)")
-    except Exception as e:
-        _log(f"  H4 policy_logits:  TPU sync failed (may hang on NaN): {e}")
-
-    # H5: Model outputs NaN (value_preds)
-    try:
-        with torch.no_grad():
-            vp = value_preds.detach().float().cpu().numpy()
-        vp_nan, vp_inf = bool(np.isnan(vp).any()), bool(np.isinf(vp).any())
-        _log(f"  H5 value_preds:   has_nan={vp_nan} has_inf={vp_inf} min={vp.min():.4f} max={vp.max():.4f}")
-        if vp_nan or vp_inf:
-            _log("  -> LIKELY CAUSE: value head outputs NaN/Inf (checkpoint or TPU numerics)")
-    except Exception as e:
-        _log(f"  H5 value_preds:   TPU sync failed (may hang on NaN): {e}")
-
-    _log("[TPU diag] === End hypothesis check ===")
-
-
-def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets_np, policy_logits, value_preds, policy_loss, value_loss):
-    """Log batch stats when NaN loss detected to help find root cause of TPU gradient deviation."""
-    def _out(msg):
-        logging.info(msg)
-        print(msg, file=sys.stderr, flush=True)
-        if progress is not None and hasattr(progress, "print"):
-            try:
-                progress.print(msg)
-            except Exception:
-                pass
-
-    try:
-        _out(f"[TPU diag] NaN/Inf loss at epoch {epoch}. Batch stats:")
-        # Numpy arrays first (no TPU sync - safe)
-        p = policy_targets_np
-        n_zeros = int(np.sum(p == 0))
-        n_small = int(np.sum((p > 0) & (p < 6e-5)))
-        p_sum = p.sum(axis=1)
-        _out(f"  policy_targets: shape={p.shape}, zeros={n_zeros}, small(<6e-5)={n_small}, "
-             f"row_sums min={p_sum.min():.6f} max={p_sum.max():.6f} mean={p_sum.mean():.6f}")
-        v = value_targets_np
-        _out(f"  value_targets: min={v.min():.4f} max={v.max():.4f} mean={v.mean():.4f}")
-        # TPU tensors: .cpu()/.item() can hang on NaN - wrap tightly
-        try:
-            with torch.no_grad():
-                pl = policy_logits.detach().float().cpu().numpy()
-            _out(f"  policy_logits: min={pl.min():.4f} max={pl.max():.4f} has_nan={bool(np.isnan(pl).any())}")
-        except Exception as e:
-            _out(f"  policy_logits: (TPU sync failed: {e})")
-        try:
-            with torch.no_grad():
-                vp = value_preds.detach().float().cpu().numpy()
-            _out(f"  value_preds: min={vp.min():.4f} max={vp.max():.4f} has_nan={bool(np.isnan(vp).any())}")
-        except Exception as e:
-            _out(f"  value_preds: (TPU sync failed: {e})")
-        try:
-            _out(f"  policy_loss={float(policy_loss.item())}, value_loss={float(value_loss.item())}")
-        except Exception as e:
-            _out(f"  loss values: (TPU sync failed: {e})")
-    except Exception as e:
-        try:
-            _out(f"[TPU diag] Error during diagnostic: {e}")
-        except Exception:
-            print(f"[TPU diag] Error during diagnostic: {e}", file=sys.stderr, flush=True)
-
-
-def _log_epoch2_input_states(states_np):
-    """Log input states stats before forward (epoch 2) to find bad inputs causing NaN."""
-    def _log(msg):
-        print(msg, file=sys.stderr, flush=True)
-    _log("[TPU diag] === Epoch 2 input states (before forward) ===")
-    try:
-        s = states_np
-        _log(f"  states: shape={s.shape} dtype={s.dtype}")
-        _log(f"  min={s.min():.6f} max={s.max():.6f} mean={s.mean():.6f} std={s.std():.6f}")
-        _log(f"  has_nan={bool(np.isnan(s).any())} has_inf={bool(np.isinf(s).any())}")
-        # Per-channel stats if shape is (N,C,H,W)
-        if s.ndim >= 3:
-            for c in [0, s.shape[1] // 2, s.shape[1] - 1]:
-                if c < s.shape[1]:
-                    ch = s[:, c, ...]
-                    _log(f"  channel[{c}]: min={ch.min():.6f} max={ch.max():.6f} has_nan={bool(np.isnan(ch).any())}")
-    except Exception as e:
-        _log(f"  Error: {e}")
-    _log("[TPU diag] === End input states ===")
-
-
-def _register_forward_activation_hooks(network, captured):
-    """Register forward hooks on body, policy_head, value_head. Returns list of handles to remove."""
-    handles = []
-
-    def make_hook(name):
-        def fn(module, inp, out):
-            captured[name] = out.detach() if isinstance(out, torch.Tensor) else out
-        return fn
-
-    for name in ("body", "policy_head", "value_head"):
-        mod = getattr(network, name, None)
-        if mod is not None:
-            h = mod.register_forward_hook(make_hook(name))
-            handles.append(h)
-    return handles
-
-
-def _log_forward_activation_diagnostics(captured):
-    """Check captured activations (body out, policy_head out, value_head out) for NaN."""
-    def _log(msg):
-        print(msg, file=sys.stderr, flush=True)
-    _log("[TPU diag] === Forward activation check (where does NaN first appear?) ===")
-    order = ["body", "policy_head", "value_head"]
-    for name in order:
-        if name not in captured:
-            _log(f"  {name}: (not captured)")
-            continue
-        t = captured.get(name)
-        if t is None or not isinstance(t, torch.Tensor):
-            _log(f"  {name}: (no tensor)")
-            continue
-        try:
-            arr = t.float().cpu().numpy()
-            has_nan = bool(np.isnan(arr).any())
-            has_inf = bool(np.isinf(arr).any())
-            mn = np.nanmin(arr) if arr.size > 0 else float("nan")
-            mx = np.nanmax(arr) if arr.size > 0 else float("nan")
-            _log(f"  {name}: has_nan={has_nan} has_inf={has_inf} min={mn:.6e} max={mx:.6e}")
-            if has_nan or has_inf:
-                _log(f"  -> FIRST NaN/Inf at: {name}")
-                return
-        except Exception as e:
-            _log(f"  {name}: sync failed: {e}")
-    _log("[TPU diag] === End forward activation check ===")
-
-
 def _clamp_bn_params_on_tpu(network):
     """Replace NaN/Inf in BatchNorm params with safe fallbacks after optimizer step.
     BN bias -> 0, BN weight (gamma) -> 1. Keeps BN trainable while fixing TPU Adam corruption.
@@ -355,99 +171,6 @@ def _clamp_bn_params_on_tpu(network):
                 flush=True,
             )
     return fixed, clamped_names
-
-
-def _log_tpu_pre_optimizer_diag(network, epoch):
-    """Before optimizer step: check gradients for NaN (would cause corrupted update)."""
-    def _log(msg):
-        print(msg, file=sys.stderr, flush=True)
-    _log(f"[TPU diag] === Pre-optimizer-step {epoch} gradient check ===")
-    params = list(network.named_parameters())
-    indices = [0, len(params) // 2, len(params) - 1] if len(params) >= 3 else list(range(len(params)))
-    for i in indices:
-        if i >= len(params):
-            continue
-        name, param = params[i]
-        if param.grad is None:
-            _log(f"  grad[{i}] {name[:50]}: None")
-            continue
-        try:
-            arr = param.grad.detach().cpu().numpy()
-            has_nan = bool(np.isnan(arr).any())
-            has_inf = bool(np.isinf(arr).any())
-            _log(f"  grad[{i}] {name[:50]}: has_nan={has_nan} has_inf={has_inf} min={arr.min():.6e} max={arr.max():.6e}")
-            if has_nan or has_inf:
-                _log(f"  -> FIRST NaN/Inf in gradient: {name}")
-                return
-        except Exception as e:
-            _log(f"  grad[{i}] {name[:50]}: sync failed: {e}")
-    _log("[TPU diag] === End pre-optimizer gradient check ===")
-
-
-def _log_tpu_post_optimizer_diag(network, optimizer, epoch):
-    """After optimizer step: check params and Adam state for NaN to find corruption source.
-    When epoch==1, checks ALL params (no sampling) to rule out hidden corruption."""
-    def _log(msg):
-        print(msg, file=sys.stderr, flush=True)
-    _log(f"[TPU diag] === Post-optimizer-step {epoch} diagnostic ===")
-    params = list(network.named_parameters())
-    # Epoch 1: full scan of all params to find any hidden NaN. Else: sample 5.
-    full_scan = epoch == 1
-    if full_scan:
-        indices = list(range(len(params)))
-        _log(f"[TPU diag] Full param scan (epoch 1): checking all {len(params)} params")
-    else:
-        indices = [0, len(params) // 4, len(params) // 2, 3 * len(params) // 4, len(params) - 1] if len(params) >= 5 else list(range(len(params)))
-    for i in indices:
-        if i >= len(params):
-            continue
-        name, param = params[i]
-        try:
-            arr = param.detach().cpu().numpy()
-            has_nan = bool(np.isnan(arr).any())
-            has_inf = bool(np.isinf(arr).any())
-            if full_scan and (has_nan or has_inf):
-                _log(f"  param[{i}] {name[:60]}: has_nan={has_nan} has_inf={has_inf} -> FIRST NaN/Inf")
-                return
-            elif full_scan:
-                continue  # Skip per-param log in full scan unless NaN
-            _log(f"  param[{i}] {name[:50]}: has_nan={has_nan} has_inf={has_inf} min={arr.min():.6f} max={arr.max():.6f}")
-            if has_nan or has_inf:
-                _log(f"  -> FIRST NaN/Inf in param: {name}")
-                return
-        except Exception as e:
-            _log(f"  param[{i}] {name[:50]}: sync failed: {e}")
-    if full_scan:
-        _log("[TPU diag] Full scan: all params finite (no hidden NaN)")
-    # Check Adam state for first param
-    try:
-        first_param = next(network.parameters())
-        state = optimizer.state.get(first_param)
-        if state:
-            for key in ("step", "exp_avg", "exp_avg_sq"):
-                if key in state:
-                    v = state[key]
-                    if isinstance(v, torch.Tensor):
-                        arr = v.detach().cpu().numpy()
-                        _log(f"  Adam state[{key}]: has_nan={bool(np.isnan(arr).any())} has_inf={bool(np.isinf(arr).any())} min={arr.min():.6e} max={arr.max():.6e}")
-                    else:
-                        _log(f"  Adam state[{key}]: {v}")
-    except Exception as e:
-        _log(f"  Adam state check failed: {e}")
-    _log("[TPU diag] === End post-optimizer diagnostic ===")
-
-
-def _compute_grad_norm(model) -> float:
-    """Compute total gradient norm across all parameters. Returns float('nan') on error."""
-    try:
-        total_norm_sq = 0.0
-        for p in model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm_sq += param_norm.item() ** 2
-        return total_norm_sq ** 0.5
-    except Exception:
-        return float("nan")
 
 
 def _state_dict_has_nan_or_inf(state_dict: dict) -> bool:
@@ -2236,7 +1959,6 @@ def _load_checkpoint(
 
         # Skip optimizer state on TPU: Adam m/v from GPU/CPU checkpoint can cause NaN on TPU (precision mismatch)
         if _is_xla_device(device):
-            progress.print("TPU: Skipping optimizer state load (use fresh Adam state to avoid NaN).")
             is_rl_checkpoint = False  # Force fresh optimizer path
 
         if is_rl_checkpoint and "optimizer_state_dict" in checkpoint:
@@ -3465,12 +3187,9 @@ def run_training_loop(cfg: DictConfig) -> None:
         # For TPU, pause self-play workers so inference queue drains, then acquire lock
         if pause_for_training is not None:
             pause_for_training.set()
-            progress.print("TPU: Paused self-play workers, waiting for inference queue to drain...")
             time.sleep(1.0)  # Give workers time to see pause signal before acquire
         if tpu_lock is not None:
-            progress.print("TPU: Acquiring lock (may block until inference finishes current batch)...")
             tpu_lock.acquire()
-            progress.print("TPU: Lock acquired, starting training.")
         try:
             network.to(training_device).train()
 
@@ -3535,29 +3254,10 @@ def run_training_loop(cfg: DictConfig) -> None:
                 illegal_r=float("nan"),
                 illegal_p=float("nan"),
             )
-            if use_tpu:
-                bs = cfg.training.batch_size
-                est_min = max(2, min(30, bs // 64))  # Rough: ~2 min for 64, scales with batch
-                progress.print(
-                    f"TPU: First step compiles XLA graph (batch_size={bs}). "
-                    f"May take {est_min}-{est_min*2} min. Subsequent steps are fast."
-                )
-                if bs > 512:
-                    progress.print(
-                        f"TPU: Consider batch_size=256 or 512 for faster first-step compilation. "
-                        f"Current {bs} may take 15-30+ min."
-                    )
-                if cfg.training.get("diagnose_tpu_gradients", False):
-                    progress.print(
-                        "TPU: diagnose_tpu_gradients enabled - will log grad norms, loss components, "
-                        "and batch stats on NaN to find gradient deviation cause."
-                    )
-                # Reduce LR 5x on TPU to avoid NaN after a few optimizer steps (Adam state precision)
-                if use_tpu and iteration == start_iter:
-                    lr_mult = cfg.training.get("tpu_learning_rate_multiplier", 0.2)
-                    for pg in optimizer.param_groups:
-                        pg["lr"] = pg["lr"] * lr_mult
-                    progress.print(f"TPU: learning rate scaled by {lr_mult} for stability")
+            if use_tpu and iteration == start_iter:
+                lr_mult = cfg.training.get("tpu_learning_rate_multiplier", 0.2)
+                for pg in optimizer.param_groups:
+                    pg["lr"] = pg["lr"] * lr_mult
             last_good_state = None  # For rollback when model outputs NaN on TPU
             # Use values from cfg
             for epoch in range(cfg.training.num_training_steps):
@@ -3568,34 +3268,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                 )
                 if batch is None: continue
 
-                if use_tpu:
-                    print(f"[TPU diag] epoch {epoch}: got batch, starting forward...", file=sys.stderr, flush=True)
                 # states_np, policy_targets_np, fens_batch, value_targets_np = batch
                 states_np, policy_targets_np, boards_batch, value_targets_np, source_ids_np = batch # Unpack boards
                 states_tensor = torch.from_numpy(states_np).to(training_device)
                 policy_targets_tensor = torch.from_numpy(policy_targets_np).to(training_device)
                 value_targets_tensor = torch.from_numpy(value_targets_np).to(training_device)
 
-                # Epoch 2: log input states and register forward hooks to find where NaN first appears
-                captured = {}
-                hooks_to_remove = []
-                if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 2:
-                    _log_epoch2_input_states(states_np)
-                    hooks_to_remove = _register_forward_activation_hooks(network, captured)
-
                 with autocast(amp_device, enabled=amp_enabled):
                     policy_logits, value_preds = network(states_tensor)
-                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 2:
-                        _log_forward_activation_diagnostics(captured)
-                        for h in hooks_to_remove:
-                            h.remove()
-
-                    # Early NaN hypothesis check (first batch only, before clamp/loss)
-                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
-                        _log_early_nan_hypotheses(
-                            epoch, states_np, policy_targets_np, value_targets_np,
-                            policy_logits, value_preds,
-                        )
 
                     # Clamp logits for numerical stability (TPU/XLA can produce NaN with extreme values)
                     policy_logits = torch.clamp(policy_logits, -50.0, 50.0)
@@ -3609,55 +3289,17 @@ def run_training_loop(cfg: DictConfig) -> None:
 
                     total_loss = policy_loss + value_loss
 
-                if use_tpu:
-                    print(f"[TPU diag] epoch {epoch}: forward+loss done, backward next...", file=sys.stderr, flush=True)
-                # H6: Check which loss component is NaN (policy vs value) - run before any .item() on total_loss
-                if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
-                    pl_ok, vl_ok = None, None
-                    try:
-                        pl_ok = torch.isfinite(policy_loss).item()
-                        print(f"[TPU diag] H6a policy_loss: finite={pl_ok}", file=sys.stderr, flush=True)
-                    except Exception as e:
-                        print(f"[TPU diag] H6a policy_loss: check failed (may hang on NaN): {e}", file=sys.stderr, flush=True)
-                    try:
-                        vl_ok = torch.isfinite(value_loss).item()
-                        print(f"[TPU diag] H6b value_loss: finite={vl_ok}", file=sys.stderr, flush=True)
-                    except Exception as e:
-                        print(f"[TPU diag] H6b value_loss: check failed (may hang on NaN): {e}", file=sys.stderr, flush=True)
-                    if pl_ok is False:
-                        print("[TPU diag] -> LIKELY CAUSE: CrossEntropyLoss produces NaN on TPU (soft targets)", file=sys.stderr, flush=True)
-                    if vl_ok is False:
-                        print("[TPU diag] -> LIKELY CAUSE: MSELoss produces NaN on TPU", file=sys.stderr, flush=True)
-                    # H7: total_loss = policy_loss + value_loss; if both finite, total should be too
-                    try:
-                        tot_ok = torch.isfinite(total_loss).item()
-                        print(f"[TPU diag] H7 total_loss: finite={tot_ok} (policy+value both finite => expect True)", file=sys.stderr, flush=True)
-                        if not tot_ok and pl_ok and vl_ok:
-                            print("[TPU diag] -> LIKELY CAUSE: addition on TPU produces NaN (dtype/precision issue)", file=sys.stderr, flush=True)
-                    except Exception as e:
-                        print(f"[TPU diag] H7 total_loss: check failed: {e}", file=sys.stderr, flush=True)
-
                 # Skip batch if loss is NaN/Inf (e.g. from bad replay data or TPU numerical instability)
-                # On TPU, .item() can hang when tensor has NaN - log numpy stats FIRST (no TPU sync)
-                if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
-                    _log_nan_batch_diagnostics_numpy_only(epoch, policy_targets_np, value_targets_np)
                 try:
                     loss_finite = torch.isfinite(total_loss).item()
                 except Exception:
                     loss_finite = False  # Assume NaN if check fails (e.g. TPU sync)
                 if not loss_finite:
-                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
-                        print(f"[TPU diag] NaN/Inf loss at epoch {epoch} - skipping batch", file=sys.stderr, flush=True)
-                        _log_nan_batch_diagnostics(
-                            progress, epoch, policy_targets_np, value_targets_np,
-                            policy_logits, value_preds, policy_loss, value_loss,
-                        )
                     if use_tpu and last_good_state is not None:
                         try:
                             network.load_state_dict({k: v.to(training_device) for k, v in last_good_state.items()}, strict=True)
-                            print(f"[TPU diag] Restored model from last good state (before epoch {epoch} optimizer step)", file=sys.stderr, flush=True)
-                        except Exception as e:
-                            print(f"[TPU diag] Failed to restore model: {e}", file=sys.stderr, flush=True)
+                        except Exception:
+                            pass
                     optimizer.zero_grad()
                     # Advance progress bar so training doesn't appear stuck
                     do_refresh = (epoch + 1) % 8 == 0 or epoch == cfg.training.num_training_steps - 1
@@ -3673,59 +3315,23 @@ def run_training_loop(cfg: DictConfig) -> None:
                 grad_clip = cfg.training.get("grad_clip_norm")
                 if use_tpu and grad_clip is not None and grad_clip > 0.5:
                     grad_clip = min(grad_clip, 0.5)  # Tighter clip on TPU to reduce NaN after a few steps
-                if use_tpu and epoch == 0:
-                    print("[TPU diag] Loss finite, starting backward (first step compiles XLA graph, may take 2-4 min)...", file=sys.stderr, flush=True)
                 if scaler.is_enabled():
                     scaler.scale(total_loss).backward()
                     scaler.unscale_(optimizer)
-                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
-                        grad_norm = _compute_grad_norm(network)
-                        log_interval = max(1, cfg.training.num_training_steps // 10)
-                        if epoch % log_interval == 0 or grad_norm > 10.0 or not np.isfinite(grad_norm):
-                            progress.print(
-                                f"[TPU diag] epoch={epoch} grad_norm={grad_norm:.4f} "
-                                f"loss_p={policy_loss.item():.4f} loss_v={value_loss.item():.4f}"
-                            )
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     total_loss.backward()
-                    if use_tpu:
-                        print(f"[TPU diag] epoch {epoch} backward() done, optimizer_step next...", file=sys.stderr, flush=True)
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
-                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
-                        # Skip grad_norm on TPU: _compute_grad_norm does 100+ .item() syncs per param, very slow
-                        pass  # grad_norm disabled on TPU
-                    elif not use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
-                        if epoch > 0:
-                            grad_norm = _compute_grad_norm(network)
-                            log_interval = max(1, cfg.training.num_training_steps // 10)
-                            if epoch % log_interval == 0 or grad_norm > 10.0 or not np.isfinite(grad_norm):
-                                progress.print(
-                                    f"[TPU diag] epoch={epoch} grad_norm={grad_norm:.4f} "
-                                    f"loss_p={policy_loss.item():.4f} loss_v={value_loss.item():.4f}"
-                                )
                     if use_tpu:
                         import torch_xla.core.xla_model as xm
-                        # Skip state save on TPU: copying full state to CPU does 100+ syncs, very slow
-                        # last_good_state rollback disabled on TPU for performance
-                        if epoch <= 2 and cfg.training.get("diagnose_tpu_gradients", False):
-                            _log_tpu_pre_optimizer_diag(network, epoch)
-                        if epoch == 0:
-                            print("[TPU diag] calling xm.optimizer_step(barrier=True) - first step compiles, 2-5 min...", file=sys.stderr, flush=True)
-                        elif epoch == 1:
-                            print("[TPU diag] epoch 1 optimizer_step(barrier=True) - second step may also compile, wait 2-5 min...", file=sys.stderr, flush=True)
                         xm.optimizer_step(optimizer, barrier=True)
-                        if use_tpu:
-                            if cfg.training.get("tpu_clamp_bn_params", True):
-                                clamp_count, _ = _clamp_bn_params_on_tpu(network)
-                                total_bn_clamps_this_iteration += clamp_count
-                            print(f"[TPU diag] epoch {epoch} optimizer_step done, loss.item() + source_acc next...", file=sys.stderr, flush=True)
-                            if epoch <= 2 and cfg.training.get("diagnose_tpu_gradients", False):
-                                _log_tpu_post_optimizer_diag(network, optimizer, epoch)
+                        if cfg.training.get("tpu_clamp_bn_params", True):
+                            clamp_count, _ = _clamp_bn_params_on_tpu(network)
+                            total_bn_clamps_this_iteration += clamp_count
                     else:
                         optimizer.step()
 
@@ -3749,8 +3355,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                     or epoch % illegal_metrics_interval == 0
                     or epoch == cfg.training.num_training_steps - 1
                 )
-                if use_tpu:
-                    print(f"[TPU diag] epoch {epoch} loss totals + source_acc done, illegal_metrics={'yes' if do_illegal_metrics else 'no'}...", file=sys.stderr, flush=True)
                 if do_illegal_metrics:
                     with torch.no_grad():
                         policy_probs = torch.softmax(policy_logits, dim=1)
@@ -3778,11 +3382,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                         avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
                         total_illegal_moves_in_iteration += batch_illegal_moves
                         total_samples_in_iteration += len(boards_batch)
-                        if use_tpu:
-                            print(f"[TPU diag] epoch {epoch} illegal_metrics done...", file=sys.stderr, flush=True)
 
-                if use_tpu:
-                    print(f"[TPU diag] epoch {epoch}: about to progress.update...", file=sys.stderr, flush=True)
                 current_avg_policy_loss = total_policy_loss / (epoch + 1)
                 current_avg_value_loss = total_value_loss / (epoch + 1)
                 current_illegal_ratio = (
@@ -3802,12 +3402,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                     refresh=do_refresh,
                 )
             progress.update(task_id_train, visible=False)
-
-            if use_tpu and total_bn_clamps_this_iteration > 0:
-                progress.print(
-                    f"[TPU] BN clamp summary: {total_bn_clamps_this_iteration} total clamp(s) this iteration. "
-                    f"If this happens every step, consider lowering tpu_learning_rate_multiplier."
-                )
 
             avg_policy_loss = total_policy_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0
             avg_value_loss = total_value_loss / cfg.training.num_training_steps if cfg.training.num_training_steps > 0 else 0

@@ -67,7 +67,6 @@ class TrainingConfig:
     grad_clip_norm: Optional[float] = None  # Max gradient norm; None = no clipping. Use 1.0 for TPU stability.
     tpu_learning_rate_multiplier: float = 0.2  # Scale LR by this on TPU (e.g. 0.2 = 5x lower) to avoid NaN after a few steps
     tpu_clamp_bn_params: bool = True  # If True and on TPU, replace NaN/Inf in BN params after optimizer step (fixes Adam corruption)
-    diagnose_tpu_gradients: bool = False  # If True and on TPU, log grad norms, loss components, batch stats to find gradient deviation cause
     replay_buffer_float32: bool = False  # If True, store replay buffer in float32 (avoids float16 underflow on TPU)
     skip_replay_buffer_load: bool = False  # If True, skip loading buffer from checkpoint (refill from self-play)
     use_multiprocessing: bool = True  # Flag to enable/disable multiprocessing for self-play
