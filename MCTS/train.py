@@ -3271,10 +3271,9 @@ def run_training_loop(cfg: DictConfig) -> None:
             TextColumn("[progress.description]{task.description}"), BarColumn(),
             TaskProgressColumn("[progress.percentage]{task.percentage:>3.1f}%"),
             TimeRemainingColumn(), TimeElapsedColumn(),
-            TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f} top1_ill: {task.fields[illegal_r]:.2%} prob_on_ill: {task.fields[illegal_p]:.2%}]")
+            TextColumn("[Loss P: {task.fields[loss_p]:.4f} V: {task.fields[loss_v]:.4f}]") # top1_ill: {task.fields[illegal_r]:.2%} prob_on_ill: {task.fields[illegal_p]:.2%}
         )
         progress.columns = training_columns
-
         # progress.print("Starting training phase...")
         # For TPU, pause self-play workers so inference queue drains, then acquire lock
         if pause_for_training is not None:
@@ -3559,8 +3558,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                     else 0.0
                 )
 
-                # Update every 8 epochs (or always on last) to avoid Jupyter IOPub rate limit
-                do_refresh = (epoch + 1) % 8 == 0 or epoch == cfg.training.num_training_steps - 1
+                # Update every 8 epochs (or always on last) to avoid Jupyter IOPub rate limit.
+                # On TPU, each epoch takes minutes - always refresh so user sees progress.
+                do_refresh = use_tpu or (epoch + 1) % 8 == 0 or epoch == cfg.training.num_training_steps - 1
                 progress.update(
                     task_id_train, advance=1,
                     loss_p=current_avg_policy_loss, loss_v=current_avg_value_loss,
