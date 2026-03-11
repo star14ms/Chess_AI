@@ -1,6 +1,5 @@
 import sys
 import torch
-import torch.nn.functional as F
 import torch.optim as optim
 import torch.nn as nn
 import numpy as np
@@ -156,6 +155,58 @@ def _log_nan_batch_diagnostics_numpy_only(epoch, policy_targets_np, value_target
         print(msg, file=sys.stderr, flush=True)
     except Exception as e:
         print(f"[TPU diag] numpy-only diagnostic error: {e}", file=sys.stderr, flush=True)
+
+
+def _log_early_nan_hypotheses(epoch, states_np, policy_targets_np, value_targets_np, policy_logits, value_preds):
+    """Log hypothesis-based checks to find NaN source as early as possible. Order = pipeline order."""
+    def _log(msg):
+        logging.info(msg)
+        print(msg, file=sys.stderr, flush=True)
+
+    _log("[TPU diag] === Early NaN hypothesis check (first batch) ===")
+    # H1: Input states corrupted
+    s_nan, s_inf = bool(np.isnan(states_np).any()), bool(np.isinf(states_np).any())
+    _log(f"  H1 states_np:     has_nan={s_nan} has_inf={s_inf} shape={states_np.shape} "
+         f"min={states_np.min():.4f} max={states_np.max():.4f}")
+    if s_nan or s_inf:
+        _log("  -> LIKELY CAUSE: corrupted observation states in replay buffer")
+
+    # H2: Policy targets corrupted
+    p_nan, p_inf = bool(np.isnan(policy_targets_np).any()), bool(np.isinf(policy_targets_np).any())
+    p_sum = policy_targets_np.sum(axis=1)
+    _log(f"  H2 policy_targets: has_nan={p_nan} has_inf={p_inf} row_sums min={p_sum.min():.6f} max={p_sum.max():.6f}")
+    if p_nan or p_inf or (p_sum < 0.99).any() or (p_sum > 1.01).any():
+        _log("  -> LIKELY CAUSE: invalid policy targets (NaN/Inf or row_sum != 1)")
+
+    # H3: Value targets corrupted
+    v_nan, v_inf = bool(np.isnan(value_targets_np).any()), bool(np.isinf(value_targets_np).any())
+    _log(f"  H3 value_targets: has_nan={v_nan} has_inf={v_inf} min={value_targets_np.min():.4f} max={value_targets_np.max():.4f}")
+    if v_nan or v_inf:
+        _log("  -> LIKELY CAUSE: invalid value targets in replay buffer")
+
+    # H4: Model outputs NaN (policy_logits) - TPU sync may hang if tensor has NaN
+    try:
+        with torch.no_grad():
+            pl = policy_logits.detach().float().cpu().numpy()
+        pl_nan, pl_inf = bool(np.isnan(pl).any()), bool(np.isinf(pl).any())
+        _log(f"  H4 policy_logits:  has_nan={pl_nan} has_inf={pl_inf} min={pl.min():.4f} max={pl.max():.4f}")
+        if pl_nan or pl_inf:
+            _log("  -> LIKELY CAUSE: model forward pass outputs NaN/Inf (checkpoint weights or TPU numerics)")
+    except Exception as e:
+        _log(f"  H4 policy_logits:  TPU sync failed (may hang on NaN): {e}")
+
+    # H5: Model outputs NaN (value_preds)
+    try:
+        with torch.no_grad():
+            vp = value_preds.detach().float().cpu().numpy()
+        vp_nan, vp_inf = bool(np.isnan(vp).any()), bool(np.isinf(vp).any())
+        _log(f"  H5 value_preds:   has_nan={vp_nan} has_inf={vp_inf} min={vp.min():.4f} max={vp.max():.4f}")
+        if vp_nan or vp_inf:
+            _log("  -> LIKELY CAUSE: value head outputs NaN/Inf (checkpoint or TPU numerics)")
+    except Exception as e:
+        _log(f"  H5 value_preds:   TPU sync failed (may hang on NaN): {e}")
+
+    _log("[TPU diag] === End hypothesis check ===")
 
 
 def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets_np, policy_logits, value_preds, policy_loss, value_loss):
@@ -3332,17 +3383,20 @@ def run_training_loop(cfg: DictConfig) -> None:
                 with autocast(amp_device, enabled=amp_enabled):
                     policy_logits, value_preds = network(states_tensor)
 
+                    # Early NaN hypothesis check (first batch only, before clamp/loss)
+                    if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
+                        _log_early_nan_hypotheses(
+                            epoch, states_np, policy_targets_np, value_targets_np,
+                            policy_logits, value_preds,
+                        )
+
                     # Clamp logits for numerical stability (TPU/XLA can produce NaN with extreme values)
                     policy_logits = torch.clamp(policy_logits, -50.0, 50.0)
                     value_preds = torch.clamp(value_preds.squeeze(-1), -10.0, 10.0)
 
                     # AlphaZero-style: policy targets are already legal-only, no masking needed.
-                    # On TPU, use KL divergence (more numerically stable than CrossEntropyLoss with soft targets)
-                    if use_tpu:
-                        log_probs = F.log_softmax(policy_logits, dim=1)
-                        policy_loss = F.kl_div(log_probs, policy_targets_tensor, reduction="batchmean")
-                    else:
-                        policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
+                    # Note: F.kl_div has no proper autograd kernel on TPU/XLA - use CrossEntropyLoss
+                    policy_loss = policy_loss_fn(policy_logits, policy_targets_tensor)
                     # Ensure value shapes match before loss calc
                     value_loss = value_loss_fn(value_preds, value_targets_tensor.squeeze(-1))
 
