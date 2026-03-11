@@ -3483,7 +3483,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                     if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
-                        # Skip grad_norm on TPU epoch 0: _compute_grad_norm does 100+ .item() syncs, very slow
+                        # Skip grad_norm on TPU: _compute_grad_norm does 100+ .item() syncs per param, very slow
+                        pass  # grad_norm disabled on TPU
+                    elif not use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
                         if epoch > 0:
                             grad_norm = _compute_grad_norm(network)
                             log_interval = max(1, cfg.training.num_training_steps // 10)
