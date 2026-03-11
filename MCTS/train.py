@@ -3419,6 +3419,14 @@ def run_training_loop(cfg: DictConfig) -> None:
                         print("[TPU diag] -> LIKELY CAUSE: CrossEntropyLoss produces NaN on TPU (soft targets)", file=sys.stderr, flush=True)
                     if vl_ok is False:
                         print("[TPU diag] -> LIKELY CAUSE: MSELoss produces NaN on TPU", file=sys.stderr, flush=True)
+                    # H7: total_loss = policy_loss + value_loss; if both finite, total should be too
+                    try:
+                        tot_ok = torch.isfinite(total_loss).item()
+                        print(f"[TPU diag] H7 total_loss: finite={tot_ok} (policy+value both finite => expect True)", file=sys.stderr, flush=True)
+                        if not tot_ok and pl_ok and vl_ok:
+                            print("[TPU diag] -> LIKELY CAUSE: addition on TPU produces NaN (dtype/precision issue)", file=sys.stderr, flush=True)
+                    except Exception as e:
+                        print(f"[TPU diag] H7 total_loss: check failed: {e}", file=sys.stderr, flush=True)
 
                 # Skip batch if loss is NaN/Inf (e.g. from bad replay data or TPU numerical instability)
                 # On TPU, .item() can hang when tensor has NaN - log numpy stats FIRST (no TPU sync)
@@ -3448,6 +3456,8 @@ def run_training_loop(cfg: DictConfig) -> None:
 
                 optimizer.zero_grad()
                 grad_clip = cfg.training.get("grad_clip_norm")
+                if use_tpu and epoch == 0:
+                    print("[TPU diag] Loss finite, starting backward (first step compiles XLA graph, may take 2-4 min)...", file=sys.stderr, flush=True)
                 if scaler.is_enabled():
                     scaler.scale(total_loss).backward()
                     scaler.unscale_(optimizer)
