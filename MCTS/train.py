@@ -3475,6 +3475,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     scaler.update()
                 else:
                     total_loss.backward()
+                    if use_tpu and epoch == 0:
+                        print("[TPU diag] backward() done, starting optimizer_step...", file=sys.stderr, flush=True)
                     if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
                         grad_norm = _compute_grad_norm(network)
                         log_interval = max(1, cfg.training.num_training_steps // 10)
@@ -3488,6 +3490,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     if use_tpu:
                         import torch_xla.core.xla_model as xm
                         xm.optimizer_step(optimizer, barrier=True)
+                        if epoch == 0:
+                            print("[TPU diag] optimizer_step done, updating loss totals...", file=sys.stderr, flush=True)
                     else:
                         optimizer.step()
 
@@ -3511,6 +3515,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                     or epoch % illegal_metrics_interval == 0
                     or epoch == cfg.training.num_training_steps - 1
                 )
+                if use_tpu and epoch == 0:
+                    print(f"[TPU diag] epoch 0 loss totals updated, illegal_metrics={'yes' if do_illegal_metrics else 'no'}...", file=sys.stderr, flush=True)
                 if do_illegal_metrics:
                     with torch.no_grad():
                         policy_probs = torch.softmax(policy_logits, dim=1)
@@ -3538,6 +3544,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                         avg_illegal_prob_mass = batch_illegal_prob_mass / len(boards_batch)
                         total_illegal_moves_in_iteration += batch_illegal_moves
                         total_samples_in_iteration += len(boards_batch)
+                        if use_tpu and epoch == 0:
+                            print("[TPU diag] illegal_metrics done, updating progress bar...", file=sys.stderr, flush=True)
 
                 current_avg_policy_loss = total_policy_loss / (epoch + 1)
                 current_avg_value_loss = total_value_loss / (epoch + 1)
