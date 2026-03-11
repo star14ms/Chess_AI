@@ -872,6 +872,18 @@ def run_self_play_game(
             # If conversion fails, try to use as-is (might already be a plain dict)
             pass
 
+        # If string path to .yaml file, load it (e.g. training.initial_board_fen=./kaggle_fen_override.yaml)
+        if isinstance(initial_board_fen_cfg, str) and (
+            initial_board_fen_cfg.endswith(".yaml") or initial_board_fen_cfg.endswith(".yml")
+        ):
+            try:
+                import yaml
+                with open(_resolve_json_path(initial_board_fen_cfg), "r", encoding="utf-8") as f:
+                    loaded = yaml.safe_load(f)
+                initial_board_fen_cfg = loaded if isinstance(loaded, list) else (loaded.get("training") or {}).get("initial_board_fen", loaded)
+            except Exception:
+                pass
+
         if isinstance(initial_board_fen_cfg, list):
             dataset_entries, normalized_weights, _labels = _get_cached_dataset_entries(initial_board_fen_cfg)
             if dataset_entries and normalized_weights:
