@@ -37,6 +37,7 @@ from inference_server import InferenceClient, inference_server_worker, inference
 from utils.training_utils import (
     RewardComputer,
     freeze_first_n_conv_layers,
+    freeze_params_by_name,
     repair_fen_en_passant,
     select_fen_from_dict,
     select_random_fen_from_entries,
@@ -1599,6 +1600,13 @@ def _init_network_and_optimizer(
         freeze_first_n_conv_layers(network, freeze_n)
         n_trainable = sum(p.numel() for p in network.parameters() if p.requires_grad)
         progress.print(f"Frozen first {freeze_n} conv layers. Training {n_trainable:,} parameters.")
+
+    freeze_names = cfg.network.get("tpu_freeze_bn_param_names") or []
+    if freeze_names:
+        frozen = freeze_params_by_name(network, freeze_names)
+        if frozen > 0:
+            n_trainable = sum(p.numel() for p in network.parameters() if p.requires_grad)
+            progress.print(f"Frozen {frozen} BN param(s) by name. Training {n_trainable:,} parameters.")
 
     profile_network = create_network(cfg, device)
     profile_network.eval()

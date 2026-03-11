@@ -4,7 +4,7 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import chess
 import torch
@@ -363,6 +363,18 @@ def freeze_first_n_conv_layers(model: torch.nn.Module, n: int) -> None:
     for i in range(to_freeze):
         for param in layers[i].parameters():
             param.requires_grad = False
+
+
+def freeze_params_by_name(model: torch.nn.Module, param_names: List[str]) -> int:
+    """Freeze parameters by exact name. Returns count of params frozen.
+    Used to avoid repeated BN clamping on TPU (freeze params that corrupt often)."""
+    names_set = set(param_names)
+    frozen = 0
+    for name, param in model.named_parameters():
+        if name in names_set:
+            param.requires_grad = False
+            frozen += 1
+    return frozen
 
 
 def save_checkpoint(

@@ -37,6 +37,7 @@ network:
   value_dropout: 0.0
   conv_dropout: 0.0
   freeze_first_n_conv_layers: null  # Freeze first N layers of conv body. Training only layers after. 0 = train all.
+  tpu_freeze_bn_param_names: null  # Optional: freeze specific BN params to avoid repeated clamping on TPU. Example: [body.residual_blocks.0.conv_blocks.0.bn.weight, body.residual_blocks.0.conv_blocks.0.bn.bias, body.residual_blocks.37.conv_blocks.0.bn.bias, body.residual_blocks.38.conv_blocks.0.bn.bias, body.residual_blocks.38.last_block.1.bias, body.residual_blocks.39.last_block.1.bias, policy_head.conv.bn.bias]
 
 # New Env section
 env:

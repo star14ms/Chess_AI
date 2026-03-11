@@ -23,6 +23,7 @@ class NetworkConfig:
     value_dropout: float = 0.0
     conv_dropout: float = 0.0
     freeze_first_n_conv_layers: Optional[int] = 0  # Freeze first N layers of conv body (initial conv + residual). 0 or null = train all.
+    tpu_freeze_bn_param_names: Optional[List[str]] = None  # Optional list of param names to freeze (avoids repeated BN clamping on TPU)
 
 
 @dataclass
