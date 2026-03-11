@@ -3364,6 +3364,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                         "TPU: diagnose_tpu_gradients enabled - will log grad norms, loss components, "
                         "and batch stats on NaN to find gradient deviation cause."
                     )
+                # Reduce LR 5x on TPU to avoid NaN after a few optimizer steps (Adam state precision)
+                if use_tpu and iteration == start_iter:
+                    lr_mult = cfg.training.get("tpu_learning_rate_multiplier", 0.2)
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = pg["lr"] * lr_mult
+                    progress.print(f"TPU: learning rate scaled by {lr_mult} for stability")
+            last_good_state = None  # For rollback when model outputs NaN on TPU
             # Use values from cfg
             for epoch in range(cfg.training.num_training_steps):
                 batch = replay_buffer.sample(
@@ -3446,6 +3453,12 @@ def run_training_loop(cfg: DictConfig) -> None:
                             progress, epoch, policy_targets_np, value_targets_np,
                             policy_logits, value_preds, policy_loss, value_loss,
                         )
+                    if use_tpu and last_good_state is not None:
+                        try:
+                            network.load_state_dict({k: v.to(training_device) for k, v in last_good_state.items()}, strict=True)
+                            print(f"[TPU diag] Restored model from last good state (before epoch {epoch} optimizer step)", file=sys.stderr, flush=True)
+                        except Exception as e:
+                            print(f"[TPU diag] Failed to restore model: {e}", file=sys.stderr, flush=True)
                     optimizer.zero_grad()
                     # Advance progress bar so training doesn't appear stuck
                     do_refresh = (epoch + 1) % 8 == 0 or epoch == cfg.training.num_training_steps - 1
@@ -3508,6 +3521,11 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 )
                     if use_tpu:
                         import torch_xla.core.xla_model as xm
+                        # Save state before optimizer step for rollback if next forward produces NaN
+                        try:
+                            last_good_state = {k: v.detach().cpu().clone() for k, v in network.state_dict().items()}
+                        except Exception:
+                            pass
                         if epoch == 0:
                             print("[TPU diag] calling xm.optimizer_step(barrier=True) - first step compiles, 2-5 min...", file=sys.stderr, flush=True)
                         elif epoch == 1:
