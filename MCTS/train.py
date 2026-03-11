@@ -138,6 +138,25 @@ def _dataset_cache_key(value) -> str:
         return repr(value)
 
 
+def _log_nan_batch_diagnostics_numpy_only(epoch, policy_targets_np, value_targets_np):
+    """Log batch stats using only numpy arrays (no TPU tensor access). Safe to run before .item() check."""
+    try:
+        p = policy_targets_np
+        n_zeros = int(np.sum(p == 0))
+        n_small = int(np.sum((p > 0) & (p < 6e-5)))
+        p_sum = p.sum(axis=1)
+        v = value_targets_np
+        msg = (
+            f"[TPU diag] First batch (epoch {epoch}) - numpy only (no TPU sync): "
+            f"policy_targets zeros={n_zeros} small={n_small} row_sums min={p_sum.min():.6f} max={p_sum.max():.6f} | "
+            f"value_targets min={v.min():.4f} max={v.max():.4f} mean={v.mean():.4f}"
+        )
+        logging.info(msg)
+        print(msg, file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[TPU diag] numpy-only diagnostic error: {e}", file=sys.stderr, flush=True)
+
+
 def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets_np, policy_logits, value_preds, policy_loss, value_loss):
     """Log batch stats when NaN loss detected to help find root cause of TPU gradient deviation."""
     def _out(msg):
@@ -3320,6 +3339,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                     total_loss = policy_loss + value_loss
 
                 # Skip batch if loss is NaN/Inf (e.g. from bad replay data or TPU numerical instability)
+                # On TPU, .item() can hang when tensor has NaN - log numpy stats FIRST (no TPU sync)
+                if use_tpu and cfg.training.get("diagnose_tpu_gradients", False) and epoch == 0:
+                    _log_nan_batch_diagnostics_numpy_only(epoch, policy_targets_np, value_targets_np)
                 try:
                     loss_finite = torch.isfinite(total_loss).item()
                 except Exception:
