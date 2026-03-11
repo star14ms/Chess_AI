@@ -255,6 +255,73 @@ def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets
             print(f"[TPU diag] Error during diagnostic: {e}", file=sys.stderr, flush=True)
 
 
+def _log_tpu_pre_optimizer_diag(network, epoch):
+    """Before optimizer step: check gradients for NaN (would cause corrupted update)."""
+    def _log(msg):
+        print(msg, file=sys.stderr, flush=True)
+    _log(f"[TPU diag] === Pre-optimizer-step {epoch} gradient check ===")
+    params = list(network.named_parameters())
+    indices = [0, len(params) // 2, len(params) - 1] if len(params) >= 3 else list(range(len(params)))
+    for i in indices:
+        if i >= len(params):
+            continue
+        name, param = params[i]
+        if param.grad is None:
+            _log(f"  grad[{i}] {name[:50]}: None")
+            continue
+        try:
+            arr = param.grad.detach().cpu().numpy()
+            has_nan = bool(np.isnan(arr).any())
+            has_inf = bool(np.isinf(arr).any())
+            _log(f"  grad[{i}] {name[:50]}: has_nan={has_nan} has_inf={has_inf} min={arr.min():.6e} max={arr.max():.6e}")
+            if has_nan or has_inf:
+                _log(f"  -> FIRST NaN/Inf in gradient: {name}")
+                return
+        except Exception as e:
+            _log(f"  grad[{i}] {name[:50]}: sync failed: {e}")
+    _log("[TPU diag] === End pre-optimizer gradient check ===")
+
+
+def _log_tpu_post_optimizer_diag(network, optimizer, epoch):
+    """After optimizer step: check params and Adam state for NaN to find corruption source."""
+    def _log(msg):
+        print(msg, file=sys.stderr, flush=True)
+    _log(f"[TPU diag] === Post-optimizer-step {epoch} diagnostic ===")
+    params = list(network.named_parameters())
+    # Sample 5 params: first, 1/4, 1/2, 3/4, last
+    indices = [0, len(params) // 4, len(params) // 2, 3 * len(params) // 4, len(params) - 1] if len(params) >= 5 else list(range(len(params)))
+    for i in indices:
+        if i >= len(params):
+            continue
+        name, param = params[i]
+        try:
+            arr = param.detach().cpu().numpy()
+            has_nan = bool(np.isnan(arr).any())
+            has_inf = bool(np.isinf(arr).any())
+            _log(f"  param[{i}] {name[:50]}: has_nan={has_nan} has_inf={has_inf} min={arr.min():.6f} max={arr.max():.6f}")
+            if has_nan or has_inf:
+                _log(f"  -> FIRST NaN/Inf in param: {name}")
+                return
+        except Exception as e:
+            _log(f"  param[{i}] {name[:50]}: sync failed: {e}")
+    # Check Adam state for first param
+    try:
+        first_param = next(network.parameters())
+        state = optimizer.state.get(first_param)
+        if state:
+            for key in ("step", "exp_avg", "exp_avg_sq"):
+                if key in state:
+                    v = state[key]
+                    if isinstance(v, torch.Tensor):
+                        arr = v.detach().cpu().numpy()
+                        _log(f"  Adam state[{key}]: has_nan={bool(np.isnan(arr).any())} has_inf={bool(np.isinf(arr).any())} min={arr.min():.6e} max={arr.max():.6e}")
+                    else:
+                        _log(f"  Adam state[{key}]: {v}")
+    except Exception as e:
+        _log(f"  Adam state check failed: {e}")
+    _log("[TPU diag] === End post-optimizer diagnostic ===")
+
+
 def _compute_grad_norm(model) -> float:
     """Compute total gradient norm across all parameters. Returns float('nan') on error."""
     try:
@@ -2052,6 +2119,11 @@ def _load_checkpoint(
                 "Checkpoint appears to be from supervised learning (or unknown). Using fresh optimizer for RL training."
             )
 
+        # Skip optimizer state on TPU: Adam m/v from GPU/CPU checkpoint can cause NaN on TPU (precision mismatch)
+        if _is_xla_device(device):
+            progress.print("TPU: Skipping optimizer state load (use fresh Adam state to avoid NaN).")
+            is_rl_checkpoint = False  # Force fresh optimizer path
+
         if is_rl_checkpoint and "optimizer_state_dict" in checkpoint:
             try:
                 checkpoint_opt_state = checkpoint["optimizer_state_dict"]
@@ -3513,6 +3585,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                         import torch_xla.core.xla_model as xm
                         # Skip state save on TPU: copying full state to CPU does 100+ syncs, very slow
                         # last_good_state rollback disabled on TPU for performance
+                        if epoch <= 2 and cfg.training.get("diagnose_tpu_gradients", False):
+                            _log_tpu_pre_optimizer_diag(network, epoch)
                         if epoch == 0:
                             print("[TPU diag] calling xm.optimizer_step(barrier=True) - first step compiles, 2-5 min...", file=sys.stderr, flush=True)
                         elif epoch == 1:
@@ -3520,6 +3594,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                         xm.optimizer_step(optimizer, barrier=True)
                         if use_tpu:
                             print(f"[TPU diag] epoch {epoch} optimizer_step done, loss.item() + source_acc next...", file=sys.stderr, flush=True)
+                            if epoch <= 2 and cfg.training.get("diagnose_tpu_gradients", False):
+                                _log_tpu_post_optimizer_diag(network, optimizer, epoch)
                     else:
                         optimizer.step()
 
