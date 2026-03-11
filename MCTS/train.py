@@ -142,7 +142,7 @@ def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets
     """Log batch stats when NaN loss detected to help find root cause of TPU gradient deviation."""
     def _out(msg):
         logging.info(msg)
-        print(msg, flush=True)
+        print(msg, file=sys.stderr, flush=True)
         if progress is not None and hasattr(progress, "print"):
             try:
                 progress.print(msg)
@@ -151,6 +151,7 @@ def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets
 
     try:
         _out(f"[TPU diag] NaN/Inf loss at epoch {epoch}. Batch stats:")
+        # Numpy arrays first (no TPU sync - safe)
         p = policy_targets_np
         n_zeros = int(np.sum(p == 0))
         n_small = int(np.sum((p > 0) & (p < 6e-5)))
@@ -159,23 +160,28 @@ def _log_nan_batch_diagnostics(progress, epoch, policy_targets_np, value_targets
              f"row_sums min={p_sum.min():.6f} max={p_sum.max():.6f} mean={p_sum.mean():.6f}")
         v = value_targets_np
         _out(f"  value_targets: min={v.min():.4f} max={v.max():.4f} mean={v.mean():.4f}")
+        # TPU tensors: .cpu()/.item() can hang on NaN - wrap tightly
         try:
             with torch.no_grad():
                 pl = policy_logits.detach().float().cpu().numpy()
-                vp = value_preds.detach().float().cpu().numpy()
             _out(f"  policy_logits: min={pl.min():.4f} max={pl.max():.4f} has_nan={bool(np.isnan(pl).any())}")
+        except Exception as e:
+            _out(f"  policy_logits: (TPU sync failed: {e})")
+        try:
+            with torch.no_grad():
+                vp = value_preds.detach().float().cpu().numpy()
             _out(f"  value_preds: min={vp.min():.4f} max={vp.max():.4f} has_nan={bool(np.isnan(vp).any())}")
         except Exception as e:
-            _out(f"  (could not get model outputs: {e})")
+            _out(f"  value_preds: (TPU sync failed: {e})")
         try:
             _out(f"  policy_loss={float(policy_loss.item())}, value_loss={float(value_loss.item())}")
-        except Exception:
-            _out("  (could not get loss values)")
+        except Exception as e:
+            _out(f"  loss values: (TPU sync failed: {e})")
     except Exception as e:
         try:
             _out(f"[TPU diag] Error during diagnostic: {e}")
         except Exception:
-            print(f"[TPU diag] Error during diagnostic: {e}", flush=True)
+            print(f"[TPU diag] Error during diagnostic: {e}", file=sys.stderr, flush=True)
 
 
 def _compute_grad_norm(model) -> float:
@@ -3320,6 +3326,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                     loss_finite = False  # Assume NaN if check fails (e.g. TPU sync)
                 if not loss_finite:
                     if use_tpu and cfg.training.get("diagnose_tpu_gradients", False):
+                        print(f"[TPU diag] NaN/Inf loss at epoch {epoch} - skipping batch", file=sys.stderr, flush=True)
                         _log_nan_batch_diagnostics(
                             progress, epoch, policy_targets_np, value_targets_np,
                             policy_logits, value_preds, policy_loss, value_loss,
