@@ -3494,9 +3494,13 @@ def run_training_loop(cfg: DictConfig) -> None:
                                 )
                     if use_tpu:
                         import torch_xla.core.xla_model as xm
+                        # barrier=True on epoch 0 for first-step sync; barrier=False for epoch>0 to avoid hang on multi-core TPU
+                        use_barrier = epoch == 0
                         if epoch == 0:
-                            print("[TPU diag] calling xm.optimizer_step (first step may compile, 2-5 min)...", file=sys.stderr, flush=True)
-                        xm.optimizer_step(optimizer, barrier=True)
+                            print("[TPU diag] calling xm.optimizer_step(barrier=True) - first step may compile 2-5 min...", file=sys.stderr, flush=True)
+                        else:
+                            print(f"[TPU diag] epoch {epoch} calling xm.optimizer_step(barrier={use_barrier})...", file=sys.stderr, flush=True)
+                        xm.optimizer_step(optimizer, barrier=use_barrier)
                         if use_tpu:
                             print(f"[TPU diag] epoch {epoch} optimizer_step done, loss.item() + source_acc next...", file=sys.stderr, flush=True)
                     else:
