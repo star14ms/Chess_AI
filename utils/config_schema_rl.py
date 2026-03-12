@@ -67,7 +67,6 @@ class TrainingConfig:
     num_training_steps: int = 10  # Renamed from training_steps_per_iteration for clarity
     batch_size: int = 128
     grad_clip_norm: Optional[float] = None  # Max gradient norm; None = no clipping. Use 1.0 for TPU stability.
-    tpu_learning_rate_multiplier: float = 0.2  # Scale LR by this on TPU (e.g. 0.2 = 5x lower) to avoid NaN after a few steps
     use_multiprocessing: bool = True  # Flag to enable/disable multiprocessing for self-play
     self_play_workers: int = 0  # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
     games_per_worker: int = 1  # Number of concurrent games per worker. >1 increases parallelism when using inference server.

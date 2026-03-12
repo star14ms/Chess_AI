@@ -49,14 +49,14 @@ env:
 
 mcts:
   _target_: utils.config_schema_rl.MCTSConfig
-  iterations: 512  # More search to find mate
+  iterations: 2048  # More search to find mate
   c_puct: 1.41     # Moderate (not too high!)
   temperature_start: 1.0  # Some randomness early
   temperature_end: 0.3
   temperature_decay_moves: 10  # Quick transition
   dirichlet_alpha: 0.3
-  dirichlet_epsilon: 0.0
-  batch_size: 16  # Per-game batch (keep small to avoid MCTS variance)
+  dirichlet_epsilon: 0.25
+  batch_size: 32  # Per-game batch (keep small to avoid MCTS variance)
   pre_init_draws: true  # Pre-init draw terminals (stalemate, insufficient material, etc.). Set true to enable; false to revert.
   
 
@@ -78,7 +78,6 @@ training:
   num_training_steps: 40
   batch_size: 64
   grad_clip_norm: 1.0  # Gradient clipping for TPU stability; set null to disable
-  tpu_learning_rate_multiplier: 0.2  # Scale LR by this on TPU (0.2 = 5x lower) to avoid NaN after a few steps
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
   games_per_worker: 1  # Concurrent games per worker (increases parallelism with inference server)

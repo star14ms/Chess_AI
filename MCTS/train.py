@@ -3316,10 +3316,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                 illegal_r=float("nan"),
                 illegal_p=float("nan"),
             )
-            if use_tpu and iteration == start_iter:
-                lr_mult = cfg.training.get("tpu_learning_rate_multiplier", 0.2)
-                for pg in optimizer.param_groups:
-                    pg["lr"] = pg["lr"] * lr_mult
             last_good_state = None  # For rollback when model outputs NaN on TPU
             # Use values from cfg
             for epoch in range(cfg.training.num_training_steps):
