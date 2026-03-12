@@ -3368,11 +3368,9 @@ def run_training_loop(cfg: DictConfig) -> None:
                             param_group['lr'] = bn_opt_lr or current_lr
                     import traceback
                     traceback.print_exc()
-            # AMP on TPU can cause NaN loss; disable for TPU (PyTorch/XLA issue #3200)
             amp_enabled = bool(
                 cfg.training.get("amp", False)
-                and not use_tpu
-                and (training_device.type in {"cuda", "mps"})
+                and (training_device.type in {"cuda", "mps"} or (use_tpu and "xla" in str(training_device)))
             )
             amp_device = "xla" if use_tpu else ("cuda" if training_device.type == "cuda" else "mps")
             scaler = GradScaler(amp_device, enabled=cfg.training.get("amp", False) and training_device.type == "cuda" and not use_tpu)
