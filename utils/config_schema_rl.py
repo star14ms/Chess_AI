@@ -104,6 +104,7 @@ class TrainingConfig:
     )  # Dict: termination -> int. 0 = exclude from buffer; n>0 = store only last n moves; absent = full game
     draw_sample_ratio: Optional[float] = None  # Target fraction of batch from draws (0.0–1.0). None = uniform sampling. E.g. 0.4 = 40% draws per batch.
     follow_dataset_trajectory: bool = False  # If True and a dataset solution exists, select the dataset move deterministically instead of sampling from MCTS policy. Policy target remains MCTS.
+    follow_dataset_trajectory_obs_prefetch: bool = True  # When follow_dataset_trajectory, prefetch next observation in parallel with MCTS to overlap get_board_vector with search.
     training_prefetch_enabled: bool = True  # Prefetch batches in a background thread during training to overlap sampling with backward pass.
     training_prefetch_buffer_size: int = 2  # Number of batches to prefetch ahead. 0 or 1 disables prefetching.
 

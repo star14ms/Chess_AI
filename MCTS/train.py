@@ -848,6 +848,19 @@ class ReplayBuffer:
             self.buffer = deque(state['buffer'], maxlen=state['maxlen'])
 
 
+def _prefetch_next_obs(board_copy, action_id: int, history_steps: int):
+    """Compute observation for the state after applying action_id. Runs in a thread.
+    Returns np.ndarray or None if move is illegal."""
+    try:
+        move = board_copy.action_id_to_move(action_id)
+        if move is None or move not in board_copy.legal_moves:
+            return None
+        board_copy.push(move)
+        return board_copy.get_board_vector(history_steps=history_steps).astype(np.float32, copy=False)
+    except Exception:
+        return None
+
+
 # --- Self-Play Function (Update args to use config subsections) ---
 def run_self_play_game(
     cfg: OmegaConf,
@@ -1063,6 +1076,36 @@ def run_self_play_game(
         # Use FEN string for restoration (more efficient than full board copy)
         # The FEN string is immutable and won't be affected by any board modifications
         fen_string_before_mcts = cached_fen  # Use cached FEN instead of calling env.board.fen()
+        
+        # Prefetch next observation when follow_dataset_trajectory: we know the next move, so
+        # compute next state's obs in parallel with MCTS to overlap get_board_vector with search.
+        prefetch_future = None
+        prefetch_executor = None
+        legal_actions_pre = get_legal_actions(env.board)
+        is_following_solution_pre = (
+            solution_action_ids
+            and move_list_action_ids == solution_action_ids[: len(move_list_action_ids)]
+        )
+        ground_truth_action_pre = (
+            solution_action_ids[move_count]
+            if is_following_solution_pre and move_count < len(solution_action_ids)
+            else None
+        )
+        follow_trajectory_pre = (
+            cfg.training.get("follow_dataset_trajectory", False)
+            and cfg.training.get("follow_dataset_trajectory_obs_prefetch", True)
+            and ground_truth_action_pre is not None
+            and ground_truth_action_pre in legal_actions_pre
+        )
+        if follow_trajectory_pre:
+            prefetch_executor = ThreadPoolExecutor(max_workers=1)
+            board_for_prefetch = env.board.copy(stack=True)
+            prefetch_future = prefetch_executor.submit(
+                _prefetch_next_obs,
+                board_for_prefetch,
+                ground_truth_action_pre,
+                cfg.env.history_steps,
+            )
         
         if cfg.mcts.iterations > 0:
             # Use stack=False for MCTS nodes - they only need current position (FEN) for exploration.
@@ -1357,7 +1400,16 @@ def run_self_play_game(
             )
         
         # Now play the move - this will switch turns correctly
-        obs, _, terminated, truncated, info = env.step(action_to_take)
+        # Use prefetched obs when available (follow_dataset_trajectory: we computed it during MCTS)
+        prefetched_obs = None
+        if prefetch_future is not None and action_to_take == ground_truth_action_pre:
+            try:
+                prefetched_obs = prefetch_future.result(timeout=5.0)
+            except Exception:
+                pass
+            if prefetch_executor is not None:
+                prefetch_executor.shutdown(wait=False)
+        obs, _, terminated, truncated, info = env.step(action_to_take, precomputed_obs=prefetched_obs)
         
         # Update cached FEN after board change (env.step() modifies the board)
         cached_fen = env.board.fen()

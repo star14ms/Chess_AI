@@ -377,7 +377,9 @@ class ChessEnv(gym.Env):
             raise RuntimeError(f"Invalid internal state: observation_mode='{self.observation_mode}'")
         return observation
 
-    def step(self, action):
+    def step(self, action, precomputed_obs=None):
+        """Execute one step. If precomputed_obs is provided, use it instead of calling _observe().
+        Used for observation prefetching when the next state is known (e.g. follow_dataset_trajectory)."""
         # Convert the action to a chess move using MoveSpace
         if action in self.board.legal_actions:
             move = self.action_space._action_to_move(action)
@@ -389,7 +391,7 @@ class ChessEnv(gym.Env):
         stack_snapshot = self.board.copy(stack=True)
         fen_snapshot = self.board.fen()
 
-        observation = self._observe()
+        observation = precomputed_obs if precomputed_obs is not None else self._observe()
         # Use centralized reward calculation from the previous player's perspective (who just moved)
         from MCTS.training_modules.chess import calculate_chess_reward
         reward = calculate_chess_reward(self.board, claim_draw=self.claim_draw)

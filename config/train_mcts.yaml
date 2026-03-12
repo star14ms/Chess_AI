@@ -59,7 +59,6 @@ mcts:
   batch_size: 32  # Per-game batch (keep small to avoid MCTS variance)
   pre_init_draws: true  # Pre-init draw terminals (stalemate, insufficient material, etc.). Set true to enable; false to revert.
   
-
 optimizer:
   _target_: utils.config_schema_rl.OptimizerConfig
   type: Adam
@@ -149,6 +148,7 @@ training:
     #   max_game_moves: 19
 
   follow_dataset_trajectory: true # If true, select dataset move deterministically when on solution path (policy target still from MCTS)
+  follow_dataset_trajectory_obs_prefetch: true  # Prefetch next observation in parallel with MCTS when following trajectory
   progress_bar: true
   max_training_time_seconds: null # Maximum training time in seconds. At the end of each iteration, predicts total elapsed time after next iteration and stops if it would exceed this limit. Set to null to disable. Example: 3600 for 1 hour, 7200 for 2 hours.
   draw_reward: 0.0 # Fixed reward value for draws. Set to null to use draw_reward_table
