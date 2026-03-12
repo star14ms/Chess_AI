@@ -45,6 +45,8 @@ class OptimizerConfig:
     learning_rate: float = 0.001
     momentum: Optional[float] = 0.9  # Only used for SGD
     weight_decay: float = 1e-4
+    bn_optimizer_type: Optional[str] = None  # Separate optimizer for BN layers (e.g. "SGD"). Null = use same as main. Helps avoid TPU Adam corruption.
+    bn_optimizer_lr: Optional[float] = None  # LR for BN optimizer; null = same as main learning_rate
 
 
 # New dataclass for environment settings

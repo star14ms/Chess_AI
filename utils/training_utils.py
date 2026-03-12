@@ -4,7 +4,7 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import chess
 import torch
@@ -363,6 +363,28 @@ def freeze_first_n_conv_layers(model: torch.nn.Module, n: int) -> None:
     for i in range(to_freeze):
         for param in layers[i].parameters():
             param.requires_grad = False
+
+
+def get_bn_and_rest_params(model: torch.nn.Module) -> Tuple[List[torch.nn.Parameter], List[torch.nn.Parameter]]:
+    """Split trainable params into BN params (BatchNorm2d/1d weight and bias) and rest.
+    Returns (bn_params, rest_params)."""
+    bn_param_ids = set()
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
+            if module.weight is not None:
+                bn_param_ids.add(id(module.weight))
+            if module.bias is not None:
+                bn_param_ids.add(id(module.bias))
+    bn_params = []
+    rest_params = []
+    for p in model.parameters():
+        if not p.requires_grad:
+            continue
+        if id(p) in bn_param_ids:
+            bn_params.append(p)
+        else:
+            rest_params.append(p)
+    return bn_params, rest_params
 
 
 def freeze_params_by_name(model: torch.nn.Module, param_names: List[str]) -> int:

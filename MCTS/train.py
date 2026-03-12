@@ -38,6 +38,7 @@ from utils.training_utils import (
     RewardComputer,
     freeze_first_n_conv_layers,
     freeze_params_by_name,
+    get_bn_and_rest_params,
     repair_fen_en_passant,
     select_fen_from_dict,
     select_random_fen_from_entries,
@@ -1603,7 +1604,7 @@ def _init_progress(cfg: DictConfig) -> tuple[Progress, bool]:
 
 def _init_network_and_optimizer(
     cfg: DictConfig, device: torch.device, progress: Progress, log_path: str | Path | None = None
-) -> tuple[nn.Module, optim.Optimizer, DictConfig, float]:
+) -> tuple[nn.Module, optim.Optimizer, optim.Optimizer | None, DictConfig, float]:
     network = create_network(cfg, device)
     network.eval()
 
@@ -1637,21 +1638,56 @@ def _init_network_and_optimizer(
 
     opt_cfg = cfg.optimizer
     actual_learning_rate = opt_cfg.learning_rate
-    trainable_params = [p for p in network.parameters() if p.requires_grad]
-    if opt_cfg.type == "Adam":
-        optimizer = optim.Adam(trainable_params, lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
-    elif opt_cfg.type == "SGD":
-        momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
-        optimizer = optim.SGD(
-            trainable_params,
-            lr=opt_cfg.learning_rate,
-            momentum=momentum,
-            weight_decay=opt_cfg.weight_decay,
-        )
+    bn_opt_type = opt_cfg.get("bn_optimizer_type") or None
+    bn_opt_lr = opt_cfg.get("bn_optimizer_lr")
+    use_bn_optimizer = bn_opt_type and str(bn_opt_type).lower() not in ("none", "null") and bn_opt_type != opt_cfg.type
+
+    if use_bn_optimizer:
+        bn_params, rest_params = get_bn_and_rest_params(network)
+        if not bn_params or not rest_params:
+            use_bn_optimizer = False  # All params BN or none; use single optimizer
+
+    if use_bn_optimizer:
+        bn_lr = float(bn_opt_lr) if bn_opt_lr is not None else opt_cfg.learning_rate
+        # Main optimizer for non-BN params
+        if opt_cfg.type == "Adam":
+            optimizer = optim.Adam(rest_params, lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+        elif opt_cfg.type == "SGD":
+            momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+            optimizer = optim.SGD(
+                rest_params,
+                lr=opt_cfg.learning_rate,
+                momentum=momentum,
+                weight_decay=opt_cfg.weight_decay,
+            )
+        else:
+            raise ValueError(f"Unsupported optimizer: {opt_cfg.type}")
+        # BN optimizer
+        if bn_opt_type == "SGD":
+            momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+            bn_optimizer = optim.SGD(bn_params, lr=bn_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+        elif bn_opt_type == "Adam":
+            bn_optimizer = optim.Adam(bn_params, lr=bn_lr, weight_decay=opt_cfg.weight_decay)
+        else:
+            raise ValueError(f"Unsupported bn_optimizer_type: {bn_opt_type}")
+        progress.print(f"Optimizer: {opt_cfg.type} (main) + {bn_opt_type} (BN, lr={bn_lr:.2e})")
     else:
-        raise ValueError(f"Unsupported optimizer: {opt_cfg.type}")
-    progress.print(f"Optimizer initialized: {opt_cfg.type}")
-    return network, optimizer, opt_cfg, actual_learning_rate
+        bn_optimizer = None
+        trainable_params = [p for p in network.parameters() if p.requires_grad]
+        if opt_cfg.type == "Adam":
+            optimizer = optim.Adam(trainable_params, lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+        elif opt_cfg.type == "SGD":
+            momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+            optimizer = optim.SGD(
+                trainable_params,
+                lr=opt_cfg.learning_rate,
+                momentum=momentum,
+                weight_decay=opt_cfg.weight_decay,
+            )
+        else:
+            raise ValueError(f"Unsupported optimizer: {opt_cfg.type}")
+        progress.print(f"Optimizer initialized: {opt_cfg.type}")
+    return network, optimizer, bn_optimizer, opt_cfg, actual_learning_rate
 
 
 def _init_replay_buffer(cfg: DictConfig, progress: Progress):
@@ -1950,16 +1986,17 @@ def _load_checkpoint(
     checkpoint_path: str,
     network: nn.Module,
     optimizer: optim.Optimizer,
+    bn_optimizer: optim.Optimizer | None,
     opt_cfg: DictConfig,
     device: torch.device,
     progress: Progress,
     replay_buffer,
     actual_learning_rate: float,
     history: dict,
-) -> tuple[int, int, float, bool, dict]:
+) -> tuple[int, int, float, bool, dict, optim.Optimizer, optim.Optimizer | None]:
     if not os.path.exists(checkpoint_path):
         progress.print("No existing checkpoint found. Starting training from scratch...")
-        return 0, 0, actual_learning_rate, False, history
+        return 0, 0, actual_learning_rate, False, history, optimizer, bn_optimizer
 
     progress.print(f"\nFound existing checkpoint at {checkpoint_path}")
     try:
@@ -2087,6 +2124,16 @@ def _load_checkpoint(
                         if isinstance(v, torch.Tensor):
                             state[k] = v.to(device)
 
+                if bn_optimizer is not None and "bn_optimizer_state_dict" in checkpoint:
+                    try:
+                        bn_optimizer.load_state_dict(checkpoint["bn_optimizer_state_dict"])
+                        for state in bn_optimizer.state.values():
+                            for k, v in state.items():
+                                if isinstance(v, torch.Tensor):
+                                    state[k] = v.to(device)
+                    except Exception as e:
+                        progress.print(f"Warning: Could not load BN optimizer state: {e}")
+
                 restored_lr = optimizer.param_groups[0]["lr"]
                 if abs(restored_lr - actual_learning_rate) > 1e-8:
                     progress.print(
@@ -2111,21 +2158,43 @@ def _load_checkpoint(
                 progress.print(
                     "Warning: Optimizer will start fresh and be reinitialized for RL training (this will cause higher initial losses)"
                 )
-                trainable_params = [p for p in network.parameters() if p.requires_grad]
-                if opt_cfg.type == "Adam":
-                    optimizer = optim.Adam(
-                        trainable_params,
-                        lr=opt_cfg.learning_rate,
-                        weight_decay=opt_cfg.weight_decay,
-                    )
-                elif opt_cfg.type == "SGD":
-                    momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
-                    optimizer = optim.SGD(
-                        trainable_params,
-                        lr=opt_cfg.learning_rate,
-                        momentum=momentum,
-                        weight_decay=opt_cfg.weight_decay,
-                    )
+                bn_opt_type = opt_cfg.get("bn_optimizer_type") or None
+                use_bn_opt = bn_opt_type and str(bn_opt_type).lower() not in ("none", "null") and bn_opt_type != opt_cfg.type
+                if use_bn_opt:
+                    bn_params, rest_params = get_bn_and_rest_params(network)
+                    bn_lr = opt_cfg.get("bn_optimizer_lr") or opt_cfg.learning_rate
+                    if bn_params and rest_params:
+                        if opt_cfg.type == "Adam":
+                            optimizer = optim.Adam(rest_params, lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+                        else:
+                            momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                            optimizer = optim.SGD(rest_params, lr=opt_cfg.learning_rate, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+                        if bn_opt_type == "SGD":
+                            momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                            bn_optimizer = optim.SGD(bn_params, lr=bn_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+                        else:
+                            bn_optimizer = optim.Adam(bn_params, lr=bn_lr, weight_decay=opt_cfg.weight_decay)
+                    else:
+                        trainable_params = [p for p in network.parameters() if p.requires_grad]
+                        bn_optimizer = None
+                        if opt_cfg.type == "Adam":
+                            optimizer = optim.Adam(trainable_params, lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+                        else:
+                            momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                            optimizer = optim.SGD(trainable_params, lr=opt_cfg.learning_rate, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+                else:
+                    trainable_params = [p for p in network.parameters() if p.requires_grad]
+                    bn_optimizer = None
+                    if opt_cfg.type == "Adam":
+                        optimizer = optim.Adam(trainable_params, lr=opt_cfg.learning_rate, weight_decay=opt_cfg.weight_decay)
+                    elif opt_cfg.type == "SGD":
+                        momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                        optimizer = optim.SGD(
+                            trainable_params,
+                            lr=opt_cfg.learning_rate,
+                            momentum=momentum,
+                            weight_decay=opt_cfg.weight_decay,
+                        )
                 actual_learning_rate = opt_cfg.learning_rate
                 if not isinstance(e, RuntimeError) or str(e) != "skip_optimizer_load":
                     import traceback
@@ -2166,11 +2235,11 @@ def _load_checkpoint(
             progress.print(
                 f"Successfully loaded checkpoint from iteration {start_iter} with {total_games_simulated} games simulated (no replay buffer found)"
             )
-        return start_iter, total_games_simulated, actual_learning_rate, buffer_loaded, history
+        return start_iter, total_games_simulated, actual_learning_rate, buffer_loaded, history, optimizer, bn_optimizer
     except Exception as e:
         progress.print(f"Error loading checkpoint: {e}")
         progress.print("Starting training from scratch...")
-        return 0, 0, actual_learning_rate, False, history
+        return 0, 0, actual_learning_rate, False, history, optimizer, bn_optimizer
 
 # --- Training Loop Function --- 
 # Use DictConfig for type hint from Hydra
@@ -2223,7 +2292,7 @@ def run_training_loop(cfg: DictConfig) -> None:
 
     # Mode selection will occur after defining checkpoint and queue
 
-    network, optimizer, opt_cfg, actual_learning_rate = _init_network_and_optimizer(
+    network, optimizer, bn_optimizer, opt_cfg, actual_learning_rate = _init_network_and_optimizer(
         cfg, device, progress, log_path=log_path
     )
     replay_buffer = _init_replay_buffer(cfg, progress)
@@ -2324,11 +2393,14 @@ def run_training_loop(cfg: DictConfig) -> None:
         actual_learning_rate,
         buffer_loaded,
         history,
+        optimizer,
+        bn_optimizer,
     ) = _load_checkpoint(
         cfg=cfg,
         checkpoint_path=load_checkpoint_path,
         network=network,
         optimizer=optimizer,
+        bn_optimizer=bn_optimizer,
         opt_cfg=opt_cfg,
         device=device,
         progress=progress,
@@ -3218,36 +3290,59 @@ def run_training_loop(cfg: DictConfig) -> None:
             # CRITICAL: Refresh optimizer parameter references after moving network
             # When network.to(device) creates new parameter tensors, optimizer must be updated
             if use_multiprocessing_flag:
-                # Save optimizer state before refreshing
                 opt_state = optimizer.state_dict()
-                # Extract current learning rate from optimizer state to preserve it
                 current_lr = optimizer.param_groups[0]['lr']
-                # Recreate optimizer with new parameter references, using preserved learning rate
-                trainable_params = [p for p in network.parameters() if p.requires_grad]
-                if opt_cfg.type == "Adam":
-                    optimizer = optim.Adam(trainable_params, lr=current_lr, weight_decay=opt_cfg.weight_decay)
-                elif opt_cfg.type == "SGD":
-                    momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
-                    optimizer = optim.SGD(trainable_params, lr=current_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
-                # Restore optimizer state (this preserves momentum, adaptive rates, etc.)
+                bn_opt_state = bn_optimizer.state_dict() if bn_optimizer is not None else None
+                bn_opt_lr = bn_optimizer.param_groups[0]['lr'] if bn_optimizer is not None else None
+                bn_opt_type = opt_cfg.get("bn_optimizer_type") or None
+                use_bn_opt = bn_opt_type and str(bn_opt_type).lower() not in ("none", "null") and bn_opt_type != opt_cfg.type
+                if use_bn_opt:
+                    bn_params, rest_params = get_bn_and_rest_params(network)
+                    if bn_params and rest_params:
+                        if opt_cfg.type == "Adam":
+                            optimizer = optim.Adam(rest_params, lr=current_lr, weight_decay=opt_cfg.weight_decay)
+                        else:
+                            momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                            optimizer = optim.SGD(rest_params, lr=current_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+                        bn_lr = bn_opt_lr if bn_opt_lr is not None else current_lr
+                        if bn_opt_type == "SGD":
+                            momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                            bn_optimizer = optim.SGD(bn_params, lr=bn_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
+                        else:
+                            bn_optimizer = optim.Adam(bn_params, lr=bn_lr, weight_decay=opt_cfg.weight_decay)
+                    else:
+                        use_bn_opt = False
+                if not use_bn_opt:
+                    trainable_params = [p for p in network.parameters() if p.requires_grad]
+                    bn_optimizer = None
+                    if opt_cfg.type == "Adam":
+                        optimizer = optim.Adam(trainable_params, lr=current_lr, weight_decay=opt_cfg.weight_decay)
+                    elif opt_cfg.type == "SGD":
+                        momentum = opt_cfg.momentum if opt_cfg.momentum is not None else 0.9
+                        optimizer = optim.SGD(trainable_params, lr=current_lr, momentum=momentum, weight_decay=opt_cfg.weight_decay)
                 try:
                     optimizer.load_state_dict(opt_state)
-                    # Ensure optimizer state tensors are on correct device
                     for state in optimizer.state.values():
                         for k, v in state.items():
                             if isinstance(v, torch.Tensor):
                                 state[k] = v.to(training_device)
-                    # Verify learning rate was preserved
+                    if bn_optimizer is not None and bn_opt_state is not None:
+                        bn_optimizer.load_state_dict(bn_opt_state)
+                        for state in bn_optimizer.state.values():
+                            for k, v in state.items():
+                                if isinstance(v, torch.Tensor):
+                                    state[k] = v.to(training_device)
                     restored_lr = optimizer.param_groups[0]['lr']
                     if abs(restored_lr - current_lr) > 1e-8:
-                        # Fix learning rate if it wasn't preserved correctly
                         for param_group in optimizer.param_groups:
                             param_group['lr'] = current_lr
                 except Exception as e:
                     progress.print(f"Warning: Could not restore optimizer state after device move: {e}")
-                    # At minimum, preserve the learning rate
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = current_lr
+                    if bn_optimizer is not None:
+                        for param_group in bn_optimizer.param_groups:
+                            param_group['lr'] = bn_opt_lr or current_lr
                     import traceback
                     traceback.print_exc()
             # AMP on TPU can cause NaN loss; disable for TPU (PyTorch/XLA issue #3200)
@@ -3323,6 +3418,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                         except Exception:
                             pass
                     optimizer.zero_grad()
+                    if bn_optimizer is not None:
+                        bn_optimizer.zero_grad()
                     # Advance progress bar so training doesn't appear stuck
                     do_refresh = (epoch + 1) % 8 == 0 or epoch == cfg.training.num_training_steps - 1
                     progress.update(
@@ -3334,15 +3431,21 @@ def run_training_loop(cfg: DictConfig) -> None:
                     continue
 
                 optimizer.zero_grad()
+                if bn_optimizer is not None:
+                    bn_optimizer.zero_grad()
                 grad_clip = cfg.training.get("grad_clip_norm")
                 if use_tpu and grad_clip is not None and grad_clip > 0.5:
                     grad_clip = min(grad_clip, 0.5)  # Tighter clip on TPU to reduce NaN after a few steps
                 if scaler.is_enabled():
                     scaler.scale(total_loss).backward()
                     scaler.unscale_(optimizer)
+                    if bn_optimizer is not None:
+                        scaler.unscale_(bn_optimizer)
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                     scaler.step(optimizer)
+                    if bn_optimizer is not None:
+                        scaler.step(bn_optimizer)
                     scaler.update()
                 else:
                     total_loss.backward()
@@ -3351,13 +3454,20 @@ def run_training_loop(cfg: DictConfig) -> None:
                     if use_tpu:
                         import torch_xla.core.xla_model as xm
                         xm.optimizer_step(optimizer, barrier=True)
+                        if bn_optimizer is not None:
+                            xm.optimizer_step(bn_optimizer, barrier=True)
                         if cfg.training.get("tpu_clamp_bn_params", True):
                             clamp_count, clamped_params, _ = _clamp_bn_params_on_tpu(network)
                             total_bn_clamps_this_iteration += clamp_count
-                            if clamped_params and opt_cfg.type == "Adam":
-                                _reset_adam_state_for_params(optimizer, clamped_params)
+                            if clamped_params:
+                                target_opt = bn_optimizer if bn_optimizer is not None else optimizer
+                                is_adam = (opt_cfg.get("bn_optimizer_type") == "Adam") if bn_optimizer is not None else (opt_cfg.type == "Adam")
+                                if is_adam:
+                                    _reset_adam_state_for_params(target_opt, clamped_params)
                     else:
                         optimizer.step()
+                        if bn_optimizer is not None:
+                            bn_optimizer.step()
 
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
@@ -3501,6 +3611,8 @@ def run_training_loop(cfg: DictConfig) -> None:
                 ),
                 'history': history,
             }
+            if bn_optimizer is not None:
+                checkpoint['bn_optimizer_state_dict'] = bn_optimizer.state_dict()
             torch.save(checkpoint, checkpoint_path)
         
         checkpoint_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024) if os.path.exists(checkpoint_path) else 0.0

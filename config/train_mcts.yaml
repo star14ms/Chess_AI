@@ -67,6 +67,8 @@ optimizer:
   learning_rate: 1e-5
   # momentum: 0.9 # Not needed for Adam default
   weight_decay: 1e-4
+  bn_optimizer_type: null  # Optional: use different optimizer for BN (e.g. SGD) to avoid TPU Adam corruption
+  bn_optimizer_lr: null  # LR for BN optimizer; null = same as learning_rate
 
 training:
   _target_: utils.config_schema_rl.TrainingConfig
