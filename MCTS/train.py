@@ -142,9 +142,10 @@ def _dataset_cache_key(value) -> str:
 def _clamp_bn_params_on_tpu(network):
     """Replace NaN/Inf in BatchNorm params with safe fallbacks after optimizer step.
     BN bias -> 0, BN weight (gamma) -> 1. Keeps BN trainable while fixing TPU Adam corruption.
-    Returns (count, list of param names clamped)."""
+    Returns (count, clamped_param_list, clamped_names). clamped_param_list = param tensors for Adam state reset."""
     fixed = 0
     clamped_names = []
+    clamped_params = []
     for name, module in network.named_modules():
         if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
             if module.weight is not None:
@@ -155,6 +156,7 @@ def _clamp_bn_params_on_tpu(network):
                         module.weight.data = torch.where(bad, torch.ones_like(w), w)
                         fixed += 1
                         clamped_names.append(f"{name}.weight")
+                        clamped_params.append(module.weight)
             if module.bias is not None:
                 with torch.no_grad():
                     b = module.bias.data
@@ -163,6 +165,7 @@ def _clamp_bn_params_on_tpu(network):
                         module.bias.data = torch.where(bad, torch.zeros_like(b), b)
                         fixed += 1
                         clamped_names.append(f"{name}.bias")
+                        clamped_params.append(module.bias)
     if fixed > 0:
         print(f"[TPU] Clamped {fixed} BN param(s) with NaN/Inf: {clamped_names}", file=sys.stderr, flush=True)
         if fixed > 5:
@@ -171,7 +174,18 @@ def _clamp_bn_params_on_tpu(network):
                 file=sys.stderr,
                 flush=True,
             )
-    return fixed, clamped_names
+    return fixed, clamped_params, clamped_names
+
+
+def _reset_adam_state_for_params(optimizer, params):
+    """Zero exp_avg and exp_avg_sq for given params. Prevents corrupted Adam state from
+    re-corrupting params on next step (stops NaN spread on TPU)."""
+    for param in params:
+        if param in optimizer.state:
+            state = optimizer.state[param]
+            for key in ("exp_avg", "exp_avg_sq"):
+                if key in state and isinstance(state[key], torch.Tensor):
+                    state[key].zero_()
 
 
 def _state_dict_has_nan_or_inf(state_dict: dict) -> bool:
@@ -3338,8 +3352,10 @@ def run_training_loop(cfg: DictConfig) -> None:
                         import torch_xla.core.xla_model as xm
                         xm.optimizer_step(optimizer, barrier=True)
                         if cfg.training.get("tpu_clamp_bn_params", True):
-                            clamp_count, _ = _clamp_bn_params_on_tpu(network)
+                            clamp_count, clamped_params, _ = _clamp_bn_params_on_tpu(network)
                             total_bn_clamps_this_iteration += clamp_count
+                            if clamped_params and opt_cfg.type == "Adam":
+                                _reset_adam_state_for_params(optimizer, clamped_params)
                     else:
                         optimizer.step()
 
