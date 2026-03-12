@@ -37,7 +37,6 @@ network:
   value_dropout: 0.0
   conv_dropout: 0.0
   freeze_first_n_conv_layers: null  # Freeze first N layers of conv body. Training only layers after. 0 = train all.
-  tpu_freeze_bn_param_names: null  # Optional: freeze specific BN params to avoid repeated clamping on TPU. Example: [body.residual_blocks.0.conv_blocks.0.bn.weight, body.residual_blocks.0.conv_blocks.0.bn.bias, body.residual_blocks.37.conv_blocks.0.bn.bias, body.residual_blocks.38.conv_blocks.0.bn.bias, body.residual_blocks.38.last_block.1.bias, body.residual_blocks.39.last_block.1.bias, policy_head.conv.bn.bias]
 
 # New Env section
 env:
@@ -65,9 +64,9 @@ optimizer:
   _target_: utils.config_schema_rl.OptimizerConfig
   type: Adam
   learning_rate: 1e-5
-  # momentum: 0.9 # Not needed for Adam default
+  momentum: 0.9 # Not needed for Adam default
   weight_decay: 1e-4
-  bn_optimizer_type: null  # Optional: use different optimizer for BN (e.g. SGD) to avoid TPU Adam corruption
+  bn_optimizer_type: SGD  # Optional: use different optimizer for BN (e.g. SGD) to avoid TPU Adam corruption
   bn_optimizer_lr: null  # LR for BN optimizer; null = same as learning_rate
 
 training:
@@ -80,9 +79,6 @@ training:
   batch_size: 64
   grad_clip_norm: 1.0  # Gradient clipping for TPU stability; set null to disable
   tpu_learning_rate_multiplier: 0.2  # Scale LR by this on TPU (0.2 = 5x lower) to avoid NaN after a few steps
-  tpu_clamp_bn_params: true  # Replace NaN/Inf in BN params after optimizer step (fixes TPU Adam corruption)
-  replay_buffer_float32: false  # Set true on TPU to avoid float16 underflow of policy probs (can cause NaN)
-  skip_replay_buffer_load: false  # Set true to skip loading buffer (use when buffer may cause NaN; will refill from self-play)
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
   games_per_worker: 1  # Concurrent games per worker (increases parallelism with inference server)

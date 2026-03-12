@@ -37,7 +37,6 @@ from inference_server import InferenceClient, inference_server_worker, inference
 from utils.training_utils import (
     RewardComputer,
     freeze_first_n_conv_layers,
-    freeze_params_by_name,
     get_bn_and_rest_params,
     repair_fen_en_passant,
     select_fen_from_dict,
@@ -138,55 +137,6 @@ def _dataset_cache_key(value) -> str:
         return json.dumps(value, sort_keys=True)
     except Exception:
         return repr(value)
-
-
-def _clamp_bn_params_on_tpu(network):
-    """Replace NaN/Inf in BatchNorm params with safe fallbacks after optimizer step.
-    BN bias -> 0, BN weight (gamma) -> 1. Keeps BN trainable while fixing TPU Adam corruption.
-    Returns (count, clamped_param_list, clamped_names). clamped_param_list = param tensors for Adam state reset."""
-    fixed = 0
-    clamped_names = []
-    clamped_params = []
-    for name, module in network.named_modules():
-        if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
-            if module.weight is not None:
-                with torch.no_grad():
-                    w = module.weight.data
-                    bad = ~torch.isfinite(w)
-                    if bad.any():
-                        module.weight.data = torch.where(bad, torch.ones_like(w), w)
-                        fixed += 1
-                        clamped_names.append(f"{name}.weight")
-                        clamped_params.append(module.weight)
-            if module.bias is not None:
-                with torch.no_grad():
-                    b = module.bias.data
-                    bad = ~torch.isfinite(b)
-                    if bad.any():
-                        module.bias.data = torch.where(bad, torch.zeros_like(b), b)
-                        fixed += 1
-                        clamped_names.append(f"{name}.bias")
-                        clamped_params.append(module.bias)
-    if fixed > 0:
-        print(f"[TPU] Clamped {fixed} BN param(s) with NaN/Inf: {clamped_names}", file=sys.stderr, flush=True)
-        if fixed > 5:
-            print(
-                "[TPU] WARNING: Many BN params corrupted. Consider lowering tpu_learning_rate_multiplier or other fixes.",
-                file=sys.stderr,
-                flush=True,
-            )
-    return fixed, clamped_params, clamped_names
-
-
-def _reset_adam_state_for_params(optimizer, params):
-    """Zero exp_avg and exp_avg_sq for given params. Prevents corrupted Adam state from
-    re-corrupting params on next step (stops NaN spread on TPU)."""
-    for param in params:
-        if param in optimizer.state:
-            state = optimizer.state[param]
-            for key in ("exp_avg", "exp_avg_sq"):
-                if key in state and isinstance(state[key], torch.Tensor):
-                    state[key].zero_()
 
 
 def _state_dict_has_nan_or_inf(state_dict: dict) -> bool:
@@ -688,12 +638,11 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
     
-    def get_state(self, env_type='chess', use_float32=False):
+    def get_state(self, env_type='chess'):
         """Returns the replay buffer state for checkpointing in compressed format.
         
         Args:
             env_type: Type of environment ('chess' or 'gomoku')
-            use_float32: If True, store state/policy in float32 (avoids float16 underflow of small probs on TPU)
         """
         if len(self.buffer) == 0:
             return {
@@ -736,9 +685,8 @@ class ReplayBuffer:
                 board_str = board.fen() if hasattr(board, 'fen') else str(board)
             
             # Store arrays as (bytes, shape, dtype) to avoid NumPy's deprecated pickle path (numpy.core.numeric)
-            # use_float32 avoids float16 underflow of small policy probs (can cause TPU NaN)
-            state_arr = state.astype(np.float32 if use_float32 else np.float16)
-            policy_arr = policy.astype(np.float32 if use_float32 else np.float16)
+            state_arr = state.astype(np.float16)
+            policy_arr = policy.astype(np.float16)
             compact_exp = (
                 state_arr.tobytes(),
                 state_arr.shape,
@@ -1616,13 +1564,6 @@ def _init_network_and_optimizer(
         n_trainable = sum(p.numel() for p in network.parameters() if p.requires_grad)
         progress.print(f"Frozen first {freeze_n} conv layers. Training {n_trainable:,} parameters.")
 
-    freeze_names = cfg.network.get("tpu_freeze_bn_param_names") or []
-    if freeze_names:
-        frozen = freeze_params_by_name(network, freeze_names)
-        if frozen > 0:
-            n_trainable = sum(p.numel() for p in network.parameters() if p.requires_grad)
-            progress.print(f"Frozen {frozen} BN param(s) by name. Training {n_trainable:,} parameters.")
-
     profile_network = create_network(cfg, device)
     profile_network.eval()
     N, C, H, W = cfg.training.batch_size, cfg.network.input_channels, cfg.network.board_size, cfg.network.board_size
@@ -2224,7 +2165,7 @@ def _load_checkpoint(
                 history["other_draw_count"] = [0] * len(history["policy_loss"])
 
         buffer_loaded = False
-        if "replay_buffer_state" in checkpoint and not cfg.training.get("skip_replay_buffer_load", False):
+        if "replay_buffer_state" in checkpoint:
             try:
                 replay_buffer_state = checkpoint["replay_buffer_state"]
                 replay_buffer.load_state(replay_buffer_state, create_board_from_serialized)
@@ -3361,7 +3302,6 @@ def run_training_loop(cfg: DictConfig) -> None:
 
             total_policy_loss = 0.0
             total_value_loss = 0.0
-            total_bn_clamps_this_iteration = 0
             total_illegal_moves_in_iteration = 0
             total_samples_in_iteration = 0
             avg_illegal_prob_mass = 0.0
@@ -3461,14 +3401,6 @@ def run_training_loop(cfg: DictConfig) -> None:
                         xm.optimizer_step(optimizer, barrier=True)
                         if bn_optimizer is not None:
                             xm.optimizer_step(bn_optimizer, barrier=True)
-                        if cfg.training.get("tpu_clamp_bn_params", True):
-                            clamp_count, clamped_params, _ = _clamp_bn_params_on_tpu(network)
-                            total_bn_clamps_this_iteration += clamp_count
-                            if clamped_params:
-                                target_opt = bn_optimizer if bn_optimizer is not None else optimizer
-                                is_adam = (opt_cfg.get("bn_optimizer_type") == "Adam") if bn_optimizer is not None else (opt_cfg.type == "Adam")
-                                if is_adam:
-                                    _reset_adam_state_for_params(target_opt, clamped_params)
                     else:
                         optimizer.step()
                         if bn_optimizer is not None:
@@ -3615,10 +3547,7 @@ def run_training_loop(cfg: DictConfig) -> None:
                 'optimizer_param_names': optimizer_param_names,
                 'training_mode': 'rl',
                 'total_games_simulated': total_games_simulated,
-                'replay_buffer_state': replay_buffer.get_state(
-                    env_type=cfg.env.type,
-                    use_float32=bool(cfg.training.get("replay_buffer_float32", False)),
-                ),
+                'replay_buffer_state': replay_buffer.get_state(env_type=cfg.env.type),
                 'history': history,
             }
             if bn_optimizer is not None:

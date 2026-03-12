@@ -387,18 +387,6 @@ def get_bn_and_rest_params(model: torch.nn.Module) -> Tuple[List[torch.nn.Parame
     return bn_params, rest_params
 
 
-def freeze_params_by_name(model: torch.nn.Module, param_names: List[str]) -> int:
-    """Freeze parameters by exact name. Returns count of params frozen.
-    Used to avoid repeated BN clamping on TPU (freeze params that corrupt often)."""
-    names_set = set(param_names)
-    frozen = 0
-    for name, param in model.named_parameters():
-        if name in names_set:
-            param.requires_grad = False
-            frozen += 1
-    return frozen
-
-
 def save_checkpoint(
     path: str,
     model: torch.nn.Module,

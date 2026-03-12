@@ -23,7 +23,6 @@ class NetworkConfig:
     value_dropout: float = 0.0
     conv_dropout: float = 0.0
     freeze_first_n_conv_layers: Optional[int] = 0  # Freeze first N layers of conv body (initial conv + residual). 0 or null = train all.
-    tpu_freeze_bn_param_names: Optional[List[str]] = None  # Optional list of param names to freeze (avoids repeated BN clamping on TPU)
 
 
 @dataclass
@@ -69,9 +68,6 @@ class TrainingConfig:
     batch_size: int = 128
     grad_clip_norm: Optional[float] = None  # Max gradient norm; None = no clipping. Use 1.0 for TPU stability.
     tpu_learning_rate_multiplier: float = 0.2  # Scale LR by this on TPU (e.g. 0.2 = 5x lower) to avoid NaN after a few steps
-    tpu_clamp_bn_params: bool = True  # If True and on TPU, replace NaN/Inf in BN params after optimizer step (fixes Adam corruption)
-    replay_buffer_float32: bool = False  # If True, store replay buffer in float32 (avoids float16 underflow on TPU)
-    skip_replay_buffer_load: bool = False  # If True, skip loading buffer from checkpoint (refill from self-play)
     use_multiprocessing: bool = True  # Flag to enable/disable multiprocessing for self-play
     self_play_workers: int = 0  # Number of parallel workers for self-play. 0 means use default heuristic (e.g., half CPU cores).
     games_per_worker: int = 1  # Number of concurrent games per worker. >1 increases parallelism when using inference server.
