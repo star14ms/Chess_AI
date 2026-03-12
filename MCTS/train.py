@@ -2048,46 +2048,38 @@ def _load_checkpoint(
                             skip_optimizer_load = True
                             break
 
+                # When loading old checkpoint (no bn_optimizer_state_dict) with bn_optimizer enabled:
+                # infer param names and restore only non-BN params into main optimizer; BN optimizer stays fresh
+                if skip_optimizer_load and bn_optimizer is not None and "bn_optimizer_state_dict" not in checkpoint:
+                    if optimizer_param_names is None and len(ckpt_groups) == 1:
+                        optimizer_param_names = [
+                            [name for name, p in network.named_parameters() if p.requires_grad]
+                        ]
+
                 use_manual_state_restore = False
+                rest_param_ids = None
+                if bn_optimizer is not None:
+                    bn_params, rest_params = get_bn_and_rest_params(network)
+                    rest_param_ids = {id(p) for p in rest_params}
+
                 if skip_optimizer_load and optimizer_param_names:
                     try:
                         name_to_param = dict(network.named_parameters())
-                        new_state = optimizer.state_dict()
                         loaded_states = 0
                         total_candidates = 0
+                        skipped_bn = 0
                         state_dict = checkpoint_opt_state.get("state", {})
-                        for group, names in zip(
-                            checkpoint_opt_state.get("param_groups", []), optimizer_param_names
-                        ):
-                            for old_param_id, param_name in zip(group.get("params", []), names):
-                                if not isinstance(param_name, str) or not param_name:
-                                    continue
-                                if not isinstance(old_param_id, int):
-                                    try:
-                                        if isinstance(old_param_id, torch.Tensor):
-                                            old_param_id = int(old_param_id.item())
-                                        else:
-                                            old_param_id = int(old_param_id)
-                                    except Exception:
-                                        continue
-                                total_candidates += 1
-                                param = name_to_param.get(param_name)
-                                if param is None:
-                                    continue
-                                if old_param_id in state_dict:
-                                    new_state["state"][id(param)] = state_dict[old_param_id]
-                                    loaded_states += 1
-
                         optimizer.state.clear()
-                        for group, names in zip(
-                            checkpoint_opt_state.get("param_groups", []), optimizer_param_names
+                        for ckpt_group, names in zip(
+                            checkpoint_opt_state.get("param_groups", []),
+                            optimizer_param_names,
                         ):
-                            for old_param_id, param_name in zip(group.get("params", []), names):
-                                if not isinstance(param_name, str) or not param_name:
-                                    continue
-                                param = name_to_param.get(param_name)
-                                if param is None:
-                                    continue
+                            ckpt_params = ckpt_group.get("params", [])
+                            if len(names) != len(ckpt_params):
+                                names = [name for name, p in network.named_parameters() if p.requires_grad]
+                            if len(names) != len(ckpt_params):
+                                names = [""] * len(ckpt_params)
+                            for old_param_id, param_name in zip(ckpt_params, names):
                                 if not isinstance(old_param_id, int):
                                     try:
                                         if isinstance(old_param_id, torch.Tensor):
@@ -2096,14 +2088,27 @@ def _load_checkpoint(
                                             old_param_id = int(old_param_id)
                                     except Exception:
                                         continue
+                                param = name_to_param.get(param_name) if param_name else None
+                                if param is None:
+                                    continue
+                                if rest_param_ids is not None and id(param) not in rest_param_ids:
+                                    skipped_bn += 1
+                                    continue
+                                total_candidates += 1
                                 if old_param_id in state_dict:
-                                    optimizer.state[param] = state_dict[old_param_id]
+                                    raw_state = state_dict[old_param_id]
+                                    optimizer.state[param] = {
+                                        k: v.to(device) if isinstance(v, torch.Tensor) else v
+                                        for k, v in raw_state.items()
+                                    }
+                                    loaded_states += 1
                         use_manual_state_restore = True
                         restored_by_name = loaded_states > 0
                         if restored_by_name:
-                            progress.print(
-                                f"Loaded optimizer state by name for {loaded_states}/{total_candidates} params"
-                            )
+                            msg = f"Loaded optimizer state by name for {loaded_states}/{total_candidates} params"
+                            if skipped_bn > 0:
+                                msg += f" (skipped {skipped_bn} BN params; BN optimizer starts fresh)"
+                            progress.print(msg)
                         else:
                             skip_optimizer_load = True
                     except Exception as exc:
@@ -3599,10 +3604,15 @@ def run_training_loop(cfg: DictConfig) -> None:
                 "Inference will continue with previous checkpoint. Fix training (e.g. lower LR, disable AMP on TPU)."
             )
         else:
+            name_by_id = {id(p): name for name, p in network.named_parameters()}
+            optimizer_param_names = []
+            for group in optimizer.param_groups:
+                optimizer_param_names.append([name_by_id.get(id(p), "") for p in group.get("params", [])])
             checkpoint = {
                 'iteration': iteration + 1,
                 'model_state_dict': model_state,
                 'optimizer_state_dict': optimizer.state_dict(),
+                'optimizer_param_names': optimizer_param_names,
                 'training_mode': 'rl',
                 'total_games_simulated': total_games_simulated,
                 'replay_buffer_state': replay_buffer.get_state(
@@ -3613,6 +3623,8 @@ def run_training_loop(cfg: DictConfig) -> None:
             }
             if bn_optimizer is not None:
                 checkpoint['bn_optimizer_state_dict'] = bn_optimizer.state_dict()
+                bn_param_names = [name_by_id.get(id(p), "") for p in bn_optimizer.param_groups[0].get("params", [])]
+                checkpoint['bn_optimizer_param_names'] = [bn_param_names]
             torch.save(checkpoint, checkpoint_path)
         
         checkpoint_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024) if os.path.exists(checkpoint_path) else 0.0
