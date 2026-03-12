@@ -78,6 +78,8 @@ training:
   num_training_steps: 40
   batch_size: 64
   grad_clip_norm: 1.0  # Gradient clipping for TPU stability; set null to disable
+  training_prefetch_enabled: true  # Prefetch batches during training to overlap sampling with backward pass
+  training_prefetch_buffer_size: 2  # Batches to prefetch ahead; 0 or 1 = disabled
   use_multiprocessing: true # Set to false for sequential self-play
   self_play_workers: null # Example: Use 8 parallel workers for self-play games
   games_per_worker: 1  # Concurrent games per worker (increases parallelism with inference server)

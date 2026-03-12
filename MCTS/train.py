@@ -512,6 +512,82 @@ def continual_self_play_worker(
                 except Exception:
                     pass
 
+# --- Batch Prefetcher for RL Training ---
+_PREFETCH_STOP = object()  # Sentinel for end of prefetch stream
+
+
+class BatchPrefetcher:
+    """Prefetches batches from the replay buffer in a background thread while the main process trains.
+    Overlaps sampling + numpy assembly with the previous batch's backward pass."""
+
+    def __init__(
+        self,
+        replay_buffer,
+        batch_size: int,
+        action_space_size: int,
+        draw_sample_ratio,
+        buffer_size: int = 2,
+    ):
+        self.replay_buffer = replay_buffer
+        self.batch_size = batch_size
+        self.action_space_size = action_space_size
+        self.draw_sample_ratio = draw_sample_ratio
+        self.buffer_size = max(1, buffer_size)
+        self._queue = queue.Queue(maxsize=self.buffer_size + 1)  # +1 for sentinel
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._exception = None
+
+    def _worker(self):
+        try:
+            while not self._stop_event.is_set():
+                batch = self.replay_buffer.sample(
+                    self.batch_size,
+                    action_space_size=self.action_space_size,
+                    draw_sample_ratio=self.draw_sample_ratio,
+                )
+                if batch is None:
+                    break
+                # Block until queue has space; stop() drains queue to unblock us
+                self._queue.put(batch)
+            self._queue.put(_PREFETCH_STOP)
+        except Exception as e:
+            self._exception = e
+            try:
+                self._queue.put(_PREFETCH_STOP)
+            except Exception:
+                pass
+
+    def start(self):
+        self._stop_event.clear()
+        self._exception = None
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def get(self):
+        if self._exception is not None:
+            raise self._exception
+        try:
+            item = self._queue.get(timeout=30.0)
+            if item is _PREFETCH_STOP:
+                return None
+            return item
+        except queue.Empty:
+            return None
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+        # Drain queue to unblock worker
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+
+
 # --- Replay Buffer (Keep as is) ---
 class ReplayBuffer:
     def __init__(self, max_size):
@@ -3230,6 +3306,7 @@ def run_training_loop(cfg: DictConfig) -> None:
             time.sleep(1.0)  # Give workers time to see pause signal before acquire
         if tpu_lock is not None:
             tpu_lock.acquire()
+        prefetcher = None
         try:
             network.to(training_device).train()
 
@@ -3317,17 +3394,37 @@ def run_training_loop(cfg: DictConfig) -> None:
                 illegal_p=float("nan"),
             )
             last_good_state = None  # For rollback when model outputs NaN on TPU
-            # Use values from cfg
-            for epoch in range(cfg.training.num_training_steps):
-                batch = replay_buffer.sample(
-                    cfg.training.batch_size,
+            # Batch prefetcher: overlap sampling with backward pass when enabled
+            prefetch_enabled = bool(cfg.training.get("training_prefetch_enabled", True))
+            prefetch_buffer_size = int(cfg.training.get("training_prefetch_buffer_size", 2))
+            prefetcher = None
+            if prefetch_enabled and prefetch_buffer_size >= 2:
+                prefetcher = BatchPrefetcher(
+                    replay_buffer=replay_buffer,
+                    batch_size=cfg.training.batch_size,
                     action_space_size=cfg.network.action_space_size,
                     draw_sample_ratio=cfg.training.get("draw_sample_ratio"),
+                    buffer_size=prefetch_buffer_size,
                 )
-                if batch is None: continue
+                prefetcher.start()
+
+            # Use values from cfg
+            for epoch in range(cfg.training.num_training_steps):
+                if prefetcher is not None:
+                    batch = prefetcher.get()
+                    if batch is None:
+                        break  # Prefetcher exhausted (buffer too small or worker finished)
+                else:
+                    batch = replay_buffer.sample(
+                        cfg.training.batch_size,
+                        action_space_size=cfg.network.action_space_size,
+                        draw_sample_ratio=cfg.training.get("draw_sample_ratio"),
+                    )
+                    if batch is None:
+                        continue
 
                 # states_np, policy_targets_np, fens_batch, value_targets_np = batch
-                states_np, policy_targets_np, boards_batch, value_targets_np, source_ids_np = batch # Unpack boards
+                states_np, policy_targets_np, boards_batch, value_targets_np, source_ids_np = batch  # Unpack boards
                 states_tensor = torch.from_numpy(states_np).to(training_device)
                 policy_targets_tensor = torch.from_numpy(policy_targets_np).to(training_device)
                 value_targets_tensor = torch.from_numpy(value_targets_np).to(training_device)
@@ -3495,6 +3592,8 @@ def run_training_loop(cfg: DictConfig) -> None:
             )
             _save_game_history(game_moves_list, game_history_dir, iteration, avg_policy_loss, avg_value_loss)
         finally:
+            if prefetcher is not None:
+                prefetcher.stop()
             if tpu_lock is not None:
                 tpu_lock.release()
             if pause_for_training is not None:
