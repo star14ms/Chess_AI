@@ -15,32 +15,19 @@ def _default_theme_ignore() -> list[str]:
     return ["mate", "mateIn1", "mateIn2", "mateIn3", "mateIn4", "mateIn5", "veryLong", "long", "short", "oneMove", "opening", "middlegame", "endgame"]
 
 
-def _resolve_theme_metrics_path(checkpoint_path: str, theme_metrics_path: str | None) -> str | None:
-    if theme_metrics_path:
-        return theme_metrics_path
-    checkpoint_dir = os.path.dirname(os.path.abspath(checkpoint_path))
-    candidate = os.path.join(checkpoint_dir, "theme_metrics.jsonl")
-    return candidate if os.path.exists(candidate) else None
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Rebuild learning_curve.png from a checkpoint and theme_metrics.jsonl."
+        description="Rebuild learning_curve.png from a checkpoint (includes theme metrics)."
     )
     parser.add_argument(
         "--checkpoint",
         required=True,
-        help="Path to a checkpoint that contains train/val history lists.",
+        help="Path to a checkpoint that contains train/val history and theme_metrics.",
     )
     parser.add_argument(
         "--output-dir",
         default=None,
         help="Directory to write learning_curve.png (defaults to checkpoint dir).",
-    )
-    parser.add_argument(
-        "--theme-metrics",
-        default=None,
-        help="Path to theme_metrics.jsonl (defaults to checkpoint dir if present).",
     )
     parser.add_argument(
         "--theme-ignore",
@@ -59,7 +46,6 @@ def main() -> None:
     checkpoint_path = os.path.abspath(args.checkpoint)
     checkpoint_dir = os.path.dirname(checkpoint_path)
     output_dir = os.path.abspath(args.output_dir) if args.output_dir else checkpoint_dir
-    theme_metrics_path = _resolve_theme_metrics_path(checkpoint_path, args.theme_metrics)
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     train_losses = list(checkpoint.get("train_losses", []))
@@ -70,6 +56,7 @@ def main() -> None:
     per_source_train_acc = checkpoint.get("per_source_train_acc")
     per_source_val_loss = checkpoint.get("per_source_val_loss")
     per_source_val_acc = checkpoint.get("per_source_val_acc")
+    theme_metrics_data = checkpoint.get("theme_metrics")
 
     if not train_losses or not val_losses:
         raise RuntimeError(
@@ -84,7 +71,7 @@ def main() -> None:
         val_losses,
         val_accs,
         output_dir,
-        theme_metrics_path=theme_metrics_path,
+        theme_metrics_data=theme_metrics_data if isinstance(theme_metrics_data, list) else None,
         ignored_themes=ignored_themes,
         theme_plot_include_missing=args.theme_plot_include_missing,
         per_source_train_loss=per_source_train_loss if isinstance(per_source_train_loss, dict) else None,

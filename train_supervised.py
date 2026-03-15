@@ -387,7 +387,7 @@ def save_learning_curve(
     val_losses: list[float],
     val_accs: list[float],
     checkpoint_dir: str,
-    theme_metrics_path: str | None = None,
+    theme_metrics_data: list[dict] | None = None,
     ignored_themes: set[str] | None = None,
     theme_plot_include_missing: bool = False,
     per_source_train_loss: dict[str, list[float]] | None = None,
@@ -399,10 +399,10 @@ def save_learning_curve(
         return
     epochs = list(range(1, len(train_losses) + 1))
     theme_curves = None
-    if theme_metrics_path and os.path.exists(theme_metrics_path):
+    if theme_metrics_data:
         theme_curves = _load_theme_curves(
-            theme_metrics_path,
-            epochs,
+            theme_metrics_data=theme_metrics_data,
+            epochs=epochs,
             ignored_themes=ignored_themes,
             include_missing=theme_plot_include_missing,
         )
@@ -547,36 +547,37 @@ def save_learning_curve(
 
 
 def _load_theme_curves(
-    theme_metrics_path: str,
+    *,
+    theme_metrics_data: list[dict],
     epochs: list[int],
     ignored_themes: set[str] | None = None,
     include_missing: bool = False,
 ) -> tuple[list[int], list[tuple[str, list[float], list[float]]], list[tuple[str, list[float], list[float]]]] | None:
     theme_totals: dict[str, int] = {}
     theme_by_split: dict[str, dict[int, dict[str, float]]] = {"train": {}, "val": {}}
-    with open(theme_metrics_path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
+
+    def _process_payload(payload: dict) -> None:
+        nonlocal theme_totals, theme_by_split
+        split = payload.get("split")
+        if split not in theme_by_split:
+            return
+        epoch = int(payload.get("epoch", 0))
+        themes = payload.get("themes") or []
+        epoch_map: dict[str, float] = {}
+        for entry in themes:
+            theme = entry.get("theme")
+            total = int(entry.get("total", 0))
+            acc = float(entry.get("acc", 0.0))
+            if not theme:
                 continue
-            payload = json.loads(line)
-            split = payload.get("split")
-            if split not in theme_by_split:
+            if ignored_themes and theme in ignored_themes:
                 continue
-            epoch = int(payload.get("epoch", 0))
-            themes = payload.get("themes") or []
-            epoch_map: dict[str, float] = {}
-            for entry in themes:
-                theme = entry.get("theme")
-                total = int(entry.get("total", 0))
-                acc = float(entry.get("acc", 0.0))
-                if not theme:
-                    continue
-                if ignored_themes and theme in ignored_themes:
-                    continue
-                epoch_map[theme] = acc
-                theme_totals[theme] = max(theme_totals.get(theme, 0), total)
-            theme_by_split[split][epoch] = epoch_map
+            epoch_map[theme] = acc
+            theme_totals[theme] = max(theme_totals.get(theme, 0), total)
+        theme_by_split[split][epoch] = epoch_map
+
+    for payload in theme_metrics_data:
+        _process_payload(payload)
 
     if not theme_totals:
         return None
@@ -631,25 +632,6 @@ def _plot_theme_group(
     axis.set_ylim(None, 100)
     if theme_series:
         axis.legend(fontsize=8)
-
-
-def _seed_theme_metrics_from_resume(
-    resume_path: str | None, theme_metrics_path: str
-) -> None:
-    if not resume_path or os.path.exists(theme_metrics_path):
-        return
-    resume_dir = os.path.dirname(os.path.abspath(resume_path))
-    resume_theme_path = os.path.join(resume_dir, "theme_metrics.jsonl")
-    if not os.path.exists(resume_theme_path):
-        return
-    try:
-        with open(resume_theme_path, "r", encoding="utf-8") as src, open(
-            theme_metrics_path, "w", encoding="utf-8"
-        ) as dst:
-            dst.write(src.read())
-    except OSError:
-        # Best-effort: skip if we can't read/write the file.
-        return
 
 
 def _update_theme_stats(
@@ -864,9 +846,8 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
     checkpoint_dir = supervised_cfg.checkpoint_dir
     if is_main:
         os.makedirs(checkpoint_dir, exist_ok=True)
-    theme_metrics_path = os.path.join(checkpoint_dir, "theme_metrics.jsonl")
-    if is_main:
-        _seed_theme_metrics_from_resume(supervised_cfg.resume, theme_metrics_path)
+    theme_metrics_history: list[dict] = []
+    collect_theme_stats = True
     logging_cfg = supervised_cfg.logging
     ignored_themes = {
         t.strip() for t in logging_cfg.theme_ignore if t and t.strip()
@@ -914,9 +895,37 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                 label: list(resume_per_source_val_acc.get(label, []))
                 for label in source_labels
             }
+        resume_theme_metrics = resume_data.get("theme_metrics")
+        if isinstance(resume_theme_metrics, list):
+            theme_metrics_history.extend(resume_theme_metrics)
         if is_main:
             print(f"Resumed from {supervised_cfg.resume} (next epoch={start_epoch}).")
         if start_epoch > supervised_cfg.epochs:
+            if is_main:
+                checkpoint_path = os.path.join(
+                    checkpoint_dir,
+                    f"model_resumed_epoch_{start_epoch - 1}.pth"
+                )
+                save_checkpoint(
+                    checkpoint_path,
+                    model_ref,
+                    optimizer,
+                    start_epoch - 1,
+                    cfg,
+                    scheduler=scheduler,
+                    best_val_loss=best_val_loss,
+                    patience_counter=patience_counter,
+                    train_losses=train_losses,
+                    train_accs=train_accs,
+                    val_losses=val_losses,
+                    val_accs=val_accs,
+                    per_source_train_loss=per_source_train_loss_history,
+                    per_source_train_acc=per_source_train_acc_history,
+                    per_source_val_loss=per_source_val_loss_history,
+                    per_source_val_acc=per_source_val_acc_history,
+                    theme_metrics=theme_metrics_history if collect_theme_stats else None,
+                )
+            
             if is_main:
                 print(
                     f"Checkpoint epoch={start_epoch - 1} exceeds requested epochs={supervised_cfg.epochs}. "
@@ -1053,8 +1062,6 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
         last_val_loss = None
         last_val_acc = None
         total_start_time = time.time()
-
-        collect_theme_stats = True
 
         for epoch in range(start_epoch, supervised_cfg.epochs + 1):
             epoch_start_time = time.time()
@@ -1403,6 +1410,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                             per_source_train_acc=per_source_train_acc_history,
                             per_source_val_loss=per_source_val_loss_history if has_val else None,
                             per_source_val_acc=per_source_val_acc_history if has_val else None,
+                            theme_metrics=theme_metrics_history if collect_theme_stats else None,
                         )
                 else:
                     patience_counter += 1
@@ -1450,28 +1458,25 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
             last_val_loss = val_avg_loss if has_val else None
             last_val_acc = val_acc if has_val else None
             if is_main and collect_theme_stats:
-                with open(theme_metrics_path, "a", encoding="utf-8") as theme_out:
-                    train_rows = _format_theme_stats(train_theme_stats)
-                    train_payload = {
+                train_rows = _format_theme_stats(train_theme_stats)
+                theme_metrics_history.append({
+                    "epoch": epoch,
+                    "split": "train",
+                    "themes": [
+                        {"theme": t, "total": total, "correct": correct, "acc": acc}
+                        for t, total, correct, acc in train_rows
+                    ],
+                })
+                if has_val:
+                    val_rows = _format_theme_stats(val_theme_stats)
+                    theme_metrics_history.append({
                         "epoch": epoch,
-                        "split": "train",
+                        "split": "val",
                         "themes": [
                             {"theme": t, "total": total, "correct": correct, "acc": acc}
-                            for t, total, correct, acc in train_rows
+                            for t, total, correct, acc in val_rows
                         ],
-                    }
-                    theme_out.write(json.dumps(train_payload, ensure_ascii=True) + "\n")
-                    if has_val:
-                        val_rows = _format_theme_stats(val_theme_stats)
-                        val_payload = {
-                            "epoch": epoch,
-                            "split": "val",
-                            "themes": [
-                                {"theme": t, "total": total, "correct": correct, "acc": acc}
-                                for t, total, correct, acc in val_rows
-                            ],
-                        }
-                        theme_out.write(json.dumps(val_payload, ensure_ascii=True) + "\n")
+                    })
 
                 min_theme_total = max(0, int(logging_cfg.theme_log_min_total))
                 if train_theme_stats:
@@ -1519,6 +1524,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                     per_source_train_acc=per_source_train_acc_history,
                     per_source_val_loss=per_source_val_loss_history if has_val else None,
                     per_source_val_acc=per_source_val_acc_history if has_val else None,
+                    theme_metrics=theme_metrics_history if collect_theme_stats else None,
                 )
 
             if is_main:
@@ -1528,7 +1534,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                     val_losses,
                     val_accs,
                     checkpoint_dir,
-                    theme_metrics_path=theme_metrics_path if collect_theme_stats else None,
+                    theme_metrics_data=theme_metrics_history if collect_theme_stats else None,
                     ignored_themes=ignored_themes,
                     theme_plot_include_missing=logging_cfg.theme_plot_include_missing,
                     per_source_train_loss=per_source_train_loss_history,
@@ -1579,6 +1585,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
             per_source_train_acc=per_source_train_acc_history,
             per_source_val_loss=per_source_val_loss_history if has_val else None,
             per_source_val_acc=per_source_val_acc_history if has_val else None,
+            theme_metrics=theme_metrics_history if collect_theme_stats else None,
         )
         print(f"Saved final checkpoint to {final_path}")
         if collect_theme_stats:
@@ -1588,7 +1595,7 @@ def _train_worker(rank: int, world_size: int, cfg: DictConfig) -> None:
                 val_losses,
                 val_accs,
                 checkpoint_dir,
-                theme_metrics_path=theme_metrics_path,
+                theme_metrics_data=theme_metrics_history,
                 ignored_themes=ignored_themes,
                 theme_plot_include_missing=logging_cfg.theme_plot_include_missing,
                 per_source_train_loss=per_source_train_loss_history,

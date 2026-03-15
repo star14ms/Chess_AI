@@ -1812,7 +1812,7 @@ def _save_game_history(
         return
     # Diagnostic naming: t=train_iter, p=positions, i=mcts_iter, n=max_pos
     if train_iteration is not None and positions_label is not None and mcts_iterations is not None and max_positions is not None:
-        pos_slug = "".join(c if c.isalnum() or c in "_-" else "_" for c in str(positions_label))[:24]
+        pos_slug = "".join(c if c.isalnum() or c in "_-" else "_" for c in str(positions_label))[:36]
         games_filename = f"games_t{train_iteration}_p{pos_slug}_i{mcts_iterations}_n{max_positions}.txt"
     else:
         games_filename = f"games_iter_{iteration+1}_p{avg_policy_loss:.4f}_v{avg_value_loss:.4f}.txt"
@@ -1906,6 +1906,17 @@ def _save_game_history(
                 move_san = moves_san_list[move_idx] if move_idx < len(moves_san_list) else "?"
                 gt_move_uci = pd.get("ground_truth_move_uci")
                 legal_at_pos_set = set(legal_at_pos)
+                # Resolve selected move for display: action_id can differ when replaying due to piece-instance
+                # mapping (4672 action space), so fall back to the UCI move that was actually played.
+                played_move_uci = moves_uci_list[move_idx] if move_idx < len(moves_uci_list) else None
+                played_move_san = None
+                if played_move_uci:
+                    try:
+                        played_mv = chess.Move.from_uci(played_move_uci)
+                        if played_mv in board_at_pos.legal_moves:
+                            played_move_san = board_at_pos.san(played_mv)
+                    except Exception:
+                        pass
                 for aid in aids:
                     raw_prob = raw_probs.get(int(aid), 0.0)
                     sel_prob = sel_probs.get(int(aid), 0.0)
@@ -1918,11 +1929,10 @@ def _save_game_history(
                                 f"FEN={board_at_pos.fen()[:60]}, legal_at_pos_sample={list(legal_at_pos)[:10]}"
                             )
                         move_str = board_at_pos.san(mv)
-                    elif aid == sel:
-                        raise RuntimeError(
-                            f"_save_game_history: selected action {aid} not in legal_at_pos at move {move_idx + 1}, "
-                            f"FEN={board_at_pos.fen()[:60]}, legal_at_pos_sample={list(legal_at_pos)[:10]}"
-                        )
+                    elif aid == sel and played_move_san:
+                        move_str = played_move_san
+                    elif aid == sel and played_move_uci:
+                        move_str = played_move_uci
                     tags = ""
                     if aid == sel:
                         tags += "*"  # SELECTED

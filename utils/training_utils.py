@@ -404,6 +404,7 @@ def save_checkpoint(
     per_source_train_acc: dict[str, list[float]] | None = None,
     per_source_val_loss: dict[str, list[float]] | None = None,
     per_source_val_acc: dict[str, list[float]] | None = None,
+    theme_metrics: list[dict] | None = None,
 ):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     cfg_payload = OmegaConf.to_container(cfg, resolve=False)
@@ -441,6 +442,8 @@ def save_checkpoint(
         payload["per_source_val_loss"] = per_source_val_loss
     if per_source_val_acc is not None:
         payload["per_source_val_acc"] = per_source_val_acc
+    if theme_metrics is not None:
+        payload["theme_metrics"] = theme_metrics
     torch.save(payload, path)
 
 
